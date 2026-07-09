@@ -30,6 +30,24 @@ archives:
       - goos: windows
         format: zip
 
+dockers_v2:
+  - images:
+      - "ghcr.io/bishopfox/sj"
+    dockerfile: Dockerfile
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Swagger Jacker"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.source: "https://github.com/BishopFox/sj"
+      org.opencontainers.image.licenses: "MIT"
+
 changelog:
   disable: false
   sort: asc
