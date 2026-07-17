@@ -9,10 +9,11 @@
 
 sj is a command line tool designed to assist with auditing exposed Swagger/OpenAPI definition files by checking the associated API endpoints for weak authentication. It also provides command templates for manual vulnerability testing.
 
-It parses definition files for paths, parameters, and accepted methods, then uses the results with one of five sub-commands:
+It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Use one of six subcommands:
 
 | Command | Description |
 |---------|-------------|
+| `audit` | Passively finds authentication, transport, and contract risks; supports JSON and SARIF |
 | `automate` | Crafts requests to each endpoint and analyzes the response status code |
 | `prepare` | Generates curl/sqlmap commands for manual testing |
 | `endpoints` | Lists raw API routes (no parameter substitution) |
@@ -46,6 +47,15 @@ docker run --rm ghcr.io/mr-pmillz/sj:latest --help
 
 ## Usage
 
+### Audit
+
+Run a passive contract and security review without calling documented API operations:
+
+```bash
+sj audit -l ./openapi.yaml -f yaml --fail-on high
+sj audit -u https://example.com/openapi.json -F sarif -o sj.sarif
+```
+
 ### Automate
 
 Send requests to each discovered endpoint and analyze responses:
@@ -53,6 +63,8 @@ Send requests to each discovered endpoint and analyze responses:
 ```bash
 sj automate -u https://petstore.swagger.io/v2/swagger.json -qi
 ```
+
+By default, active scanning sends only `GET`, `HEAD`, `OPTIONS`, and OpenAPI 3.2 `QUERY` operations. Add `--accept-risk` (or the broader `--force`) only when you are authorized to send state-changing methods.
 
 ```
 Gathering API details.
@@ -119,6 +131,9 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 
 ## Key Features
 
+- **OpenAPI 3.2 Support** — Handles `QUERY`, `additionalOperations`, `querystring` parameters, webhooks, callbacks, modern JSON Schema keywords, and layered server/parameter overrides.
+- **Passive Security Audit** — Reports risky authentication, plaintext servers, anonymous operations, path-contract errors, and callback/webhook surfaces as console, JSON, or SARIF.
+- **Safe Active Defaults** — Skips state-changing methods unless risk is explicitly accepted and bounds specifications, responses, wordlists, and retries.
 - **Random User-Agent** — Uses a random browser User-Agent by default for stealth. Override with `--agent`.
 - **Replay Proxy** — Route matched requests through a separate proxy while scanning through another (or direct).
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
@@ -133,7 +148,7 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
   -c, --custom-url string       Set a custom URL for discovered URL parameters. (default "https://example.com")
   -d, --custom-date string      A custom date for discovered date parameters. (default "1990-01-01")
       --custom-email string     A custom email for discovered email parameters. (default "noreply@localhost.localdomain")
-      --force                   Send requests without prompting for dangerous keywords.
+      --force                   Bypass method and dangerous-keyword safety checks.
   -f, --format string           Definition file format: json/yaml/yml/js. (default "json")
   -H, --headers stringArray     Custom headers ("Name: Value"). Multiple flags accepted.
   -i, --insecure                Ignore server certificate validation.
@@ -141,10 +156,12 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
   -o, --outfile string          Output results to a file.
   -p, --proxy string            Proxy host and port. (default "NOPROXY")
       --replay-proxy string     Replay matched requests using this proxy.
-  -q, --quiet                   No interactive prompts — use defaults for all requests.
+  -q, --quiet                   Use non-interactive defaults; credentials are never prompted for.
   -s, --safe-word stringArray   Skip dangerous word check for specified word(s).
   -T, --target string           Manually set request target if different from the documentation host.
   -t, --timeout int             Request timeout in seconds. (default 30)
+      --max-response-bytes int  Maximum response body size per request. (default 10485760)
+      --max-spec-bytes int      Maximum loaded specification size. (default 10485760)
   -u, --url string              Load documentation from a URL.
 ```
 
@@ -156,6 +173,7 @@ sj/
 ├── internal/cli/             # Cobra command wiring
 ├── pkg/
 │   ├── config/               # Central configuration
+│   ├── audit/                # Passive security and contract checks
 │   ├── httpclient/           # HTTP client with random UA
 │   ├── openapi/              # Spec parsing, schema resolution
 │   ├── output/               # Multi-format result output

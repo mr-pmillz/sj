@@ -1,7 +1,16 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
+const [repositoryOwner, repositoryName] = (
+  process.env.GITHUB_REPOSITORY ?? 'BishopFox/sj'
+).split('/');
+const base = process.env.DOCS_BASE ?? `/${repositoryName}`;
+
 export default defineConfig({
+  site:
+    process.env.DOCS_SITE ??
+    `https://${repositoryOwner.toLowerCase()}.github.io`,
+  base,
   integrations: [
     starlight({
       title: 'sj - Swagger Jacker',
@@ -31,6 +40,7 @@ export default defineConfig({
               label: 'Commands',
               collapsed: true,
               items: [
+                'commands/audit',
                 'commands/automate',
                 'commands/brute',
                 'commands/convert',

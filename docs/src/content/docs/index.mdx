@@ -25,6 +25,9 @@ Once you determine which endpoints require authentication and which do not, you 
 ## Commands
 
 <CardGrid>
+  <Card title="audit" icon="shield">
+    Passively identify authentication, transport, and contract risks with CI-ready SARIF output.
+  </Card>
   <Card title="automate" icon="rocket">
     Send automated requests to discovered endpoints and check which ones require authentication.
   </Card>
@@ -45,6 +48,9 @@ Once you determine which endpoints require authentication and which do not, you 
 ## Quick Example
 
 ```bash
+# Review the contract without sending endpoint requests
+sj audit -l ./openapi.yaml -f yaml --fail-on high
+
 # Check which endpoints are accessible without authentication
 sj automate -u https://petstore.swagger.io/v2/swagger.json
 

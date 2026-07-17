@@ -2,14 +2,15 @@ package brute
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/getkin/kin-openapi/openapi2"
 	"github.com/getkin/kin-openapi/openapi2conv"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mr-pmillz/sj/pkg/config"
@@ -29,290 +30,343 @@ func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
 }
 
 func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
-	u, err := url.Parse(targetURL)
+	report, err := s.RunTargetContext(context.Background(), targetURL, dumpSpec)
 	if err != nil {
-		output.PrintWarn("Error parsing URL: %s", err)
-		return Report{Target: targetURL}
+		output.PrintErr("Brute scan failed for %s: %v", output.TerminalSafe(targetURL), err)
 	}
-	target := u.Scheme + "://" + u.Host
-	normalizedBasePath := openapi.NormalizeBasePath(s.Cfg.BasePath)
-
-	var allURLs []string
-	if s.Cfg.EndpointWordlist == "" {
-		allURLs = append(allURLs, MakeURLs(target, normalizedBasePath, PriorityURLs, "", true)...)
-		allURLs = append(allURLs, MakeURLs(target, normalizedBasePath, JSONEndpoints, "", false)...)
-		allURLs = append(allURLs, MakeURLs(target, normalizedBasePath, JavaScriptEndpoints, ".js", false)...)
-		allURLs = append(allURLs, MakeURLs(target, normalizedBasePath, JSONEndpoints, ".json", false)...)
-		allURLs = append(allURLs, MakeURLs(target, normalizedBasePath, JSONEndpoints, "/", false)...)
-	} else {
-		file, fileErr := os.Open(s.Cfg.EndpointWordlist)
-		if fileErr != nil {
-			output.Die("Failed to open file: %s", fileErr)
-		}
-		defer file.Close()
-		sc := bufio.NewScanner(file)
-		for sc.Scan() {
-			endpoint := sc.Text()
-			allURLs = append(allURLs, target+normalizedBasePath+endpoint)
-		}
-	}
-
-	output.PrintInfo("Sending up to %d requests. This could take a while...\n", len(allURLs))
-
-	matches, interesting, summary := s.findAllDefinitionFiles(allURLs)
-
-	report := Report{
-		Target:      targetURL,
-		Interesting: interesting,
-		Summary:     summary,
-	}
-	for _, m := range matches {
-		report.SpecsFound = append(report.SpecsFound, SpecResult{
-			URL:            m.url,
-			ContentType:    m.contentType,
-			OpenAPIVersion: m.version,
-			Title:          m.title,
-			Description:    m.description,
-		})
-	}
-	report.Summary.SpecsFoundCount = len(matches)
-
-	if strings.EqualFold(s.Cfg.BruteOutputFormat, "json") {
-		return report
-	}
-
-	// Console summary (individual finds were already printed live)
-	if len(matches) == 0 {
-		output.PrintErr("\nNo definition file found for:\t%s", targetURL)
-	} else if dumpSpec {
-		for i, m := range matches {
-			if s.Cfg.EndpointOnly || i > 0 {
-				continue
-			}
-			definedOperations, marshalErr := json.Marshal(m.spec)
-			if marshalErr != nil {
-				output.PrintErr("Error parsing definition file: %s", marshalErr)
-				continue
-			}
-			if s.Cfg.Outfile != "" {
-				writeErr := os.WriteFile(s.Cfg.Outfile, definedOperations, 0644)
-				if writeErr != nil {
-					output.PrintErr("Error writing file: %s", writeErr)
-				} else {
-					f, _ := filepath.Abs(s.Cfg.Outfile)
-					output.PrintInfo("Wrote file to %s\n", f)
-				}
-			} else {
-				fmt.Println(string(definedOperations))
-			}
-		}
-
-		if len(matches) > 1 {
-			output.PrintInfo("\nFound %d definition files total:\n", len(matches))
-			for _, m := range matches {
-				line := fmt.Sprintf("  - %s (OpenAPI %s", m.url, m.version)
-				if m.title != "" {
-					line += ", " + m.title
-				}
-				line += ")"
-				output.PrintInfo("%s\n", line)
-			}
-		}
-	}
-
-	if len(interesting) > 0 {
-		output.PrintInfo("\nInteresting URLs found:\n")
-		for _, iu := range interesting {
-			output.PrintInfo("  [%d] %s (%s)\n", iu.StatusCode, iu.URL, iu.ContentType)
-		}
-	}
-
-	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d errors\n",
-		summary.URLsTested, len(matches), len(interesting), summary.Errors)
-
 	return report
 }
 
-func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting, Summary) {
-	var matches []match
-	var interesting []Interesting
-	var summary Summary
-
-	tested := make(map[string]bool, len(urls))
-	for _, u := range urls {
-		tested[u] = true
+func (s *Scanner) RunTargetContext(ctx context.Context, targetURL string, dumpSpec bool) (Report, error) {
+	target, basePath, err := normalizeTarget(targetURL, s.Cfg.BasePath)
+	if err != nil {
+		return Report{Target: targetURL, SpecsFound: []SpecResult{}, Interesting: []Interesting{}}, err
 	}
-	foundURLs := make(map[string]bool)
-
-	// variationQueue holds smart path variations generated from found specs.
-	var variationQueue []string
-
-	addMatch := func(targetURL, ct, version string, spec *openapi3.T) {
-		if foundURLs[targetURL] {
-			return
-		}
-		foundURLs[targetURL] = true
-		m := match{url: targetURL, contentType: ct, spec: spec, version: version}
-		if spec.Info != nil {
-			m.title = spec.Info.Title
-			m.description = spec.Info.Description
-		}
-		matches = append(matches, m)
-
-		// Print immediately so the operator sees results in real time.
-		fmt.Fprintf(os.Stderr, "\033[2K\r")
-		if m.title != "" {
-			output.PrintInfo("Definition file found: %s (OpenAPI %s, %s)\n", targetURL, version, m.title)
-		} else {
-			output.PrintInfo("Definition file found: %s (OpenAPI %s)\n", targetURL, version)
-		}
-
-		// Generate smart variations and queue them.
-		for _, v := range GeneratePathVariations(targetURL) {
-			if !tested[v] {
-				tested[v] = true
-				variationQueue = append(variationQueue, v)
-			}
-		}
+	candidates, err := s.candidates(target, basePath)
+	if err != nil {
+		return Report{Target: targetURL, SpecsFound: []SpecResult{}, Interesting: []Interesting{}}, err
 	}
+	output.PrintInfo("Sending up to %d requests. This could take a while...\n", len(candidates))
+	matches, interesting, summary, err := s.findAllDefinitionFiles(ctx, candidates)
+	report := makeReport(targetURL, matches, interesting, summary)
+	if err != nil {
+		return report, err
+	}
+	if structuredBruteOutput(s.Cfg.BruteOutputFormat) {
+		return report, nil
+	}
+	if err := s.printConsoleReport(report, matches, dumpSpec); err != nil {
+		return report, err
+	}
+	return report, nil
+}
 
-	processURL := func(targetURL string) {
-		summary.URLsTested++
-		bodyBytes, ct, statusCode := s.Client.BruteFetch(targetURL)
+func normalizeTarget(raw, configuredBasePath string) (string, string, error) {
+	targetURL, err := url.Parse(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("parse target URL: %w", err)
+	}
+	if targetURL.Scheme != "http" && targetURL.Scheme != "https" {
+		return "", "", fmt.Errorf("target must use http or https")
+	}
+	if targetURL.Host == "" || targetURL.User != nil {
+		return "", "", fmt.Errorf("target must have a host and no user information")
+	}
+	basePath := openapi.NormalizeBasePath(configuredBasePath)
+	if basePath == "" {
+		basePath = openapi.NormalizeBasePath(targetURL.EscapedPath())
+	}
+	targetURL.Path = ""
+	targetURL.RawPath = ""
+	targetURL.RawQuery = ""
+	targetURL.Fragment = ""
+	return strings.TrimSuffix(targetURL.String(), "/"), basePath, nil
+}
 
-		if statusCode == 0 {
-			summary.Errors++
-			return
+func (s *Scanner) candidates(target, basePath string) ([]string, error) {
+	var candidates []string
+	if s.Cfg.EndpointWordlist == "" {
+		candidates = append(candidates, MakeURLs(target, basePath, PriorityURLs, "", true)...)
+		candidates = append(candidates, MakeURLs(target, basePath, JSONEndpoints, "", false)...)
+		candidates = append(candidates, MakeURLs(target, basePath, JavaScriptEndpoints, ".js", false)...)
+		candidates = append(candidates, MakeURLs(target, basePath, JSONEndpoints, ".json", false)...)
+		candidates = append(candidates, MakeURLs(target, basePath, JSONEndpoints, "/", false)...)
+	} else {
+		file, err := os.Open(s.Cfg.EndpointWordlist)
+		if err != nil {
+			return nil, fmt.Errorf("open endpoint wordlist: %w", err)
 		}
-
-		switch {
-		case statusCode >= 200 && statusCode < 300:
-			summary.Responses2xx++
-		case statusCode >= 300 && statusCode < 400:
-			summary.Responses3xx++
-		case statusCode >= 400 && statusCode < 500:
-			summary.Responses4xx++
-		default:
-			summary.Errors++
-		}
-
-		if len(bodyBytes) == 0 || statusCode != 200 {
-			return
-		}
-
-		ctLower := strings.ToLower(ct)
-
-		if strings.Contains(ctLower, "application/json") || isYAMLContentType(ctLower) {
-			if spec, version := TryParseAsSpec(bodyBytes); spec != nil {
-				addMatch(targetURL, ct, version, spec)
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
-			return
+			candidates = append(candidates, joinCandidateURL(target, basePath, line))
+			if len(candidates) > s.Cfg.MaxCandidates {
+				_ = file.Close()
+				return nil, fmt.Errorf("wordlist exceeds %d candidate limit", s.Cfg.MaxCandidates)
+			}
 		}
-
-		if strings.Contains(ctLower, "application/javascript") || strings.Contains(ctLower, "text/javascript") {
-			if jsonContent, ok := openapi.ExtractJSONFromJSSpec(bodyBytes); ok {
-				if spec, version := TryParseAsSpec(jsonContent); spec != nil {
-					addMatch(targetURL, ct, version, spec)
-				}
-			}
-			return
+		scanErr := scanner.Err()
+		closeErr := file.Close()
+		if scanErr != nil {
+			return nil, fmt.Errorf("read endpoint wordlist: %w", scanErr)
 		}
-
-		if strings.Contains(ctLower, "text/html") {
-			specURLs := ExtractSpecURLsFromHTML(bodyBytes, targetURL)
-			for _, su := range specURLs {
-				if !tested[su] {
-					tested[su] = true
-					variationQueue = append(variationQueue, su)
-				}
-			}
-			if len(specURLs) > 0 {
-				interesting = append(interesting, Interesting{
-					URL: targetURL, StatusCode: statusCode, ContentType: ct,
-				})
-				fmt.Fprintf(os.Stderr, "\033[2K\r")
-				output.PrintInfo("Interesting: %s (HTML with %d spec URLs)\n", targetURL, len(specURLs))
-			}
-			return
-		}
-
-		urlLower := strings.ToLower(targetURL)
-		if strings.HasSuffix(urlLower, ".json") || strings.HasSuffix(urlLower, ".yaml") || strings.HasSuffix(urlLower, ".yml") {
-			if spec, version := TryParseAsSpec(bodyBytes); spec != nil {
-				addMatch(targetURL, ct, version, spec)
-			}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close endpoint wordlist: %w", closeErr)
 		}
 	}
+	candidates = deduplicateStrings(candidates)
+	if len(candidates) > s.Cfg.MaxCandidates {
+		return nil, fmt.Errorf("generated %d candidates, limit is %d", len(candidates), s.Cfg.MaxCandidates)
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("no brute-force candidates were generated")
+	}
+	return candidates, nil
+}
 
-	// Phase 1: test all URLs, but drain the variation queue eagerly after each hit.
-	for i, u := range urls {
-		fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", i+1, len(urls))
-		processURL(u)
+func joinCandidateURL(target, basePath, endpoint string) string {
+	return strings.TrimSuffix(target, "/") + "/" + strings.Trim(strings.TrimSuffix(basePath, "/")+"/"+strings.TrimPrefix(endpoint, "/"), "/")
+}
 
-		// After each main URL, drain any queued variations immediately.
-		for len(variationQueue) > 0 {
-			batch := variationQueue
-			variationQueue = nil
-			for _, v := range batch {
-				fmt.Fprintf(os.Stderr, "\033[2K\rVariation: %s", v)
-				processURL(v)
-			}
+func deduplicateStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
 		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
 
-		// Once we've found specs and finished priority URLs, stop the bulk scan.
-		// Priority URLs are at the front of the list; bulk prefix-dir combos follow.
-		// We use a heuristic: if we have matches and we're past the priority phase
-		// (index > len(PriorityURLs)), stop early to avoid triggering WAF/CDN blocks.
-		if len(matches) > 0 && i >= len(PriorityURLs) {
-			fmt.Fprintf(os.Stderr, "\033[2K\r")
-			output.PrintInfo("Found %d spec(s), stopping early to avoid excessive requests (%d/%d tested).\n",
-				len(matches), summary.URLsTested, len(urls))
+func makeReport(target string, matches []match, interesting []Interesting, summary Summary) Report {
+	report := Report{Target: target, SpecsFound: []SpecResult{}, Interesting: interesting, Summary: summary}
+	if report.Interesting == nil {
+		report.Interesting = []Interesting{}
+	}
+	for _, found := range matches {
+		report.SpecsFound = append(report.SpecsFound, SpecResult{
+			URL: found.url, ContentType: found.contentType, OpenAPIVersion: found.version,
+			Title: found.title, Description: found.description,
+		})
+	}
+	report.Summary.SpecsFoundCount = len(matches)
+	return report
+}
+
+func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bool) error {
+	if len(matches) == 0 {
+		output.PrintErr("\nNo definition file found for:\t%s", output.TerminalSafe(report.Target))
+	} else if dumpSpec && !s.Cfg.EndpointOnly {
+		definition, err := json.Marshal(matches[0].spec)
+		if err != nil {
+			return fmt.Errorf("marshal discovered specification: %w", err)
+		}
+		if s.Cfg.Outfile == "" {
+			fmt.Println(string(definition))
+		} else if err := writeBytesAtomically(s.Cfg.Outfile, definition); err != nil {
+			return err
+		}
+	}
+	if len(matches) > 1 {
+		output.PrintInfo("\nFound %d definition files total:\n", len(matches))
+		for _, found := range matches {
+			output.PrintInfo("  - %s (OpenAPI %s, %s)\n", output.TerminalSafe(found.url), output.TerminalSafe(found.version), output.TerminalSafe(found.title))
+		}
+	}
+	if len(report.Interesting) > 0 {
+		output.PrintInfo("\nInteresting URLs found:\n")
+		for _, interesting := range report.Interesting {
+			output.PrintInfo("  [%d] %s (%s)\n", interesting.StatusCode, output.TerminalSafe(interesting.URL), output.TerminalSafe(interesting.ContentType))
+		}
+	}
+	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d errors\n",
+		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.Errors)
+	return nil
+}
+
+func writeBytesAtomically(path string, data []byte) error {
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".sj-brute-*")
+	if err != nil {
+		return fmt.Errorf("create temporary output: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("secure temporary output: %w", err)
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write temporary output: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync temporary output: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary output: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish output: %w", err)
+	}
+	return nil
+}
+
+type scanState struct {
+	matches        []match
+	interesting    []Interesting
+	summary        Summary
+	tested         map[string]bool
+	found          map[string]bool
+	variationQueue []string
+}
+
+func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []string) ([]match, []Interesting, Summary, error) {
+	state := &scanState{tested: make(map[string]bool, len(candidates)), found: map[string]bool{}}
+	for _, candidate := range candidates {
+		state.tested[candidate] = true
+	}
+	for index, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return state.matches, state.interesting, state.summary, err
+		}
+		fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", index+1, len(candidates))
+		s.processURL(ctx, candidate, state)
+		for len(state.variationQueue) > 0 {
+			variation := state.variationQueue[0]
+			state.variationQueue = state.variationQueue[1:]
+			s.processURL(ctx, variation, state)
+		}
+		if len(state.matches) > 0 && index >= len(PriorityURLs) {
 			break
 		}
 	}
-
-	fmt.Fprintf(os.Stderr, "\033[2K\r")
-	return matches, interesting, summary
+	fmt.Fprint(os.Stderr, "\033[2K\r")
+	return state.matches, state.interesting, state.summary, nil
 }
 
-func TryParseAsSpec(bodyBytes []byte) (*openapi3.T, string) {
-	var doc3 openapi3.T
-	_ = json.Unmarshal(bodyBytes, &doc3)
-	if strings.HasPrefix(doc3.OpenAPI, "3") && doc3.Paths != nil {
-		return &doc3, doc3.OpenAPI
+func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanState) {
+	state.summary.URLsTested++
+	body, contentType, status := s.Client.BruteFetchContext(ctx, targetURL)
+	if status == 0 {
+		state.summary.Errors++
+		return
+	}
+	countStatus(&state.summary, status)
+	if len(body) == 0 || status < 200 || status >= 300 {
+		return
 	}
 
-	var doc2 openapi2.T
-	_ = json.Unmarshal(bodyBytes, &doc2)
-	if strings.HasPrefix(doc2.Swagger, "2") {
-		converted, convErr := openapi2conv.ToV3(&doc2)
-		if convErr == nil && converted != nil && converted.Paths != nil {
-			return converted, "2.0"
+	matchCount := len(state.matches)
+	if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
+		s.addSpec(targetURL, contentType, extracted, state)
+	}
+	if len(state.matches) == matchCount {
+		s.addSpec(targetURL, contentType, body, state)
+	}
+	if len(state.matches) > matchCount {
+		return
+	}
+
+	lowerType := strings.ToLower(contentType)
+	if strings.Contains(lowerType, "html") || looksLikeHTML(body) {
+		discoveredURLs := ExtractSpecURLsFromHTML(body, targetURL)
+		for _, discovered := range discoveredURLs {
+			s.queueVariation(discovered, state)
 		}
 	}
-
-	doc3 = openapi3.T{}
-	_ = yaml.Unmarshal(bodyBytes, &doc3)
-	if strings.HasPrefix(doc3.OpenAPI, "3") && doc3.Paths != nil {
-		return &doc3, doc3.OpenAPI
+	if len(state.interesting) < s.Cfg.MaxCandidates {
+		state.interesting = append(state.interesting, Interesting{URL: targetURL, StatusCode: status, ContentType: contentType})
 	}
+}
 
-	doc2 = openapi2.T{}
-	_ = yaml.Unmarshal(bodyBytes, &doc2)
-	if strings.HasPrefix(doc2.Swagger, "2") {
-		converted, convErr := openapi2conv.ToV3(&doc2)
-		if convErr == nil && converted != nil && converted.Paths != nil {
-			return converted, "2.0"
-		}
+func looksLikeHTML(body []byte) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(string(body[:min(len(body), 512)])))
+	return strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html")
+}
+
+func countStatus(summary *Summary, status int) {
+	switch {
+	case status >= 200 && status < 300:
+		summary.Responses2xx++
+	case status >= 300 && status < 400:
+		summary.Responses3xx++
+	case status >= 400 && status < 500:
+		summary.Responses4xx++
+	case status >= 500:
+		summary.Responses5xx++
 	}
+}
 
+func (s *Scanner) addSpec(targetURL, contentType string, body []byte, state *scanState) {
+	spec, version := TryParseAsSpec(body)
+	if spec == nil || state.found[targetURL] {
+		return
+	}
+	state.found[targetURL] = true
+	found := match{url: targetURL, contentType: contentType, spec: spec, version: version}
+	if spec.Info != nil {
+		found.title = spec.Info.Title
+		found.description = spec.Info.Description
+	}
+	state.matches = append(state.matches, found)
+	output.PrintInfo("\nDefinition file found: %s (OpenAPI %s, %s)\n", output.TerminalSafe(targetURL), output.TerminalSafe(version), output.TerminalSafe(found.title))
+	for _, variation := range GeneratePathVariations(targetURL) {
+		s.queueVariation(variation, state)
+	}
+}
+
+func (s *Scanner) queueVariation(candidate string, state *scanState) {
+	if state.tested[candidate] || len(state.tested) >= s.Cfg.MaxCandidates {
+		return
+	}
+	state.tested[candidate] = true
+	state.variationQueue = append(state.variationQueue, candidate)
+}
+
+func TryParseAsSpec(body []byte) (*openapi3.T, string) {
+	if document, version := parseOpenAPI3(body); document != nil {
+		return document, version
+	}
+	if document := parseSwagger2(body); document != nil {
+		return document, "2.0"
+	}
 	return nil, ""
 }
 
-func isYAMLContentType(ct string) bool {
-	return strings.Contains(ct, "application/yaml") ||
-		strings.Contains(ct, "application/x-yaml") ||
-		strings.Contains(ct, "text/yaml") ||
-		strings.Contains(ct, "text/x-yaml") ||
-		strings.Contains(ct, "text/vnd.yaml")
+func parseOpenAPI3(body []byte) (*openapi3.T, string) {
+	var document openapi3.T
+	if err := yaml.Unmarshal(body, &document); err != nil || !strings.HasPrefix(document.OpenAPI, "3") || document.Info == nil {
+		return nil, ""
+	}
+	return &document, document.OpenAPI
+}
+
+func parseSwagger2(body []byte) *openapi3.T {
+	document, err := openapi.DecodeSwagger2(body)
+	if err != nil || !strings.HasPrefix(document.Swagger, "2") {
+		return nil
+	}
+	converted, err := openapi2conv.ToV3(document)
+	if err != nil || converted == nil || converted.Paths == nil {
+		return nil
+	}
+	return converted
+}
+
+func structuredBruteOutput(format string) bool {
+	switch strings.ToLower(format) {
+	case "json", "jsonl", "csv", "txt":
+		return true
+	default:
+		return false
+	}
 }

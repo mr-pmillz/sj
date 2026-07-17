@@ -3,56 +3,68 @@ package httpclient
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
-	"github.com/mr-pmillz/sj/pkg/config"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
+
+	"github.com/mr-pmillz/sj/pkg/config"
 )
 
-type Client struct {
-	HTTP   *http.Client
-	Replay *http.Client
-	Cfg    *config.Config
+const defaultMaxResponseBodyBytes int64 = 10 * 1024 * 1024
 
-	depth    int
-	surveyed bool
-	avoidAll string
+type Client struct {
+	HTTP    *http.Client
+	Replay  *http.Client
+	Cfg     *config.Config
+	InitErr error
 }
 
 func NewClient(cfg *config.Config) *Client {
-	transport := &http.Transport{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	if cfg.Insecure {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		// #nosec G402 -- certificate verification is disabled only by the explicit --insecure option.
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
 	}
+	c := &Client{Cfg: cfg}
 	if cfg.Proxy != "NOPROXY" {
-		proxyURL, _ := url.Parse(cfg.Proxy)
-		transport.Proxy = http.ProxyURL(proxyURL)
+		proxyURL, err := parseProxyURL(cfg.Proxy)
+		if err != nil {
+			c.InitErr = fmt.Errorf("invalid proxy URL: %w", err)
+		} else {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
 	}
 
 	httpClient := &http.Client{
 		Transport: transport,
+		Timeout:   cfg.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	c := &Client{HTTP: httpClient, Cfg: cfg}
+	c.HTTP = httpClient
 
 	if cfg.ReplayProxy != "" {
-		rt := &http.Transport{}
+		rt := http.DefaultTransport.(*http.Transport).Clone()
 		if cfg.Insecure {
-			rt.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			// #nosec G402 -- certificate verification is disabled only by the explicit --insecure option.
+			rt.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
 		}
-		rpURL, err := url.Parse(cfg.ReplayProxy)
+		rpURL, err := parseProxyURL(cfg.ReplayProxy)
 		if err != nil {
-			fmt.Fprintf(io.Discard, "Error parsing replay proxy URL: %v", err)
+			c.InitErr = errors.Join(c.InitErr, fmt.Errorf("invalid replay proxy URL: %w", err))
 			return c
 		}
 		rt.Proxy = http.ProxyURL(rpURL)
 		c.Replay = &http.Client{
 			Transport: rt,
+			Timeout:   cfg.Timeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -60,6 +72,17 @@ func NewClient(cfg *config.Config) *Client {
 	}
 
 	return c
+}
+
+func parseProxyURL(raw string) (*url.URL, error) {
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+		return nil, fmt.Errorf("proxy must be an absolute http(s) URL")
+	}
+	return proxyURL, nil
 }
 
 func (c *Client) userAgent() string {
@@ -83,11 +106,14 @@ func (c *Client) applyHeaders(req *http.Request) (accept, contentType string) {
 		}
 		key := strings.TrimSpace(before)
 		value := strings.TrimSpace(after)
-		if key == "Accept" {
+		if strings.EqualFold(key, "Accept") {
 			accept = value
 		}
-		if key == "Content-Type" {
+		if strings.EqualFold(key, "Content-Type") {
 			contentType = value
+		}
+		if key == "" || strings.ContainsAny(key+value, "\r\n") {
+			continue
 		}
 		req.Header.Set(key, value)
 	}
@@ -96,42 +122,48 @@ func (c *Client) applyHeaders(req *http.Request) (accept, contentType string) {
 }
 
 func (c *Client) MakeRequest(method, target string, reqData io.Reader) ([]byte, string, int) {
-	if c.Cfg.Quiet {
-		c.avoidAll = "y"
-	}
+	return c.makeRequest(context.Background(), true, method, target, reqData, c.responseLimit())
+}
 
+func (c *Client) MakeRequestContext(ctx context.Context, method, target string, reqData io.Reader) ([]byte, string, int) {
+	return c.makeRequest(ctx, true, method, target, reqData, c.responseLimit())
+}
+
+func (c *Client) FetchSpec(ctx context.Context, target string) ([]byte, int, error) {
+	body, reason, status := c.makeRequest(ctx, false, http.MethodGet, target, nil, c.specLimit())
+	if status == 0 {
+		if reason == "" {
+			reason = "request failed"
+		}
+		return nil, 0, errors.New(reason)
+	}
+	return body, status, nil
+}
+
+func (c *Client) makeRequest(ctx context.Context, enforceSafety bool, method, target string, reqData io.Reader, bodyLimit int64) ([]byte, string, int) {
+	if c.InitErr != nil {
+		return nil, "configuration_error", 0
+	}
 	u, err := url.Parse(target)
-	if err != nil || u == nil {
+	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 		return nil, "", 0
 	}
 
-	endpoint := u.RawPath + "?" + u.RawQuery
-	if c.Cfg.Mode == config.ModeAutomate && !c.Cfg.Force {
-		for _, v := range DangerousStrings {
-			if strings.Contains(endpoint, v) && !strings.Contains(strings.Join(c.Cfg.SafeWords, ","), v) {
-				if c.Cfg.AcceptRisk {
-					break
-				}
-				if c.avoidAll == "y" {
-					return nil, "", 0
-				}
-				var userChoice string
-				fmt.Fprintf(io.Discard, "Dangerous keyword '%s' detected in URL (%s).", v, target)
-				if !c.Cfg.Quiet {
-					fmt.Fprintf(io.Discard, " Skipping (use --force or --accept-risk).\n")
-				}
-				if strings.ToLower(userChoice) != "y" {
-					if !c.surveyed {
-						c.avoidAll = "y"
-						c.surveyed = true
-					}
-					return nil, "", 0
-				}
-			}
+	endpoint := strings.ToLower(u.EscapedPath() + "?" + u.RawQuery)
+	if enforceSafety && c.Cfg.Mode == config.ModeAutomate && !c.Cfg.Force {
+		if !c.Cfg.AcceptRisk && isUnsafeMethod(method) {
+			return nil, "skipped", 1
+		}
+		safeWords := make(map[string]struct{}, len(c.Cfg.SafeWords))
+		for _, word := range c.Cfg.SafeWords {
+			safeWords[strings.ToLower(strings.TrimSpace(word))] = struct{}{}
+		}
+		if containsDangerousKeyword(endpoint, safeWords) && !c.Cfg.AcceptRisk {
+			return nil, "skipped", 1
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.Cfg.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.Cfg.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, method, target, reqData)
@@ -143,13 +175,13 @@ func (c *Client) MakeRequest(method, target string, reqData io.Reader) ([]byte, 
 	if accept == "" {
 		req.Header.Set("Accept", "application/json, text/html, */*")
 	}
-	if method == "POST" && ct == "" {
+	if (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) && ct == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		if err == context.DeadlineExceeded {
+		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, "", 0
 		}
 		errStr := fmt.Sprint(err)
@@ -164,22 +196,78 @@ func (c *Client) MakeRequest(method, target string, reqData io.Reader) ([]byte, 
 		}
 		return nil, "", 0
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, err := readBoundedBody(resp.Body, bodyLimit)
+	closeErr := resp.Body.Close()
+	if err != nil {
+		if errors.Is(err, errResponseTooLarge) {
+			return nil, "response_too_large", 0
+		}
+		return nil, "read_error", 0
+	}
+	if closeErr != nil {
+		return nil, "read_error", 0
+	}
 	bodyString := string(bodyBytes)
+	return bodyBytes, bodyString, resp.StatusCode
+}
 
-	if (resp.StatusCode == 301 || resp.StatusCode == 302) && strings.Contains(bodyString, "<html>") && c.depth < 10 {
-		c.depth++
-		redirect, _ := resp.Location()
-		if redirect != nil {
-			result, rs, rsc := c.MakeRequest(method, redirect.Scheme+"://"+redirect.Host+redirect.Path, reqData)
-			return result, rs, rsc
+func containsDangerousKeyword(endpoint string, safeWords map[string]struct{}) bool {
+	words := strings.FieldsFunc(endpoint, func(char rune) bool {
+		return !unicode.IsLetter(char) && !unicode.IsDigit(char)
+	})
+	dangerous := make(map[string]struct{}, len(DangerousStrings))
+	for _, word := range DangerousStrings {
+		dangerous[word] = struct{}{}
+	}
+	for _, word := range words {
+		word = strings.ToLower(word)
+		if _, safe := safeWords[word]; safe {
+			continue
+		}
+		if _, risky := dangerous[word]; risky {
+			return true
 		}
 	}
+	return false
+}
 
-	c.depth = 0
-	return bodyBytes, bodyString, resp.StatusCode
+var errResponseTooLarge = errors.New("response body exceeds configured limit")
+
+func readBoundedBody(body io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("invalid response limit %d", limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, errResponseTooLarge
+	}
+	return data, nil
+}
+
+func isUnsafeMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, "QUERY":
+		return false
+	default:
+		return true
+	}
+}
+
+func (c *Client) responseLimit() int64 {
+	if c.Cfg.MaxResponseBytes > 0 {
+		return c.Cfg.MaxResponseBytes
+	}
+	return defaultMaxResponseBodyBytes
+}
+
+func (c *Client) specLimit() int64 {
+	if c.Cfg.MaxSpecBytes > 0 {
+		return c.Cfg.MaxSpecBytes
+	}
+	return defaultMaxResponseBodyBytes
 }
 
 func (c *Client) CheckContentType(target string) string {
@@ -197,8 +285,8 @@ func (c *Client) CheckContentType(target string) string {
 	if err != nil {
 		return ""
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, c.responseLimit()+1))
+	_ = resp.Body.Close()
 	return resp.Header.Get("Content-Type")
 }
 
@@ -221,14 +309,19 @@ func (c *Client) ReplayRequest(method, target string, reqData io.Reader) {
 	if err != nil {
 		return
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-
-	fmt.Fprintf(io.Discard, "[Replay] %s %s -> %d\n", method, target, resp.StatusCode)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, c.responseLimit()+1))
+	_ = resp.Body.Close()
 }
 
 func (c *Client) BruteFetch(target string) ([]byte, string, int) {
-	ctx, cancel := context.WithTimeout(context.Background(), c.Cfg.Timeout)
+	return c.BruteFetchContext(context.Background(), target)
+}
+
+func (c *Client) BruteFetchContext(ctx context.Context, target string) ([]byte, string, int) {
+	if c.InitErr != nil {
+		return nil, "", 0
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.Cfg.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
@@ -243,11 +336,13 @@ func (c *Client) BruteFetch(target string) ([]byte, string, int) {
 	if err != nil {
 		return nil, "", 0
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	bodyBytes, err := readBoundedBody(resp.Body, c.responseLimit())
+	closeErr := resp.Body.Close()
 	if err != nil {
 		return nil, resp.Header.Get("Content-Type"), resp.StatusCode
+	}
+	if closeErr != nil {
+		return nil, resp.Header.Get("Content-Type"), 0
 	}
 
 	return bodyBytes, resp.Header.Get("Content-Type"), resp.StatusCode

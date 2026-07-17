@@ -1,6 +1,7 @@
 package brute
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,9 @@ func WriteJSONL(reports []Report, w io.Writer) error {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(w, string(data))
+			if _, err := fmt.Fprintln(w, string(data)); err != nil {
+				return fmt.Errorf("writing JSONL: %w", err)
+			}
 		}
 	}
 	return nil
@@ -60,49 +63,68 @@ func WriteCSV(reports []Report, w io.Writer) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	cw.Write([]string{"target", "url", "content_type", "openapi_version", "title", "description"})
+	if err := cw.Write([]string{"target", "url", "content_type", "openapi_version", "title", "description"}); err != nil {
+		return fmt.Errorf("writing CSV header: %w", err)
+	}
 	for _, r := range reports {
 		for _, spec := range r.SpecsFound {
-			cw.Write([]string{
-				r.Target,
-				spec.URL,
-				spec.ContentType,
-				spec.OpenAPIVersion,
-				spec.Title,
-				spec.Description,
-			})
+			if err := cw.Write([]string{
+				safeCSVField(r.Target),
+				safeCSVField(spec.URL),
+				safeCSVField(spec.ContentType),
+				safeCSVField(spec.OpenAPIVersion),
+				safeCSVField(spec.Title),
+				safeCSVField(spec.Description),
+			}); err != nil {
+				return fmt.Errorf("writing CSV result: %w", err)
+			}
 		}
 	}
 	return cw.Error()
 }
 
+func safeCSVField(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if trimmed == "" {
+		return value
+	}
+	switch trimmed[0] {
+	case '=', '+', '-', '@':
+		return "'" + value
+	default:
+		return value
+	}
+}
+
 func WriteTXT(reports []Report, w io.Writer) error {
 	for _, r := range reports {
 		if len(reports) > 1 {
-			fmt.Fprintf(w, "# Target: %s\n", r.Target)
+			if _, err := fmt.Fprintf(w, "# Target: %s\n", r.Target); err != nil {
+				return fmt.Errorf("writing target header: %w", err)
+			}
 		}
 		for _, spec := range r.SpecsFound {
-			fmt.Fprintln(w, spec.URL)
+			if _, err := fmt.Fprintln(w, spec.URL); err != nil {
+				return fmt.Errorf("writing specification URL: %w", err)
+			}
 		}
 	}
 	return nil
 }
 
-func writeToFile(path string, writeFn func(io.Writer) error) {
-	f, err := os.Create(path)
-	if err != nil {
-		output.PrintErr("Error writing %s: %v", path, err)
-		return
+func writeToFile(path string, writeFn func(io.Writer) error) error {
+	var buffer bytes.Buffer
+	if err := writeFn(&buffer); err != nil {
+		return fmt.Errorf("render %s: %w", path, err)
 	}
-	defer f.Close()
-	if err := writeFn(f); err != nil {
-		output.PrintErr("Error writing %s: %v", path, err)
-		return
+	if err := writeBytesAtomically(path, buffer.Bytes()); err != nil {
+		return err
 	}
 	output.PrintInfo("Wrote %s\n", path)
+	return nil
 }
 
-func OutputBruteFormat(reports []Report, format, outfile string) {
+func OutputBruteFormat(reports []Report, format, outfile string) error {
 	format = strings.ToLower(format)
 
 	var writeFn func([]Report, io.Writer) error
@@ -116,22 +138,22 @@ func OutputBruteFormat(reports []Report, format, outfile string) {
 	case "txt":
 		writeFn = WriteTXT
 	default:
-		output.PrintErr("Unsupported brute output format: %s", format)
-		return
+		return fmt.Errorf("unsupported brute output format %q", format)
 	}
 
 	if outfile != "" {
-		writeToFile(outfile, func(w io.Writer) error { return writeFn(reports, w) })
+		return writeToFile(outfile, func(w io.Writer) error { return writeFn(reports, w) })
 	} else {
 		if err := writeFn(reports, os.Stdout); err != nil {
-			output.PrintErr("Error writing output: %v", err)
+			return fmt.Errorf("write output: %w", err)
 		}
 	}
+	return nil
 }
 
-func OutputAllFormats(reports []Report, outfile string) {
+func OutputAllFormats(reports []Report, outfile string) error {
 	if outfile == "" {
-		output.Die("--output-all-formats requires -o to set a base output path.")
+		return fmt.Errorf("--output-all-formats requires --outfile")
 	}
 	base := strings.TrimSuffix(outfile, filepath.Ext(outfile))
 
@@ -148,13 +170,18 @@ func OutputAllFormats(reports []Report, outfile string) {
 		case ".txt":
 			writeFn = WriteTXT
 		}
-		writeToFile(path, func(w io.Writer) error { return writeFn(reports, w) })
+		if err := writeToFile(path, func(w io.Writer) error { return writeFn(reports, w) }); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // OutputBruteJSON is kept for backward compatibility; prefer OutputBruteFormat.
 func OutputBruteJSON(reports []Report, outfile string) {
-	OutputBruteFormat(reports, "json", outfile)
+	if err := OutputBruteFormat(reports, "json", outfile); err != nil {
+		output.PrintErr("Unable to write output: %v", err)
+	}
 }
 
 func PrintBatchSummary(reports []Report) {

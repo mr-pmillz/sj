@@ -3,7 +3,6 @@ package scanner
 import (
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 
 	"github.com/mr-pmillz/sj/pkg/config"
@@ -12,103 +11,209 @@ import (
 	"github.com/mr-pmillz/sj/pkg/output"
 )
 
-func GenerateRequests(bodyBytes []byte, client *httpclient.Client, cfg *config.Config, w *output.Writer, resolver *openapi.Resolver) {
-	if openapi.LooksLikeJSSpec(bodyBytes, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
-		if extracted, ok := openapi.ExtractJSONFromJSSpec(bodyBytes); ok {
-			bodyBytes = extracted
+func GenerateRequests(body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) {
+	if err := GenerateRequestsE(body, client, cfg, writer, resolver); err != nil {
+		output.PrintErr("%v", err)
+	}
+}
+
+func GenerateRequestsE(body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	if openapi.LooksLikeJSSpec(body, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
+		if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
+			body = extracted
 		}
 	}
-
-	spec := openapi.MustUnmarshalSpec(bodyBytes)
-
-	openapi.CheckSecuritySchemes(spec, cfg, os.Stdin)
-
-	u, parseErr := url.Parse(cfg.SwaggerURL)
-	if parseErr != nil {
-		u = &url.URL{}
+	spec, err := openapi.SafelyUnmarshalSpec(body)
+	if err != nil {
+		return err
 	}
-
-	if v, ok := spec["swagger"].(string); ok && strings.HasPrefix(v, "2") {
-		host, _ := spec["host"].(string)
-		bp, _ := spec["basePath"].(string)
-		if bp != "" {
-			cfg.BasePath = openapi.NormalizeBasePath(bp)
-		}
-
-		if cfg.APITarget == "" {
-			if host != "" && strings.Contains(host, "://") {
-				cfg.APITarget = host
-			} else if host != "" {
-				scheme := u.Scheme
-				if scheme == "" {
-					if schemes, ok := spec["schemes"].([]any); ok && len(schemes) > 0 {
-						if s, ok := schemes[0].(string); ok {
-							scheme = s
-						}
-					}
-				}
-				if scheme == "" {
-					scheme = "https"
-				}
-				cfg.APITarget = scheme + "://" + host
-			}
-		}
-	} else if v, ok := spec["openapi"].(string); ok && strings.HasPrefix(v, "3") {
-		if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 {
-			if len(servers) > 1 {
-				if !cfg.Quiet && cfg.Mode != config.ModeEndpoints && cfg.APITarget == "" {
-					output.PrintWarn("Multiple servers detected in documentation. You can manually set a server to test with the -T flag.\nThe detected servers are as follows:")
-					for i := range servers {
-						if srv, ok := servers[i].(map[string]any); ok {
-							if serverURL, ok := srv["url"].(string); ok {
-								if strings.Contains(serverURL, "://") {
-									fmt.Println(serverURL)
-								} else {
-									fmt.Println(cfg.APITarget + serverURL)
-								}
-							}
-						}
-					}
-				}
-			} else {
-				if srv, ok := servers[0].(map[string]any); ok {
-					if serverURL, ok := srv["url"].(string); ok {
-						if strings.Contains(serverURL, "://") {
-							if parsedServerURL, err := url.Parse(serverURL); err == nil {
-								cfg.BasePath = openapi.NormalizeBasePath(parsedServerURL.Path)
-								if cfg.APITarget == "" {
-									cfg.APITarget = parsedServerURL.Scheme + "://" + parsedServerURL.Host
-								}
-							}
-						} else if serverURL == "/" {
-							cfg.BasePath = ""
-						} else {
-							cfg.BasePath = openapi.NormalizeBasePath(serverURL)
-							if cfg.APITarget == "" {
-								if u.Scheme != "" && u.Host != "" {
-									cfg.APITarget = u.Scheme + "://" + u.Host
-								} else if cfg.Mode != config.ModeEndpoints {
-									output.Die("Spec has relative server URL '%s' but no base URL available. Use -T to specify target server.", serverURL)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+	if err := openapi.ValidateReferencePolicy(spec, resolver); err != nil {
+		return err
 	}
-
-	if cfg.APITarget == "" {
-		if u.Scheme != "" && u.Host != "" {
-			cfg.APITarget = u.Scheme + "://" + u.Host
-		} else if cfg.Mode != config.ModeEndpoints {
-			output.Die("No server information found in spec and no URL provided. Use -T to specify target server.")
-		}
+	if err := ConfigureTarget(spec, cfg); err != nil {
+		return err
 	}
-
+	if cfg.Mode == config.ModeAutomate || cfg.Mode == config.ModePrepare {
+		openapi.CheckSecuritySchemes(spec, cfg)
+	}
 	if cfg.Mode != config.ModeEndpoints {
-		openapi.PrintSpecInfo(spec, w, cfg)
+		openapi.PrintSpecInfo(spec, writer, cfg)
 	}
+	return BuildRequestsFromPathsE(spec, client, cfg, writer, resolver)
+}
 
-	BuildRequestsFromPaths(spec, client, cfg, w, resolver)
+func ConfigureTarget(spec map[string]any, cfg *config.Config) error {
+	version, swagger2 := spec["swagger"].(string)
+	if swagger2 && strings.HasPrefix(version, "2") {
+		return configureSwagger2Target(spec, cfg)
+	}
+	version, openAPI3 := spec["openapi"].(string)
+	if !openAPI3 || !strings.HasPrefix(version, "3") {
+		return errorsUnsupportedVersion(version)
+	}
+	return configureOpenAPI3Target(spec, cfg)
+}
+
+func configureSwagger2Target(spec map[string]any, cfg *config.Config) error {
+	if !cfg.BasePathExplicit {
+		if basePath, ok := spec["basePath"].(string); ok {
+			cfg.BasePath = openapi.NormalizeBasePath(basePath)
+		}
+	}
+	if cfg.TargetExplicit {
+		return normalizeConfiguredTarget(cfg)
+	}
+	host, _ := spec["host"].(string)
+	if host == "" {
+		return targetFromSource(cfg)
+	}
+	scheme := ""
+	if schemes, ok := spec["schemes"].([]any); ok && len(schemes) > 0 {
+		scheme, _ = schemes[0].(string)
+	}
+	if scheme == "" {
+		if source, err := url.Parse(cfg.SwaggerURL); err == nil {
+			scheme = source.Scheme
+		}
+	}
+	if scheme == "" {
+		scheme = "https"
+	}
+	return setTargetURL(cfg, scheme+"://"+host, false)
+}
+
+func configureOpenAPI3Target(spec map[string]any, cfg *config.Config) error {
+	if cfg.TargetExplicit {
+		return normalizeConfiguredTarget(cfg)
+	}
+	servers, _ := spec["servers"].([]any)
+	if len(servers) == 0 {
+		return targetFromSource(cfg)
+	}
+	server, ok := servers[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("first server entry is not an object")
+	}
+	serverURL, err := expandServerURL(server)
+	if err != nil {
+		return fmt.Errorf("resolve server URL: %w", err)
+	}
+	resolved, err := resolveServerURL(serverURL, cfg.SwaggerURL, cfg.APITarget)
+	if err != nil {
+		return err
+	}
+	return setTargetURL(cfg, resolved.String(), true)
+}
+
+func expandServerURL(server map[string]any) (string, error) {
+	raw, _ := server["url"].(string)
+	if raw == "" {
+		return "", fmt.Errorf("server URL is empty")
+	}
+	variables, _ := server["variables"].(map[string]any)
+	for strings.Contains(raw, "{") {
+		start := strings.Index(raw, "{")
+		endOffset := strings.Index(raw[start:], "}")
+		if endOffset < 0 {
+			return "", fmt.Errorf("unclosed server variable in %q", raw)
+		}
+		end := start + endOffset
+		name := raw[start+1 : end]
+		definition, _ := variables[name].(map[string]any)
+		defaultValue, ok := definition["default"].(string)
+		if !ok {
+			return "", fmt.Errorf("server variable %q has no string default", name)
+		}
+		if enum, exists := definition["enum"].([]any); exists && len(enum) > 0 {
+			allowed := false
+			for _, candidate := range enum {
+				if candidate == defaultValue {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return "", fmt.Errorf("server variable %q default is not listed in its enum", name)
+			}
+		}
+		raw = raw[:start] + defaultValue + raw[end+1:]
+	}
+	return raw, nil
+}
+
+func resolveServerURL(raw, sourceURL, configuredTarget string) (*url.URL, error) {
+	serverURL, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse server URL %q: %w", raw, err)
+	}
+	if !serverURL.IsAbs() {
+		baseRaw := sourceURL
+		if baseRaw == "" {
+			baseRaw = configuredTarget
+		}
+		base, baseErr := url.Parse(baseRaw)
+		if baseErr != nil || base.Scheme == "" || base.Host == "" {
+			return nil, fmt.Errorf("relative server URL %q requires a remote specification URL or --target", raw)
+		}
+		serverURL = base.ResolveReference(serverURL)
+	}
+	if serverURL.RawQuery != "" || serverURL.Fragment != "" {
+		return nil, fmt.Errorf("server URL must not contain a query or fragment")
+	}
+	if serverURL.Scheme != "http" && serverURL.Scheme != "https" {
+		return nil, fmt.Errorf("unsupported server URL scheme %q", serverURL.Scheme)
+	}
+	if serverURL.Host == "" || serverURL.User != nil {
+		return nil, fmt.Errorf("server URL must have a host and no user information")
+	}
+	return serverURL, nil
+}
+
+func setTargetURL(cfg *config.Config, raw string, takeBasePath bool) error {
+	target, err := resolveServerURL(raw, cfg.SwaggerURL, "")
+	if err != nil {
+		return err
+	}
+	if takeBasePath && !cfg.BasePathExplicit {
+		cfg.BasePath = openapi.NormalizeBasePath(target.EscapedPath())
+	}
+	target.Path = ""
+	target.RawPath = ""
+	target.RawQuery = ""
+	target.Fragment = ""
+	cfg.APITarget = target.String()
+	return nil
+}
+
+func normalizeConfiguredTarget(cfg *config.Config) error {
+	target, err := resolveServerURL(cfg.APITarget, cfg.SwaggerURL, "")
+	if err != nil {
+		return fmt.Errorf("invalid --target: %w", err)
+	}
+	if !cfg.BasePathExplicit && target.Path != "" && target.Path != "/" {
+		cfg.BasePath = openapi.NormalizeBasePath(target.EscapedPath())
+	}
+	target.Path = ""
+	target.RawPath = ""
+	target.RawQuery = ""
+	target.Fragment = ""
+	cfg.APITarget = target.String()
+	return nil
+}
+
+func targetFromSource(cfg *config.Config) error {
+	if cfg.SwaggerURL == "" {
+		if cfg.Mode == config.ModeEndpoints {
+			return nil
+		}
+		return fmt.Errorf("no server is defined; use --target for a local specification")
+	}
+	return setTargetURL(cfg, cfg.SwaggerURL, false)
+}
+
+func errorsUnsupportedVersion(version string) error {
+	if version == "" {
+		return fmt.Errorf("document does not declare a supported Swagger or OpenAPI version")
+	}
+	return fmt.Errorf("unsupported OpenAPI version %q; supported major versions are Swagger 2 and OpenAPI 3", version)
 }

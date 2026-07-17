@@ -1,6 +1,9 @@
 package httpclient
 
-import "math/rand"
+import (
+	"crypto/rand"
+	"math/big"
+)
 
 var userAgents = []string{
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36",
@@ -30,5 +33,9 @@ var userAgents = []string{
 }
 
 func RandomUserAgent() string {
-	return userAgents[rand.Intn(len(userAgents))]
+	index, err := rand.Int(rand.Reader, big.NewInt(int64(len(userAgents))))
+	if err != nil {
+		return userAgents[0]
+	}
+	return userAgents[index.Int64()]
 }

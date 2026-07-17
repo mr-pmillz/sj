@@ -1,11 +1,12 @@
 package cli
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	sj "github.com/mr-pmillz/sj"
 	"github.com/mr-pmillz/sj/pkg/config"
-	"github.com/mr-pmillz/sj/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -34,24 +35,28 @@ Perform a brute-force attack against the target to identify hidden definition fi
 $ sj brute -u https://petstore.swagger.io
 
 Convert a Swagger (v2) definition file to an OpenAPI (v3) definition file:
-$ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json`,
+$ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 
-	Run: func(cmd *cobra.Command, args []string) {
-		if len(args) < 1 {
-			output.PrintErr("Command not specified. See the --help flag for usage.")
-		}
+Passively audit an API contract and fail CI on high-severity findings:
+$ sj audit -l openapi.yaml -f yaml --fail-on high`,
+
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("command not specified; see --help for usage")
 	},
-	Version: sj.Version(),
+	Version:       sj.Version(),
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
-func Execute() {
-	cobra.CheckErr(rootCmd.Execute())
+func Execute() error {
+	return rootCmd.Execute()
 }
 
 var timeoutSeconds int64
 
 func init() {
 	rootCmd.AddCommand(automateCmd)
+	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(endpointsCmd)
 	rootCmd.AddCommand(prepareCmd)
 	rootCmd.AddCommand(bruteCmd)
@@ -62,27 +67,42 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfg.CustomURL, "custom-url", "c", "https://example.com", "Set a custom URL to test discovered URL parameters.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.CustomDate, "custom-date", "d", "1990-01-01", "A custom date to test discovered date parameters.")
 	rootCmd.PersistentFlags().StringVar(&cfg.CustomEmail, "custom-email", "noreply@localhost.localdomain", "A custom email address to test discovered email parameters.")
-	rootCmd.PersistentFlags().BoolVar(&cfg.Force, "force", false, "Send requests without prompting, even if dangerous keywords are detected.")
+	rootCmd.PersistentFlags().BoolVar(&cfg.Force, "force", false, "Bypass unsafe-method and dangerous-keyword safety checks.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.Format, "format", "f", "json", "Declare the format of the definition file (json/yaml/yml/js).")
 	rootCmd.PersistentFlags().StringArrayVarP(&cfg.Headers, "headers", "H", nil, "Add custom headers, separated by a colon (\"Name: Value\"). Multiple flags are accepted.")
 	rootCmd.PersistentFlags().BoolVarP(&cfg.Insecure, "insecure", "i", false, "Ignores server certificate validation.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.LocalFile, "local-file", "l", "", "Loads the documentation from a local file.")
-	rootCmd.PersistentFlags().StringVarP(&cfg.Outfile, "outfile", "o", "", "Output the results to a file. Only supported for the 'automate' and 'brute' commands at this time.")
+	rootCmd.PersistentFlags().StringVarP(&cfg.Outfile, "outfile", "o", "", "Write command output to a file when the selected format supports it.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.Proxy, "proxy", "p", "NOPROXY", "Proxy host and port. Example: http://127.0.0.1:8080")
 	rootCmd.PersistentFlags().StringVar(&cfg.ReplayProxy, "replay-proxy", "", "Replay matched requests using this proxy.")
-	rootCmd.PersistentFlags().BoolVarP(&cfg.Quiet, "quiet", "q", false, "Do not prompt for user input - uses default values for all requests.")
+	rootCmd.PersistentFlags().BoolVarP(&cfg.Quiet, "quiet", "q", false, "Use non-interactive defaults (credentials are never prompted for).")
 	rootCmd.PersistentFlags().StringArrayVarP(&cfg.SafeWords, "safe-word", "s", nil, "Avoids 'dangerous word' check for the specified word(s). Multiple flags are accepted.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.APITarget, "target", "T", "", "Manually set a target for the requests to be made if separate from the host the documentation resides on.")
 	rootCmd.PersistentFlags().Int64VarP(&timeoutSeconds, "timeout", "t", 30, "Set the request timeout period.")
+	rootCmd.PersistentFlags().Int64Var(&cfg.MaxResponseBytes, "max-response-bytes", 10*1024*1024, "Maximum response body size to read per request.")
+	rootCmd.PersistentFlags().Int64Var(&cfg.MaxSpecBytes, "max-spec-bytes", 10*1024*1024, "Maximum specification file size to load.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.SwaggerURL, "url", "u", "", "Loads the documentation file from a URL")
 
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	cobra.OnInitialize(func() {
-		cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
+		if timeoutSeconds <= 0 || timeoutSeconds > math.MaxInt64/int64(time.Second) {
+			cfg.Timeout = 0
+		} else {
+			cfg.Timeout = time.Duration(timeoutSeconds) * time.Second
+		}
 		if rootCmd.PersistentFlags().Changed("agent") {
 			cfg.AgentExplicit = true
 			cfg.RandomUserAgent = false
 		}
+		cfg.TargetExplicit = rootCmd.PersistentFlags().Changed("target")
+		cfg.BasePathExplicit = rootCmd.PersistentFlags().Changed("base-path")
 	})
+
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		return nil
+	}
 }

@@ -1,9 +1,13 @@
-FROM ghcr.io/mr-pmillz/alpine-bash-tini:latest
+FROM alpine:3.24.1
 
 ARG TARGETPLATFORM
 
-COPY entrypoint.sh /entrypoint.sh
-COPY $TARGETPLATFORM/sj /usr/local/bin/sj
-RUN chmod +x /entrypoint.sh /usr/local/bin/sj
+RUN apk add --no-cache ca-certificates tini \
+    && addgroup -S -g 10001 sj \
+    && adduser -S -D -H -u 10001 -G sj sj
 
-ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
+COPY $TARGETPLATFORM/sj /usr/local/bin/sj
+RUN chmod 0755 /usr/local/bin/sj
+
+USER 10001:10001
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/sj"]

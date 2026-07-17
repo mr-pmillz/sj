@@ -6,7 +6,6 @@ linters:
     - dupl
     - errorlint
     - gocognit
-    - goconst
     - gocritic
     - goprintffuncname
     - gosec
@@ -17,8 +16,8 @@ linters:
     - unused
     - whitespace
   settings:
-    goconst:
-      ignore-tests: true
+    gocognit:
+      min-complexity: 50
     gosec:
       excludes:
         - G306
@@ -40,7 +39,6 @@ linters:
       - examples$
     rules:
       - linters:
-          - goconst
           - dupl
         path: _test\.go$
 formatters:

@@ -1,119 +1,60 @@
 package openapi
 
 import (
-	"encoding/base64"
-	"fmt"
-	"io"
+	"sort"
 	"strings"
 
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/output"
 )
 
-func CheckSecuritySchemes(spec map[string]any, cfg *config.Config, in io.Reader) {
-	components, ok := spec["components"].(map[string]any)
-	if !ok || components == nil {
+func CheckSecuritySchemes(spec map[string]any, cfg *config.Config) {
+	schemes := securitySchemes(spec)
+	if len(schemes) == 0 {
+		output.PrintWarn("No security schemes are defined in the specification.")
 		return
 	}
-	securitySchemes, ok := components["securitySchemes"].(map[string]any)
-	if !ok || len(securitySchemes) == 0 {
-		fmt.Println("No security schemes defined.")
-		return
+	names := make([]string, 0, len(schemes))
+	for name := range schemes {
+		names = append(names, name)
 	}
-
-	if cfg.OutputFormat != "json" {
-		fmt.Println("Found security schemes:")
+	sort.Strings(names)
+	safeNames := make([]string, 0, len(names))
+	for _, name := range names {
+		safeNames = append(safeNames, output.TerminalSafe(name))
 	}
-
-	for mechanism, value := range securitySchemes {
-		fmt.Printf("  - %s\n", mechanism)
-		scheme, ok := value.(map[string]any)
+	output.PrintInfo("Security schemes declared: %s\n", strings.Join(safeNames, ", "))
+	for _, name := range names {
+		scheme, ok := schemes[name].(map[string]any)
 		if !ok {
 			continue
 		}
-
-		typ, ok := scheme["type"].(string)
-		if !ok {
-			continue
-		}
-
-		switch typ {
+		typeName, _ := scheme["type"].(string)
+		switch typeName {
+		case "basic":
+			output.PrintWarn("%s uses HTTP Basic authentication; supply credentials explicitly with --headers if authorized.", output.TerminalSafe(name))
 		case "http":
-			schemeType, _ := scheme["scheme"].(string)
-			switch schemeType {
-			case "basic":
-				if cfg.Quiet {
-					output.PrintWarn("A basic authentication header is accepted. Review the spec and craft a header manually using the -H flag.")
-				} else {
-					fmt.Println("Basic Authentication is accepted. Supply a username and password? (y/N)")
-					var answer string
-					fmt.Fscanln(in, &answer)
-					if strings.ToLower(answer) == "y" {
-						var user, pass string
-						fmt.Printf("Enter a username.")
-						fmt.Fscanln(in, &user)
-						fmt.Printf("Enter a password.")
-						fmt.Fscanln(in, &pass)
-						encoded := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
-						output.PrintInfo("Using %s as the Basic Auth value.\n", encoded)
-						cfg.Headers = append(cfg.Headers, "Authorization: Basic "+encoded)
-					} else {
-						output.PrintWarn("A basic authentication header is accepted. Review the spec and craft a header manually using the -H flag.")
-					}
-				}
-			case "bearer":
-				output.PrintWarn("A bearer token is accepted. Review the spec and craft a token manually using the -H flag.")
-			}
-
+			httpScheme, _ := scheme["scheme"].(string)
+			output.PrintInfo("Security scheme %s uses HTTP %s authentication; credentials are never prompted for or logged.\n", output.TerminalSafe(name), output.TerminalSafe(httpScheme))
 		case "apiKey":
-			inVal, _ := scheme["in"].(string)
-			nameVal, _ := scheme["name"].(string)
-			switch inVal {
-			case "query":
-				output.PrintInfo("An API key can be provided via a parameter string. Would you like to apply one? (y/N)\n")
-				if !cfg.Quiet {
-					var answer string
-					fmt.Fscanln(in, &answer)
-					if strings.ToLower(answer) == "y" {
-						var apiKey string
-						fmt.Printf("What value would you like to use for the API key (%s)?", nameVal)
-						fmt.Fscanln(in, &apiKey)
-						output.PrintInfo("Using %s=%s as the API key in all requests.\n", nameVal, apiKey)
-					}
-				}
-			case "header":
-				if mechanism == "bearer" {
-					output.PrintInfo("A bearer token is accepted. Would you like to provide one? (y/N)\n")
-					if !cfg.Quiet {
-						var answer string
-						fmt.Fscanln(in, &answer)
-						if strings.ToLower(answer) == "y" {
-							var token string
-							fmt.Printf("What value would you like to use for the Bearer Token? ")
-							fmt.Fscanln(in, &token)
-							cfg.Headers = append(cfg.Headers, "Authorization: Bearer "+token)
-						} else {
-							output.PrintWarn("A bearer token is accepted. Review the spec and craft a header manually using the -H flag.")
-						}
-					}
-				} else if nameVal != "" {
-					output.PrintInfo("An API key can be provided via the header %s. Would you like to apply one? (y/N)\n", nameVal)
-					if !cfg.Quiet {
-						var answer string
-						fmt.Fscanln(in, &answer)
-						if strings.ToLower(answer) == "y" {
-							var apiKey string
-							fmt.Printf("What value would you like to use for the API key (%s)?", nameVal)
-							fmt.Fscanln(in, &apiKey)
-							cfg.Headers = append(cfg.Headers, nameVal+": "+apiKey)
-						}
-					}
-				}
-			}
-		}
-
-		if bearerFormat, ok := scheme["bearerFormat"].(string); ok {
-			fmt.Println("  - bearerFormat:", bearerFormat)
+			location, _ := scheme["in"].(string)
+			parameter, _ := scheme["name"].(string)
+			output.PrintInfo("Security scheme %s expects API key %s in %s; provide it explicitly if authorized.\n", output.TerminalSafe(name), output.TerminalSafe(parameter), output.TerminalSafe(location))
+		case "oauth2", "openIdConnect", "mutualTLS":
+			output.PrintInfo("Security scheme %s uses %s; configure authorized credentials externally.\n", output.TerminalSafe(name), output.TerminalSafe(typeName))
+		default:
+			output.PrintInfo("Security scheme %s has type %q.\n", output.TerminalSafe(name), output.TerminalSafe(typeName))
 		}
 	}
+	_ = cfg // retained for API symmetry and future output policy.
+}
+
+func securitySchemes(spec map[string]any) map[string]any {
+	if components, ok := spec["components"].(map[string]any); ok {
+		if schemes, ok := components["securitySchemes"].(map[string]any); ok {
+			return schemes
+		}
+	}
+	schemes, _ := spec["securityDefinitions"].(map[string]any)
+	return schemes
 }

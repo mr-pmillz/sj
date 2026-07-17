@@ -9,7 +9,7 @@ import (
 // htmlSpecURLPatterns matches common patterns in HTML pages that reference
 // OpenAPI/Swagger specification URLs.
 var htmlSpecURLPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)url\s*:\s*["']((?:/|https?://)[^"']*(?:\.json|\.yaml|\.yml|/api-docs|/swagger|/openapi|/v[0-9]+/api)[^"']*)["']`),
+	regexp.MustCompile(`(?i)\burl\s*:\s*["']([^"']+)["']`),
 	regexp.MustCompile(`(?i)spec-url\s*=\s*["']([^"']+)["']`),
 	regexp.MustCompile(`(?i)configUrl\s*:\s*["']([^"']+)["']`),
 }
@@ -17,6 +17,10 @@ var htmlSpecURLPatterns = []*regexp.Regexp{
 // ExtractSpecURLsFromHTML scans an HTML body for embedded references to
 // specification files and returns absolute URLs.
 func ExtractSpecURLsFromHTML(body []byte, baseURL string) []string {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") {
+		return nil
+	}
 	var urls []string
 	seen := map[string]bool{}
 
@@ -25,20 +29,19 @@ func ExtractSpecURLsFromHTML(body []byte, baseURL string) []string {
 			if len(m) < 2 {
 				continue
 			}
-			specURL := m[1]
-
-			if strings.HasPrefix(specURL, "//") {
-				if u, err := url.Parse(baseURL); err == nil {
-					specURL = u.Scheme + ":" + specURL
-				}
-			} else if strings.HasPrefix(specURL, "/") {
-				if u, err := url.Parse(baseURL); err == nil {
-					specURL = u.Scheme + "://" + u.Host + specURL
-				}
-			} else if !strings.HasPrefix(specURL, "http") {
-				specURL = strings.TrimRight(baseURL, "/") + "/" + specURL
+			reference, parseErr := url.Parse(strings.TrimSpace(m[1]))
+			if parseErr != nil {
+				continue
 			}
-
+			resolved := base.ResolveReference(reference)
+			if resolved.Scheme != "http" && resolved.Scheme != "https" {
+				continue
+			}
+			if !sameOrigin(base, resolved) || resolved.User != nil {
+				continue
+			}
+			resolved.Fragment = ""
+			specURL := resolved.String()
 			if !seen[specURL] {
 				seen[specURL] = true
 				urls = append(urls, specURL)
@@ -46,4 +49,8 @@ func ExtractSpecURLsFromHTML(body []byte, baseURL string) []string {
 		}
 	}
 	return urls
+}
+
+func sameOrigin(first, second *url.URL) bool {
+	return strings.EqualFold(first.Scheme, second.Scheme) && strings.EqualFold(first.Host, second.Host)
 }

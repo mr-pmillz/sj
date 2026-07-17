@@ -16,6 +16,8 @@ These flags are available on every `sj` command. They are defined as persistent 
 | `--proxy` | `-p` | `NOPROXY` | Proxy host and port (e.g., `http://127.0.0.1:8080`). |
 | `--replay-proxy` | | | Replay matched requests through this proxy. |
 | `--timeout` | `-t` | `30` | Request timeout in seconds. |
+| `--max-response-bytes` | | `10485760` | Maximum response body size read per request. |
+| `--max-spec-bytes` | | `10485760` | Maximum remote or local specification size. |
 | `--insecure` | `-i` | `false` | Skip TLS certificate validation. |
 
 ## Request Customization
@@ -33,14 +35,14 @@ These flags are available on every `sj` command. They are defined as persistent 
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--outfile` | `-o` | | Write results to a file. Supported by `automate` and `brute`. |
-| `--quiet` | `-q` | `false` | Do not prompt for user input; use default values for all requests. |
+| `--outfile` | `-o` | | Write results to a file. Supported by `audit`, `automate`, `brute`, and `convert`. |
+| `--quiet` | `-q` | `false` | Use non-interactive defaults; credentials are never prompted for. |
 
 ## Safety
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--force` | | `false` | Send requests without prompting, even if dangerous keywords are detected. |
+| `--force` | | `false` | Bypass unsafe-method and dangerous-keyword safety checks. |
 | `--safe-word` | `-s` | | Exclude specific words from the dangerous-word check. Multiple flags accepted. |
 
 ## Examples

@@ -193,6 +193,21 @@ func TestWriteCSV_MultiTarget(t *testing.T) {
 	}
 }
 
+func TestWriteCSVEscapesSpreadsheetFormulas(t *testing.T) {
+	reports := []Report{{Target: "https://example.com", SpecsFound: []SpecResult{{URL: "https://example.com/spec", Title: "  =HYPERLINK(\"https://evil\")"}}}}
+	var buffer bytes.Buffer
+	if err := WriteCSV(reports, &buffer); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(&buffer).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := records[1][4]; !strings.HasPrefix(got, "'  =") {
+		t.Fatalf("title = %q, want formula neutralization", got)
+	}
+}
+
 func TestWriteTXT_SingleTarget(t *testing.T) {
 	var buf bytes.Buffer
 	reports := sampleReports()

@@ -3,7 +3,10 @@ package scanner
 import (
 	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
+	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/mr-pmillz/sj/pkg/config"
@@ -11,144 +14,148 @@ import (
 	"github.com/mr-pmillz/sj/pkg/output"
 )
 
-func RetryWithHints(client *httpclient.Client, cfg *config.Config, method, targetURL, postBodyData, prevResp string, prevSC int) (string, int) {
-	const maxRetries = 3
-	resp := prevResp
-	sc := prevSC
+const maxHintRetries = 3
 
-	for attempt := 0; attempt < maxRetries && sc == 401; attempt++ {
-		hints := extractMissingParams(resp)
+var parameterNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`)
+
+func RetryWithHints(client *httpclient.Client, cfg *config.Config, method, targetURL, requestBody, previousResponse string, previousStatus int) (string, int) {
+	if !retryableHintMethod(method) {
+		return previousResponse, previousStatus
+	}
+	response, status := previousResponse, previousStatus
+	for attempt := 0; attempt < maxHintRetries && status == http.StatusUnauthorized; attempt++ {
+		hints := extractMissingParams(response)
 		if len(hints) == 0 {
 			break
 		}
-
-		output.PrintInfo("[retry %d] 401 response mentions missing params %v — retrying with placeholders\n", attempt+1, hints)
-
-		if strings.ToUpper(method) == "GET" {
-			sep := "&"
-			if !strings.Contains(targetURL, "?") {
-				sep = "?"
-			}
-			for _, param := range hints {
-				targetURL += sep + param + "=" + cfg.TestString
-				sep = "&"
-			}
-		} else {
-			var bodyObj map[string]any
-			if err := json.Unmarshal([]byte(postBodyData), &bodyObj); err == nil {
-				for _, param := range hints {
-					if _, exists := bodyObj[param]; !exists {
-						bodyObj[param] = cfg.TestString
-					}
-				}
-				updated, err := json.Marshal(bodyObj)
-				if err == nil {
-					postBodyData = string(updated)
-				}
-			} else {
-				for _, param := range hints {
-					if postBodyData != "" {
-						postBodyData += "&"
-					}
-					postBodyData += param + "=" + cfg.TestString
-				}
-			}
-		}
-
-		_, newResp, newSC := client.MakeRequest(method, targetURL, io.NopCloser(bytes.NewReader([]byte(postBodyData))))
-		if newResp == resp {
+		updatedURL, err := addHintQueryParameters(targetURL, hints, cfg.TestString)
+		if err != nil {
 			break
 		}
-		resp = newResp
-		sc = newSC
+		output.PrintInfo("[retry %d] authentication response identified missing parameters %v\n", attempt+1, hints)
+		_, nextResponse, nextStatus := client.MakeRequest(method, updatedURL, bytes.NewReader([]byte(requestBody)))
+		if nextResponse == response && nextStatus == status {
+			break
+		}
+		targetURL, response, status = updatedURL, nextResponse, nextStatus
 	}
+	return response, status
+}
 
-	return resp, sc
+func retryableHintMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, "QUERY":
+		return true
+	default:
+		return false
+	}
+}
+
+func addHintQueryParameters(target string, hints []string, value string) (string, error) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "", err
+	}
+	if parsed.RawQuery != "" && !strings.Contains(parsed.RawQuery, "=") {
+		return "", errors.New("cannot add hinted parameters to a whole-query serialization")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", err
+	}
+	for _, hint := range hints {
+		if !query.Has(hint) {
+			query.Set(hint, value)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func extractMissingParams(body string) []string {
-	var params []string
-	seen := map[string]bool{}
-
-	var errObj map[string]any
-	if err := json.Unmarshal([]byte(body), &errObj); err != nil {
+	var payload any
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		return nil
 	}
+	collector := &hintCollector{seen: map[string]bool{}}
+	collector.walk(payload)
+	return collector.names
+}
 
-	msg := ""
-	for _, key := range []string{"message", "error", "detail", "details", "msg"} {
-		if v, ok := errObj[key]; ok {
-			switch val := v.(type) {
-			case string:
-				msg = val
-			case []any:
-				for _, item := range val {
-					if s, ok := item.(string); ok {
-						msg += " " + s
-					} else if m, ok := item.(map[string]any); ok {
-						if s, ok := m["message"].(string); ok {
-							msg += " " + s
-						}
-						if s, ok := m["msg"].(string); ok {
-							msg += " " + s
-						}
-					}
-				}
-			}
+type hintCollector struct {
+	names []string
+	seen  map[string]bool
+}
+
+func (collector *hintCollector) add(candidate string) {
+	candidate = strings.Trim(candidate, " .:;'\"`")
+	switch strings.ToLower(candidate) {
+	case "", "required", "missing", "parameter", "field", "value":
+		return
+	}
+	if len(collector.names) >= 16 || !parameterNamePattern.MatchString(candidate) || collector.seen[candidate] {
+		return
+	}
+	collector.seen[candidate] = true
+	collector.names = append(collector.names, candidate)
+}
+
+func (collector *hintCollector) walk(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		collector.walkMap(typed)
+	case []any:
+		for _, item := range typed {
+			collector.walk(item)
 		}
 	}
+}
 
-	if msg == "" {
-		return nil
+func (collector *hintCollector) walkMap(value map[string]any) {
+	message := combinedMessage(value)
+	if indicatesMissing(message) {
+		for _, key := range []string{"parameter", "field", "name", "missing"} {
+			if candidate, ok := value[key].(string); ok {
+				collector.add(candidate)
+			}
+		}
+		if location, ok := value["loc"].([]any); ok && len(location) > 0 {
+			if candidate, isString := location[len(location)-1].(string); isString {
+				collector.add(candidate)
+			}
+		}
+		collector.add(parameterFromMessage(message))
 	}
-
-	msgLower := strings.ToLower(msg)
-
-	patterns := []struct {
-		prefix string
-		sep    string
-	}{
-		{"missing parameter", ","},
-		{"missing required parameter", ","},
-		{"required parameter", ","},
-		{"missing field", ","},
-		{"required field", ","},
-		{"missing:", ","},
-		{"required:", ","},
-		{"missing subscript", ""},
+	for _, nested := range value {
+		collector.walk(nested)
 	}
+}
 
-	for _, p := range patterns {
-		idx := strings.Index(msgLower, p.prefix)
-		if idx < 0 {
+func combinedMessage(value map[string]any) string {
+	var parts []string
+	for _, key := range []string{"message", "error", "detail", "msg"} {
+		if message, ok := value[key].(string); ok {
+			parts = append(parts, message)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func indicatesMissing(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "missing") || strings.Contains(lower, "required")
+}
+
+func parameterFromMessage(message string) string {
+	words := strings.Fields(message)
+	for index, word := range words {
+		lower := strings.ToLower(strings.Trim(word, " .:;'\"`"))
+		if lower != "parameter" && lower != "field" && lower != "subscript" {
 			continue
 		}
-		after := strings.TrimSpace(msg[idx+len(p.prefix):])
-		after = strings.Trim(after, ".:;'\"` ")
-		if after == "" {
-			continue
-		}
-
-		if p.sep != "" {
-			for part := range strings.SplitSeq(after, p.sep) {
-				name := strings.TrimSpace(part)
-				name = strings.Trim(name, "'\"` ")
-				if name != "" && !seen[name] {
-					seen[name] = true
-					params = append(params, name)
-				}
-			}
-		} else {
-			name := strings.Fields(after)
-			if len(name) > 0 {
-				clean := strings.Trim(name[0], "'\"` ")
-				if clean != "" && !seen[clean] {
-					seen[clean] = true
-					params = append(params, clean)
-				}
-			}
+		if index+1 < len(words) {
+			return words[index+1]
 		}
 	}
-
-	return params
+	return ""
 }

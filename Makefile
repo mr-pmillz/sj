@@ -12,16 +12,18 @@ LDFLAGS := -s -w \
 	-X $(MODULE).commit=$(COMMIT) \
 	-X $(MODULE).date=$(BUILD_DATE)
 
-.PHONY: all build test test-coverage lint fmt vet install clean tidy
+.PHONY: all build test test-race test-coverage lint fmt vet install clean tidy
 
 all: lint test build
 
 build:
+	@mkdir -p $(BUILD_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/sj
 
 test: ## Run all tests
 	@echo "🧪 Running all tests..."
-	@go test -covermode=atomic -coverprofile=coverage/coverage.out -json ./... | tparse -all
+	@mkdir -p $(COVER_DIR)
+	go test -covermode=atomic -coverprofile=$(COVER_DIR)/coverage.out ./...
 
 test-race:
 	go test ./... -count=1 -race

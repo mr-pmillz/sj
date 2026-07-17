@@ -20,8 +20,10 @@ In addition to the [global flags](/commands/global-flags/), `brute` accepts:
 |------|-------|---------|-------------|
 | `--wordlist` | `-w` | *(built-in)* | Path to a custom wordlist of paths to brute-force. |
 | `--endpoint-only` | `-e` | `false` | Only print the discovered endpoint path (no extra output). |
-| `--output-format` | `-F` | `console` | Output format: `console` or `json`. |
+| `--output-format` | `-F` | `console` | Output format: `console`, `json`, `jsonl`, `csv`, or `txt`. |
+| `--output-all-formats` | `-O` | `false` | Write JSON, JSONL, CSV, and TXT outputs. Requires `-o`. |
 | `--url-file` | `-U` | | File containing a list of target URLs to brute-force (one per line). |
+| `--max-candidates` | | `10000` | Bound generated URLs or batch targets. |
 
 ## Examples
 
@@ -73,7 +75,7 @@ sj brute -u https://target.example.com -p http://127.0.0.1:8080
 
 1. A list of common Swagger/OpenAPI paths is loaded (from the built-in list or a custom wordlist).
 2. Each path is appended to the target URL and a request is sent.
-3. Responses are analyzed to determine if a valid definition file was found.
+3. Bounded responses are content-sniffed to find Swagger 2.0 or OpenAPI 3.x documents even when the server labels them incorrectly.
 4. Discovered definition files are reported.
 5. In batch mode (`-U`), a summary is printed after all targets are processed.
 

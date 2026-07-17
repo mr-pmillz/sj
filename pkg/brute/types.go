@@ -33,6 +33,7 @@ type Summary struct {
 	Responses2xx    int `json:"responses_2xx"`
 	Responses3xx    int `json:"responses_3xx"`
 	Responses4xx    int `json:"responses_4xx"`
+	Responses5xx    int `json:"responses_5xx"`
 	Errors          int `json:"errors"`
 }
 

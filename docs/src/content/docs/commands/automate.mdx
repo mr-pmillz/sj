@@ -21,9 +21,10 @@ In addition to the [global flags](/commands/global-flags/), `automate` accepts:
 | `--test-string` | | `testvalue` | The string value to use when testing endpoints that accept string parameters. |
 | `--verbose` | `-v` | `false` | Show a preview of each response body. |
 | `--response-preview-length` | | `50` | Number of characters to show in the response preview (requires `--verbose`). |
-| `--accept-risk` | | `false` | Automatically accept all dangerous-keyword warnings without prompting. |
-| `--get-accessible-endpoints` | | `false` | Only output endpoints that return a 200 status code. |
+| `--accept-risk` | | `false` | Allow state-changing methods and endpoints with dangerous keywords. |
+| `--get-accessible-endpoints` | | `false` | Only output endpoints that return a 2xx status code. |
 | `--retry-on-hint` | | `false` | Retry requests that return 401 with hints about missing parameters. |
+| `--required-only` | | `false` | Populate only parameters marked as required. |
 | `--output-format` | `-F` | `console` | Output format: `console`, `json`, `jsonl`, or `csv`. |
 | `--output-all-formats` | `-O` | `false` | Write results in all formats (json, jsonl, csv). Requires `-o`. |
 | `--progress` | | `false` | Show console-style progress on stderr while using a structured output format. |
@@ -86,5 +87,5 @@ sj automate -l ./swagger.json -v
 5. Results are printed to the console or written to a file in the requested format.
 
 :::caution
-Some endpoints may perform write operations (POST, PUT, DELETE). Use `--quiet` or `--force` with care, and consider using `--safe-word` to exclude known safe terms from the dangerous-word prompt.
+The default active scan sends only `GET`, `HEAD`, `OPTIONS`, and OpenAPI 3.2 `QUERY`. State-changing or custom methods are recorded as skipped unless you pass `--accept-risk` or `--force`. Use either option only on systems you are authorized to test.
 :::

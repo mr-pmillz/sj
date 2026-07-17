@@ -10,8 +10,8 @@ sj (Swagger Jacker) is a Go CLI tool for auditing exposed Swagger/OpenAPI defini
 
 ```bash
 make build              # Build binary to bin/sj (ldflags inject version from git)
-make test               # Run tests with tparse formatting (needs tparse installed)
-go test ./... -count=1  # Run all tests without tparse
+make test               # Run tests and write atomic coverage data
+go test ./... -count=1  # Run all tests without cached results
 go test ./pkg/brute/ -v -run TestWriteCSV  # Run a single test
 make test-race          # Run tests with race detector
 make test-coverage      # Generate HTML coverage report in coverage/
@@ -34,7 +34,7 @@ cmd/sj/main.go → internal/cli
                     ↓
     ┌───────────────┼───────────────┐
     ↓               ↓               ↓
-pkg/scanner    pkg/brute       pkg/openapi
+pkg/scanner    pkg/brute       pkg/openapi    pkg/audit
     ↓               ↓               ↓
 pkg/httpclient  pkg/openapi    pkg/config
     ↓               ↓
@@ -51,15 +51,17 @@ Dependencies are strictly acyclic. `pkg/` packages never import `internal/cli`.
 
 - **`pkg/config/`** — Central `Config` struct holding all flag values and runtime state. `Mode` enum replaces the old `os.Args[1]` dispatch pattern. Constructed via `config.New()` with functional options.
 
-- **`pkg/httpclient/`** — `Client` struct wrapping `*http.Client` (pointer, not value). Handles proxy, TLS, random user-agent rotation (default behavior), redirect following, and dangerous keyword detection. `BruteFetch` is a simplified GET for brute-force scanning.
+- **`pkg/httpclient/`** — `Client` wraps `*http.Client`. It handles explicit proxies, TLS, body limits, random user agents, redirect blocking, timeouts, and active-scan safety gates. `BruteFetch` is a bounded GET for discovery.
 
-- **`pkg/openapi/`** — Spec parsing (`parse.go`), `$ref` resolution with external file caching (`resolve.go` via `Resolver` struct), schema expansion with allOf/oneOf/anyOf (`schema.go`), JS bundle extraction (`extract.go`), v2→v3 conversion (`convert.go`), and interactive security scheme handling (`auth.go`).
+- **`pkg/openapi/`** — Swagger 2.0 and OpenAPI 3.0–3.2 parsing, confined `$ref` resolution, modern JSON Schema example generation, JS bundle extraction, v2→v3 conversion, and non-secret security-scheme diagnostics.
+
+- **`pkg/audit/`** — Deterministic passive checks for security requirements, insecure schemes/servers, path contracts, callbacks, webhooks, and OpenAPI 3.2 surfaces. Outputs console, JSON, or SARIF.
 
 - **`pkg/scanner/`** — `GenerateRequests` orchestrates spec parsing, server/basePath resolution, and dispatches to `BuildRequestsFromPaths` which iterates paths/operations and switches on `cfg.Mode` (automate sends requests, endpoints prints paths, prepare generates curl commands).
 
 - **`pkg/brute/`** — `Scanner` struct for URL discovery. `findAllDefinitionFiles` tests candidate URLs, prints finds immediately to stderr, generates smart path variations (version/extension/sibling swaps in `variations.go`), and stops early once specs are found past the priority URL phase to avoid WAF triggers.
 
-- **`pkg/output/`** — `Writer` struct accumulates results. Supports console (colored), JSON, JSONL, CSV output. `PrintInfo/PrintWarn/PrintErr/Die` are stateless stderr helpers used project-wide.
+- **`pkg/output/`** — `Writer` accumulates results and supports console, JSON, JSONL, and CSV. Structured files are atomically replaced with private permissions.
 
 ### How Brute Scanning Works
 
@@ -72,10 +74,11 @@ Dependencies are strictly acyclic. `pkg/` packages never import `internal/cli`.
 ### How Automate Scanning Works
 
 1. Spec loaded (URL or local file) → JS bundle unwrapped if needed
-2. Security schemes checked (interactive auth prompts unless `--quiet`)
+2. Security schemes reported without prompting for or logging credentials
 3. Server info / basePath extracted from spec
-4. `BuildRequestsFromPaths` iterates paths, expands `$ref` schemas, generates example payloads, sends requests, records results
-5. Results output in requested format via `Writer.FinalizeOutput()`
+4. Request plans merge path/operation parameters, serialize OpenAPI styles, expand schemas, and generate payloads
+5. Safe methods are sent by default; state-changing methods require `--accept-risk` or `--force`
+6. Results output in requested format via `Writer.FinalizeOutput()`
 
 ## Conventions
 

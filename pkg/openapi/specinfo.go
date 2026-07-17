@@ -21,9 +21,9 @@ func PrintSpecInfo(spec map[string]any, w *output.Writer, cfg *config.Config) {
 		w.SpecTitle = title
 		ofmt := strings.ToLower(cfg.OutputFormat)
 		if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
-			fmt.Printf("Title: %s\n", title)
+			fmt.Printf("Title: %s\n", output.TerminalSafe(title))
 		} else {
-			output.PrintInfo("Title: %s\n", title)
+			output.PrintInfo("Title: %s\n", output.TerminalSafe(title))
 		}
 	}
 
@@ -32,9 +32,9 @@ func PrintSpecInfo(spec map[string]any, w *output.Writer, cfg *config.Config) {
 		w.SpecDescription = description
 		ofmt := strings.ToLower(cfg.OutputFormat)
 		if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
-			fmt.Printf("Description: %s\n", description)
+			fmt.Printf("Description: %s\n", output.TerminalSafe(description))
 		} else {
-			output.PrintInfo("Description: %s\n", description)
+			output.PrintInfo("Description: %s\n", output.TerminalSafe(description))
 		}
 	}
 }

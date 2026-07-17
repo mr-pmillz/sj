@@ -15,7 +15,15 @@ This guide walks you through basic usage of `sj` to audit an exposed Swagger/Ope
 
    Swagger and OpenAPI definition files are commonly found at paths like `/swagger.json`, `/v2/swagger.json`, `/openapi.json`, or `/api-docs`. If you do not know the location, use the `brute` command to discover it.
 
-2. **Run the automate command**
+2. **Run a passive audit first**
+
+   Inspect authentication, transport, and contract risks without sending requests to documented operations:
+
+   ```bash
+   sj audit -u https://petstore.swagger.io/v2/swagger.json
+   ```
+
+3. **Run the automate command**
 
    Send automated requests to each endpoint and check their status codes:
 
@@ -25,7 +33,9 @@ This guide walks you through basic usage of `sj` to audit an exposed Swagger/Ope
 
    Endpoints returning `200` without authentication are potentially accessible to anyone.
 
-3. **Generate manual test commands**
+   By default, only safe/read-only methods are sent. Use `--accept-risk` only when authorized to test state-changing methods.
+
+4. **Generate manual test commands**
 
    For endpoints that need deeper investigation, generate curl commands:
 
@@ -33,7 +43,7 @@ This guide walks you through basic usage of `sj` to audit an exposed Swagger/Ope
    sj prepare -u https://petstore.swagger.io/v2/swagger.json
    ```
 
-4. **Test manually**
+5. **Test manually**
 
    Copy and run the generated curl commands to verify the behavior of each endpoint.
 

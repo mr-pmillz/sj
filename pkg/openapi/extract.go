@@ -4,19 +4,29 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
-
-	"github.com/getkin/kin-openapi/openapi2"
-	"github.com/getkin/kin-openapi/openapi3"
 )
 
+var jsAssignmentPattern = regexp.MustCompile(`(?m)(?:\b(?:let|const|var)\s+)?[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*=\s*`)
+var jsSpecPropertyPattern = regexp.MustCompile(`(?m)(?:["']?(?:spec|swaggerDoc)["']?)\s*:\s*`)
+
 func ExtractJSONFromJSSpec(bodyBytes []byte) ([]byte, bool) {
-	re := regexp.MustCompile(`(?s)(?:let|const|var)\s+(\w+)\s*=\s*({.*?});`)
-	matches := re.FindAllStringSubmatch(string(bodyBytes), -1)
-	for _, m := range matches {
-		if len(m) < 3 {
+	locations := append(jsSpecPropertyPattern.FindAllIndex(bodyBytes, -1), jsAssignmentPattern.FindAllIndex(bodyBytes, -1)...)
+	scanBudget := len(bodyBytes) * 4
+	for _, location := range locations {
+		if scanBudget <= 0 {
+			break
+		}
+		start := location[1]
+		for start < len(bodyBytes) && (bodyBytes[start] == ' ' || bodyBytes[start] == '\t' || bodyBytes[start] == '\r' || bodyBytes[start] == '\n') {
+			start++
+		}
+		if start >= len(bodyBytes) || bodyBytes[start] != '{' {
 			continue
 		}
-		candidate := []byte(m[2])
+		candidate, ok := balancedJSONObject(bodyBytes, start, &scanBudget)
+		if !ok {
+			continue
+		}
 		if LooksLikeAPISpec(candidate) {
 			return candidate, true
 		}
@@ -33,6 +43,48 @@ func ExtractJSONFromJSSpec(bodyBytes []byte) ([]byte, bool) {
 	return bodyBytes, false
 }
 
+func balancedJSONObject(data []byte, start int, scanBudget *int) ([]byte, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(data); index++ {
+		if *scanBudget <= 0 {
+			return nil, false
+		}
+		*scanBudget--
+		char := data[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+				continue
+			}
+			if char == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return data[start : index+1], true
+			}
+			if depth < 0 {
+				return nil, false
+			}
+		}
+	}
+	return nil, false
+}
+
 func LooksLikeAPISpec(b []byte) bool {
 	var probe struct {
 		OpenAPI string `json:"openapi"`
@@ -42,41 +94,12 @@ func LooksLikeAPISpec(b []byte) bool {
 		return false
 	}
 	return strings.HasPrefix(probe.OpenAPI, "3") ||
-		strings.HasPrefix(probe.OpenAPI, "2") ||
 		strings.HasPrefix(probe.Swagger, "2")
 }
 
 func ExtractSpecFromJS(bodyBytes []byte) []byte {
-	var bodyString, spec string
-
-	bodyString = string(bodyBytes)
-	spec = strings.ReplaceAll(bodyString, "\n", "")
-	spec = strings.ReplaceAll(spec, "\t", "")
-	spec = strings.ReplaceAll(spec, " ", "")
-
-	if strings.Contains(strings.ReplaceAll(bodyString, " ", ""), `"swagger":"2.0"`) {
-		openApiIndex := strings.Index(spec, `"swagger":`) - 1
-		specClose := strings.LastIndex(spec, "]}") + 2
-
-		var doc2 openapi2.T
-		bodyBytes = []byte(spec[openApiIndex:specClose])
-		_ = json.Unmarshal(bodyBytes, &doc2)
-		if !strings.Contains(doc2.Swagger, "2") {
-			specClose = strings.LastIndex(spec, "}") + 1
-			bodyBytes = []byte(spec[openApiIndex:specClose])
-		}
-	} else if strings.Contains(strings.ReplaceAll(bodyString, " ", ""), `"openapi":"3`) {
-		openApiIndex := strings.Index(spec, `"openapi":`) - 1
-		specClose := strings.LastIndex(spec, "]}") + 2
-
-		var doc3 openapi3.T
-		bodyBytes = []byte(spec[openApiIndex:specClose])
-		_ = json.Unmarshal(bodyBytes, &doc3)
-		if !strings.Contains(doc3.OpenAPI, "3") {
-			specClose = strings.LastIndex(spec, "}") + 1
-			bodyBytes = []byte(spec[openApiIndex:specClose])
-		}
+	if extracted, ok := ExtractJSONFromJSSpec(bodyBytes); ok {
+		return extracted
 	}
-
 	return bodyBytes
 }

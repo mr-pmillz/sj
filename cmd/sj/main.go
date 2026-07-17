@@ -1,7 +1,17 @@
 package main
 
-import "github.com/mr-pmillz/sj/internal/cli"
+import (
+	"fmt"
+	"os"
+
+	"github.com/mr-pmillz/sj/internal/cli"
+)
 
 func main() {
-	cli.Execute()
+	if err := cli.Execute(); err != nil {
+		if _, err = fmt.Fprintf(os.Stderr, "Error: %v\n", err); err != nil {
+			return
+		}
+		os.Exit(1)
+	}
 }
