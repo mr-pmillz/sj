@@ -50,6 +50,7 @@ type Config struct {
 	EndpointOnly      bool
 	EndpointWordlist  string
 	BruteOutputFormat string
+	BruteAllFormats   bool
 	BruteURLFile      string
 
 	PrepareFor string

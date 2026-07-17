@@ -19,6 +19,18 @@ var bruteCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg.Mode = config.ModeBrute
 
+		ofmt := strings.ToLower(cfg.BruteOutputFormat)
+		if cfg.BruteAllFormats && cfg.Outfile == "" {
+			output.Die("The --output-all-formats flag requires -o to set a base output path.")
+		}
+		if ofmt != "console" && ofmt != "" {
+			switch ofmt {
+			case "json", "jsonl", "csv", "txt":
+			default:
+				output.Die("Unsupported output format '%s'. Supported: console, json, jsonl, csv, txt.", cfg.BruteOutputFormat)
+			}
+		}
+
 		client := httpclient.NewClient(cfg)
 		scanner := brute.NewScanner(client, cfg)
 
@@ -60,8 +72,10 @@ var bruteCmd = &cobra.Command{
 			allReports = append(allReports, report)
 		}
 
-		if strings.ToLower(cfg.BruteOutputFormat) == "json" {
-			brute.OutputBruteJSON(allReports, cfg.Outfile)
+		if cfg.BruteAllFormats {
+			brute.OutputAllFormats(allReports, cfg.Outfile)
+		} else if ofmt != "console" && ofmt != "" {
+			brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
 		} else if isBatch {
 			brute.PrintBatchSummary(allReports)
 		}
@@ -71,6 +85,7 @@ var bruteCmd = &cobra.Command{
 func init() {
 	bruteCmd.PersistentFlags().StringVarP(&cfg.EndpointWordlist, "wordlist", "w", "", "The file containing a list of paths to brute force for discovery.")
 	bruteCmd.Flags().BoolVarP(&cfg.EndpointOnly, "endpoint-only", "e", false, "Only return the identified endpoint.")
-	bruteCmd.PersistentFlags().StringVarP(&cfg.BruteOutputFormat, "output-format", "F", "console", "Output format: 'console' (default) or 'json' for structured report.")
+	bruteCmd.PersistentFlags().StringVarP(&cfg.BruteOutputFormat, "output-format", "F", "console", "Output format: console, json, jsonl, csv, or txt.")
+	bruteCmd.PersistentFlags().BoolVarP(&cfg.BruteAllFormats, "output-all-formats", "O", false, "Write results in all formats (json, jsonl, csv, txt). Requires -o.")
 	bruteCmd.PersistentFlags().StringVarP(&cfg.BruteURLFile, "url-file", "U", "", "File containing a list of URLs to brute force (one per line).")
 }
