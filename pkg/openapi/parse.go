@@ -7,8 +7,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func SafelyUnmarshalSpec(data []byte) (map[string]interface{}, error) {
-	var doc map[string]interface{}
+func SafelyUnmarshalSpec(data []byte) (map[string]any, error) {
+	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal API documentation: %w", err)
 	}
@@ -16,7 +16,7 @@ func SafelyUnmarshalSpec(data []byte) (map[string]interface{}, error) {
 }
 
 // MustUnmarshalSpec is a convenience wrapper that exits on failure.
-func MustUnmarshalSpec(data []byte) map[string]interface{} {
+func MustUnmarshalSpec(data []byte) map[string]any {
 	doc, err := SafelyUnmarshalSpec(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[✗] %v\n", err)

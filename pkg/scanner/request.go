@@ -31,8 +31,8 @@ func BuildRequestsFromPaths(spec map[string]any, client *httpclient.Client, cfg 
 	var userContentType string
 	for _, h := range userHeaders {
 		if strings.HasPrefix(strings.ToLower(h), "content-type:") {
-			if idx := strings.Index(h, ":"); idx >= 0 {
-				userContentType = strings.TrimSpace(h[idx+1:])
+			if _, after, ok0 := strings.Cut(h, ":"); ok0 {
+				userContentType = strings.TrimSpace(after)
 			}
 			break
 		}
@@ -267,10 +267,7 @@ func BuildRequestsFromPaths(spec map[string]any, client *httpclient.Client, cfg 
 					resp, sc = RetryWithHints(client, cfg, strings.ToUpper(method), targetURL, postBodyData, resp, sc)
 				}
 
-				previewLen := cfg.ResponsePreview
-				if len(resp) <= previewLen {
-					previewLen = len(resp)
-				}
+				previewLen := min(len(resp), cfg.ResponsePreview)
 				preview := resp[:previewLen]
 
 				if cfg.Verbose {

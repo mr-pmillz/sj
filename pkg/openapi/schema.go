@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/mr-pmillz/sj/pkg/config"
@@ -11,8 +12,8 @@ type SchemaNode struct {
 	Properties           map[string]*SchemaNode
 	Items                *SchemaNode
 	Required             map[string]bool
-	Enum                 []interface{}
-	Example              interface{}
+	Enum                 []any
+	Example              any
 	Ref                  string
 	OneOf                []*SchemaNode
 	AnyOf                []*SchemaNode
@@ -20,10 +21,10 @@ type SchemaNode struct {
 }
 
 func ExpandSchema(
-	spec map[string]interface{},
-	schema map[string]interface{},
+	spec map[string]any,
+	schema map[string]any,
 	visited map[string]bool,
-	contextSpec map[string]interface{},
+	contextSpec map[string]any,
 	resolver *Resolver,
 ) *SchemaNode {
 	if schema == nil {
@@ -52,7 +53,7 @@ func ExpandSchema(
 		node.Type = t
 	}
 
-	if enum, ok := schema["enum"].([]interface{}); ok {
+	if enum, ok := schema["enum"].([]any); ok {
 		node.Enum = enum
 	}
 
@@ -60,7 +61,7 @@ func ExpandSchema(
 		node.Example = example
 	}
 
-	if required, ok := schema["required"].([]interface{}); ok {
+	if required, ok := schema["required"].([]any); ok {
 		for _, r := range required {
 			if fieldName, ok := r.(string); ok {
 				node.Required[fieldName] = true
@@ -68,51 +69,47 @@ func ExpandSchema(
 		}
 	}
 
-	if props, ok := schema["properties"].(map[string]interface{}); ok {
+	if props, ok := schema["properties"].(map[string]any); ok {
 		for name, raw := range props {
-			if m, ok := raw.(map[string]interface{}); ok {
+			if m, ok := raw.(map[string]any); ok {
 				node.Properties[name] = ExpandSchema(spec, m, visited, contextSpec, resolver)
 			}
 		}
 	}
 
-	if items, ok := schema["items"].(map[string]interface{}); ok {
+	if items, ok := schema["items"].(map[string]any); ok {
 		node.Items = ExpandSchema(spec, items, visited, contextSpec, resolver)
 	}
 
 	if addProps, ok := schema["additionalProperties"]; ok {
-		if addPropsMap, ok := addProps.(map[string]interface{}); ok {
+		if addPropsMap, ok := addProps.(map[string]any); ok {
 			node.AdditionalProperties = ExpandSchema(spec, addPropsMap, visited, contextSpec, resolver)
 		}
 	}
 
-	if allOf, ok := schema["allOf"].([]interface{}); ok {
+	if allOf, ok := schema["allOf"].([]any); ok {
 		merged := &SchemaNode{Type: "object", Properties: map[string]*SchemaNode{}, Required: map[string]bool{}}
 		for _, entry := range allOf {
-			if m, ok := entry.(map[string]interface{}); ok {
+			if m, ok := entry.(map[string]any); ok {
 				sub := ExpandSchema(spec, m, visited, contextSpec, resolver)
-				for k, v := range sub.Properties {
-					merged.Properties[k] = v
-				}
-				for k, v := range sub.Required {
-					merged.Required[k] = v
-				}
+				maps.Copy(merged.Properties, sub.Properties)
+				maps.Copy(merged.Required, sub.Required)
 			}
 		}
 		return merged
 	}
 
-	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
+	if oneOf, ok := schema["oneOf"].([]any); ok {
 		for _, entry := range oneOf {
-			if m, ok := entry.(map[string]interface{}); ok {
+			if m, ok := entry.(map[string]any); ok {
 				node.OneOf = append(node.OneOf, ExpandSchema(spec, m, visited, contextSpec, resolver))
 			}
 		}
 	}
 
-	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
+	if anyOf, ok := schema["anyOf"].([]any); ok {
 		for _, entry := range anyOf {
-			if m, ok := entry.(map[string]interface{}); ok {
+			if m, ok := entry.(map[string]any); ok {
 				node.AnyOf = append(node.AnyOf, ExpandSchema(spec, m, visited, contextSpec, resolver))
 			}
 		}
@@ -121,7 +118,7 @@ func ExpandSchema(
 	return node
 }
 
-func GenerateExample(node *SchemaNode, cfg *config.Config) interface{} {
+func GenerateExample(node *SchemaNode, cfg *config.Config) any {
 	if node.Example != nil {
 		return node.Example
 	}
@@ -140,7 +137,7 @@ func GenerateExample(node *SchemaNode, cfg *config.Config) interface{} {
 
 	switch node.Type {
 	case "object", "":
-		obj := map[string]interface{}{}
+		obj := map[string]any{}
 		for k, v := range node.Properties {
 			if strings.Contains(strings.ToLower(k), "date") {
 				obj[k] = cfg.CustomDate
@@ -158,9 +155,9 @@ func GenerateExample(node *SchemaNode, cfg *config.Config) interface{} {
 		return obj
 	case "array":
 		if node.Items != nil {
-			return []interface{}{GenerateExample(node.Items, cfg)}
+			return []any{GenerateExample(node.Items, cfg)}
 		}
-		return []interface{}{}
+		return []any{}
 	case "string":
 		return cfg.TestString
 	case "integer", "number":

@@ -77,12 +77,12 @@ func (c *Client) userAgent() string {
 
 func (c *Client) applyHeaders(req *http.Request) (accept, contentType string) {
 	for _, h := range c.Cfg.Headers {
-		idx := strings.Index(h, ":")
-		if idx == -1 {
+		before, after, ok := strings.Cut(h, ":")
+		if !ok {
 			continue
 		}
-		key := strings.TrimSpace(h[:idx])
-		value := strings.TrimSpace(h[idx+1:])
+		key := strings.TrimSpace(before)
+		value := strings.TrimSpace(after)
 		if key == "Accept" {
 			accept = value
 		}

@@ -9,8 +9,8 @@ import (
 	"github.com/mr-pmillz/sj/pkg/output"
 )
 
-func PrintSpecInfo(spec map[string]interface{}, w *output.Writer, cfg *config.Config) {
-	info, ok := spec["info"].(map[string]interface{})
+func PrintSpecInfo(spec map[string]any, w *output.Writer, cfg *config.Config) {
+	info, ok := spec["info"].(map[string]any)
 	if !ok || info == nil {
 		output.PrintInfo("No information defined in the documentation.\n")
 		return

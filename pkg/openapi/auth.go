@@ -10,12 +10,12 @@ import (
 	"github.com/mr-pmillz/sj/pkg/output"
 )
 
-func CheckSecuritySchemes(spec map[string]interface{}, cfg *config.Config, in io.Reader) {
-	components, ok := spec["components"].(map[string]interface{})
+func CheckSecuritySchemes(spec map[string]any, cfg *config.Config, in io.Reader) {
+	components, ok := spec["components"].(map[string]any)
 	if !ok || components == nil {
 		return
 	}
-	securitySchemes, ok := components["securitySchemes"].(map[string]interface{})
+	securitySchemes, ok := components["securitySchemes"].(map[string]any)
 	if !ok || len(securitySchemes) == 0 {
 		fmt.Println("No security schemes defined.")
 		return
@@ -27,7 +27,7 @@ func CheckSecuritySchemes(spec map[string]interface{}, cfg *config.Config, in io
 
 	for mechanism, value := range securitySchemes {
 		fmt.Printf("  - %s\n", mechanism)
-		scheme, ok := value.(map[string]interface{})
+		scheme, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}

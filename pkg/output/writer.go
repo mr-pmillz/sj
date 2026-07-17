@@ -14,21 +14,21 @@ var yellow = color.New(color.FgYellow, color.Bold).SprintFunc()
 var red = color.New(color.FgRed, color.Bold).SprintFunc()
 var faint = color.New(color.Faint).SprintFunc()
 
-func PrintInfo(format string, args ...interface{}) {
+func PrintInfo(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
 }
 
-func PrintWarn(format string, args ...interface{}) {
+func PrintWarn(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "%s %s\n", yellow("[!]"), msg)
 }
 
-func PrintErr(format string, args ...interface{}) {
+func PrintErr(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(os.Stderr, "%s %s\n", red("[✗]"), msg)
 }
 
-func Die(format string, args ...interface{}) {
+func Die(format string, args ...any) {
 	PrintErr(format, args...)
 	os.Exit(1)
 }
@@ -56,10 +56,7 @@ func (w *Writer) AddVerboseResult(r VerboseResult) {
 
 func (w *Writer) WriteLog(sc int, target, method, response string) {
 	var out io.Writer = os.Stdout
-	previewLen := w.Cfg.ResponsePreview
-	if len(response) < previewLen {
-		previewLen = len(response)
-	}
+	previewLen := min(len(response), w.Cfg.ResponsePreview)
 
 	if w.Cfg.Outfile != "" {
 		file, err := os.OpenFile(w.Cfg.Outfile, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0644)
@@ -92,7 +89,7 @@ func (w *Writer) WriteLog(sc int, target, method, response string) {
 
 func LogResult(sc int, target, method, preview string, out io.Writer) {
 	var sym string
-	var painter func(a ...interface{}) string
+	var painter func(a ...any) string
 
 	switch sc {
 	case 200:

@@ -130,7 +130,7 @@ func extractMissingParams(body string) []string {
 		}
 
 		if p.sep != "" {
-			for _, part := range strings.Split(after, p.sep) {
+			for part := range strings.SplitSeq(after, p.sep) {
 				name := strings.TrimSpace(part)
 				name = strings.Trim(name, "'\"` ")
 				if name != "" && !seen[name] {

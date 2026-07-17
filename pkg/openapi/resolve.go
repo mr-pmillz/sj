@@ -8,23 +8,23 @@ import (
 )
 
 type Resolver struct {
-	ExternalRefCache map[string]map[string]interface{}
+	ExternalRefCache map[string]map[string]any
 	BaseDir          string
 }
 
 func NewResolver(baseDir string) *Resolver {
 	return &Resolver{
-		ExternalRefCache: make(map[string]map[string]interface{}),
+		ExternalRefCache: make(map[string]map[string]any),
 		BaseDir:          baseDir,
 	}
 }
 
-func (r *Resolver) ResolveRef(spec map[string]interface{}, ref string) map[string]interface{} {
+func (r *Resolver) ResolveRef(spec map[string]any, ref string) map[string]any {
 	resolved, _ := r.ResolveRefWithContext(spec, ref)
 	return resolved
 }
 
-func (r *Resolver) ResolveRefWithContext(spec map[string]interface{}, ref string) (map[string]interface{}, map[string]interface{}) {
+func (r *Resolver) ResolveRefWithContext(spec map[string]any, ref string) (map[string]any, map[string]any) {
 	if !strings.HasPrefix(ref, "#") {
 		baseDir := r.BaseDir
 		for cachedPath, cachedSpec := range r.ExternalRefCache {
@@ -46,21 +46,21 @@ func (r *Resolver) ResolveRefWithContext(spec map[string]interface{}, ref string
 	}
 
 	parts := strings.Split(ref[2:], "/")
-	var cur interface{} = spec
+	var cur any = spec
 
 	for _, p := range parts {
-		m, ok := cur.(map[string]interface{})
+		m, ok := cur.(map[string]any)
 		if !ok {
 			return nil, spec
 		}
 		cur = m[p]
 	}
 
-	resolved, _ := cur.(map[string]interface{})
+	resolved, _ := cur.(map[string]any)
 	return resolved, spec
 }
 
-func (r *Resolver) ResolveExternalRef(ref string, baseDir string) map[string]interface{} {
+func (r *Resolver) ResolveExternalRef(ref string, baseDir string) map[string]any {
 	parts := strings.SplitN(ref, "#", 2)
 	if len(parts) < 1 {
 		return nil
