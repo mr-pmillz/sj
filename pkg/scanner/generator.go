@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,6 +19,31 @@ func GenerateRequests(body []byte, client *httpclient.Client, cfg *config.Config
 }
 
 func GenerateRequestsE(body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	if err := GenerateRequestsIntoWriterE(body, client, cfg, writer, resolver); err != nil {
+		return err
+	}
+	if cfg.Mode == config.ModeAutomate {
+		if err := writer.FinalizeOutput(); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
+	}
+	return nil
+}
+
+// GenerateRequestsIntoWriterE plans and executes one specification without
+// finalizing the writer. Batch callers can aggregate multiple specifications
+// and publish one valid structured result at the end.
+func GenerateRequestsIntoWriterE(body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	return generateRequestsIntoWriterContextE(context.Background(), body, client, cfg, writer, resolver)
+}
+
+// GenerateRequestsIntoWriterContextE plans and executes one specification
+// without finalizing the writer, and stops promptly when ctx is canceled.
+func GenerateRequestsIntoWriterContextE(ctx context.Context, body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	return generateRequestsIntoWriterContextE(ctx, body, client, cfg, writer, resolver)
+}
+
+func generateRequestsIntoWriterContextE(ctx context.Context, body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
 	if openapi.LooksLikeJSSpec(body, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
 		if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
 			body = extracted
@@ -39,7 +65,7 @@ func GenerateRequestsE(body []byte, client *httpclient.Client, cfg *config.Confi
 	if cfg.Mode != config.ModeEndpoints {
 		openapi.PrintSpecInfo(spec, writer, cfg)
 	}
-	return BuildRequestsFromPathsE(spec, client, cfg, writer, resolver)
+	return buildRequestsFromPathsContextE(ctx, spec, client, cfg, writer, resolver, false)
 }
 
 func ConfigureTarget(spec map[string]any, cfg *config.Config) error {

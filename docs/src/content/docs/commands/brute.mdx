@@ -80,13 +80,13 @@ sj brute -u https://target.example.com -p http://127.0.0.1:8080
 5. In batch mode (`-U`), a summary is printed after all targets are processed.
 
 :::tip
-Combine `brute` with `automate` for a complete workflow: first discover the definition file, then scan all its endpoints.
+Combine `brute` with `automate` for a complete workflow. JSON and JSONL discovery output can be passed directly to `automate`, including reports from batch brute-force runs.
 
 ```bash
-# Step 1: Find the definition file
-sj brute -u https://target.example.com -e
+# Step 1: Discover definition files
+sj brute -U targets.txt -F json -o discovered.json
 
-# Step 2: Scan the discovered endpoints
-sj automate -u https://target.example.com/swagger.json
+# Step 2: Scan every discovered specification
+sj automate -U discovered.json -F json -o scan-results.json
 ```
 :::

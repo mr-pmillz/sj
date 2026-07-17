@@ -85,11 +85,36 @@ Replay matched requests through a separate proxy (e.g., Burp Suite):
 sj automate -u https://petstore.swagger.io/v2/swagger.json -qi --replay-proxy http://127.0.0.1:8080
 ```
 
+Route any command through an anonymous or authenticated SOCKS5 proxy:
+
+```bash
+sj brute -u https://target.example.com \
+  --socks5-proxy socks5://127.0.0.1:9050
+
+sj automate -u https://target.example.com/openapi.json \
+  --socks5-proxy socks5://proxy.example.com:1080 \
+  --socks5-username audit-user \
+  --socks5-password "$SOCKS5_PASSWORD"
+```
+
+SOCKS5 and HTTP `--proxy` settings are mutually exclusive. Credentials must be supplied with the dedicated flags rather than embedded in the proxy URL.
+
 Enable verbose output to see response previews:
 
 ```bash
 sj automate -u https://petstore.swagger.io/v2/swagger.json -qi -v
 ```
+
+Scan specification URLs from a text file, or feed `brute` output directly into `automate`:
+
+```bash
+sj automate -U specification-urls.txt -F json -o results.json
+
+sj brute -U targets.txt -F json -o discovered.json
+sj automate -U discovered.json -F json -o results.json
+```
+
+`automate -U` accepts one specification URL per line plus the JSON and JSONL formats emitted by `brute`. Duplicate URLs are scanned once and batch results include their source specification.
 
 ### Prepare
 
@@ -136,7 +161,9 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 - **Safe Active Defaults** — Skips state-changing methods unless risk is explicitly accepted and bounds specifications, responses, wordlists, and retries.
 - **Random User-Agent** — Uses a random browser User-Agent by default for stealth. Override with `--agent`.
 - **Replay Proxy** — Route matched requests through a separate proxy while scanning through another (or direct).
+- **SOCKS5 Proxies** — Route every command through anonymous or username/password-authenticated SOCKS5 with remote hostname resolution.
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
+- **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).
 
@@ -156,6 +183,9 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
   -o, --outfile string          Output results to a file.
   -p, --proxy string            Proxy host and port. (default "NOPROXY")
       --replay-proxy string     Replay matched requests using this proxy.
+      --socks5-proxy string     Route requests through a SOCKS5 proxy URL.
+      --socks5-username string  Username for SOCKS5 authentication.
+      --socks5-password string  Password for SOCKS5 authentication.
   -q, --quiet                   Use non-interactive defaults; credentials are never prompted for.
   -s, --safe-word stringArray   Skip dangerous word check for specified word(s).
   -T, --target string           Manually set request target if different from the documentation host.

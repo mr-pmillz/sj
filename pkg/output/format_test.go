@@ -2,10 +2,12 @@ package output
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,6 +113,27 @@ func TestCSVFormulaNeutralizationHandlesLeadingWhitespace(t *testing.T) {
 		if got := safeCSVField(value); got == value || got[0] != '\'' {
 			t.Errorf("safeCSVField(%q) = %q", value, got)
 		}
+	}
+}
+
+func TestCSVIncludesSpecificationSource(t *testing.T) {
+	cfg := config.New()
+	writer := NewWriter(cfg)
+	writer.AddResult(Result{Source: "https://api.example/openapi.json", Method: "GET", Status: 200, Target: "/health"})
+	var buffer bytes.Buffer
+	if err := writer.writeCSV(&buffer); err != nil {
+		t.Fatal(err)
+	}
+	records, err := csv.NewReader(&buffer).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHeader := []string{"source", "method", "status", "target"}
+	if !slices.Equal(records[0], wantHeader) {
+		t.Fatalf("CSV header = %#v, want %#v", records[0], wantHeader)
+	}
+	if records[1][0] != "https://api.example/openapi.json" {
+		t.Fatalf("CSV source = %q", records[1][0])
 	}
 }
 

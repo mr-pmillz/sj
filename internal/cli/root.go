@@ -25,6 +25,9 @@ Example usage:
 Perform a quick check of endpoints which require authentication:
 $ sj automate -u https://petstore.swagger.io/v2/swagger.json
 
+Scan every definition discovered by a prior brute run:
+$ sj automate -U discovered.json -F json -o results.json
+
 Generate a list of commands to use for manual testing:
 $ sj prepare -u https://petstore.swagger.io/v2/swagger.json
 
@@ -73,8 +76,11 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&cfg.Insecure, "insecure", "i", false, "Ignores server certificate validation.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.LocalFile, "local-file", "l", "", "Loads the documentation from a local file.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.Outfile, "outfile", "o", "", "Write command output to a file when the selected format supports it.")
-	rootCmd.PersistentFlags().StringVarP(&cfg.Proxy, "proxy", "p", "NOPROXY", "Proxy host and port. Example: http://127.0.0.1:8080")
-	rootCmd.PersistentFlags().StringVar(&cfg.ReplayProxy, "replay-proxy", "", "Replay matched requests using this proxy.")
+	rootCmd.PersistentFlags().StringVarP(&cfg.Proxy, "proxy", "p", "NOPROXY", "HTTP(S) proxy URL. Example: http://127.0.0.1:8080")
+	rootCmd.PersistentFlags().StringVar(&cfg.ReplayProxy, "replay-proxy", "", "Replay matched requests using this HTTP(S) proxy.")
+	rootCmd.PersistentFlags().StringVar(&cfg.SOCKS5Proxy, "socks5-proxy", "", "Route requests through a SOCKS5 proxy. Example: socks5://127.0.0.1:1080")
+	rootCmd.PersistentFlags().StringVar(&cfg.SOCKS5Username, "socks5-username", "", "Username for SOCKS5 authentication.")
+	rootCmd.PersistentFlags().StringVar(&cfg.SOCKS5Password, "socks5-password", "", "Password for SOCKS5 authentication.")
 	rootCmd.PersistentFlags().BoolVarP(&cfg.Quiet, "quiet", "q", false, "Use non-interactive defaults (credentials are never prompted for).")
 	rootCmd.PersistentFlags().StringArrayVarP(&cfg.SafeWords, "safe-word", "s", nil, "Avoids 'dangerous word' check for the specified word(s). Multiple flags are accepted.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.APITarget, "target", "T", "", "Manually set a target for the requests to be made if separate from the host the documentation resides on.")

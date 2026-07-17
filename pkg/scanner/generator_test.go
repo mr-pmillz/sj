@@ -1,10 +1,49 @@
 package scanner
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/httpclient"
+	"github.com/mr-pmillz/sj/pkg/openapi"
+	"github.com/mr-pmillz/sj/pkg/output"
 )
+
+func TestGenerateRequestsIntoWriterContextEStopsAfterCancellation(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.SwaggerURL = "https://api.example/openapi.json"
+	cfg.OutputFormat = "json"
+	client := httpclient.NewClient(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	requests := 0
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	})
+	body := []byte(`{
+  "openapi":"3.1.0",
+  "info":{"title":"Cancellation","version":"1.0.0"},
+  "servers":[{"url":"https://api.example"}],
+  "paths":{
+    "/one":{"get":{"responses":{"200":{"description":"ok"}}}},
+    "/two":{"get":{"responses":{"200":{"description":"ok"}}}}
+  }
+}`)
+	err := GenerateRequestsIntoWriterContextE(ctx, body, client, cfg, output.NewWriter(cfg), openapi.NewResolver(""))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
 
 func TestConfigureTargetExpandsOpenAPIServerVariables(t *testing.T) {
 	spec := map[string]any{

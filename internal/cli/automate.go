@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -20,47 +22,123 @@ var automateCmd = &cobra.Command{
 This enables the user to get a quick look at which endpoints require authentication and which ones do not. If a request
 responds in an abnormal way, manual testing should be conducted (prepare manual tests using the "prepare" command).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg.Mode = config.ModeAutomate
-
-		ofmt := strings.ToLower(cfg.OutputFormat)
-
-		if cfg.OutputAllFormats && cfg.Outfile == "" {
-			return fmt.Errorf("--output-all-formats requires --outfile")
-		}
-
-		if cfg.Outfile != "" && ofmt != "" && !cfg.OutputAllFormats {
-			switch ofmt {
-			case "json", "jsonl", "csv", "console":
-			default:
-				return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv", cfg.OutputFormat)
-			}
-			if strings.HasSuffix(strings.ToLower(cfg.Outfile), "json") && ofmt == "console" {
-				cfg.OutputFormat = "json"
-			}
-		}
-
-		if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
-			return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
-		}
-
-		client, err := newHTTPClient(cfg)
-		if err != nil {
-			return err
-		}
-		w := output.NewWriter(cfg)
-
-		if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
-			fmt.Printf("\n")
-			output.PrintInfo("Gathering API details.\n")
-		}
-
-		bodyBytes, err := loadSpec(cmd.Context(), cfg, client)
-		if err != nil {
-			return err
-		}
-		resolver := openapi.NewResolver(cfg.SpecBaseDir)
-		return scanner.GenerateRequestsE(bodyBytes, client, cfg, w, resolver)
+		return runAutomate(cmd.Context(), cfg)
 	},
+}
+
+var newAutomateHTTPClient = newHTTPClient
+
+func runAutomate(ctx context.Context, cfg *config.Config) error {
+	cfg.Mode = config.ModeAutomate
+
+	ofmt := strings.ToLower(cfg.OutputFormat)
+
+	if cfg.OutputAllFormats && cfg.Outfile == "" {
+		return fmt.Errorf("--output-all-formats requires --outfile")
+	}
+
+	if cfg.Outfile != "" && ofmt != "" && !cfg.OutputAllFormats {
+		switch ofmt {
+		case "json", "jsonl", "csv", "console":
+		default:
+			return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv", cfg.OutputFormat)
+		}
+		if strings.HasSuffix(strings.ToLower(cfg.Outfile), "json") && ofmt == "console" {
+			cfg.OutputFormat = "json"
+		}
+	}
+
+	if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
+		return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
+	}
+
+	sources, err := resolveAutomateSources(cfg)
+	if err != nil {
+		return err
+	}
+	w := output.NewWriter(cfg)
+
+	if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
+		fmt.Printf("\n")
+		output.PrintInfo("Gathering API details.\n")
+	}
+
+	batch := cfg.AutomateURLFile != ""
+	var failures []error
+	for index, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("automate scan canceled: %w", err)
+		}
+		sourceLabel := output.TerminalSafe(source.display())
+		if batch {
+			output.PrintInfo("[%d/%d] Scanning specification: %s\n", index+1, len(sources), sourceLabel)
+		}
+
+		scanCfg := cloneAutomateConfig(cfg, source)
+		client, clientErr := newAutomateHTTPClient(scanCfg)
+		if clientErr != nil {
+			if !batch {
+				return clientErr
+			}
+			failures = append(failures, fmt.Errorf("source %d (%s): initialize HTTP client: %w", index+1, sourceLabel, clientErr))
+			continue
+		}
+		bodyBytes, loadErr := loadSpec(ctx, scanCfg, client)
+		if loadErr != nil {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("automate scan canceled: %w", err)
+			}
+			if !batch {
+				return loadErr
+			}
+			failures = append(failures, fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, loadErr))
+			continue
+		}
+		resolver := openapi.NewResolver(scanCfg.SpecBaseDir)
+		if scanErr := scanner.GenerateRequestsIntoWriterContextE(ctx, bodyBytes, client, scanCfg, w, resolver); scanErr != nil {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("automate scan canceled: %w", err)
+			}
+			if !batch {
+				return scanErr
+			}
+			failures = append(failures, fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, scanErr))
+		}
+	}
+
+	if batch {
+		w.SpecTitle = ""
+		w.SpecDescription = ""
+	}
+	outputErr := w.FinalizeOutput()
+	if len(failures) == 0 {
+		if outputErr != nil {
+			return fmt.Errorf("write output: %w", outputErr)
+		}
+		return nil
+	}
+	batchErr := fmt.Errorf("%d of %d specification sources failed: %w", len(failures), len(sources), errors.Join(failures...))
+	if outputErr != nil {
+		return errors.Join(batchErr, fmt.Errorf("write output: %w", outputErr))
+	}
+	return batchErr
+}
+
+func cloneAutomateConfig(base *config.Config, source automateSource) *config.Config {
+	cloned := *base
+	cloned.SwaggerURL = source.url
+	cloned.LocalFile = source.localFile
+	cloned.AutomateURLFile = ""
+	cloned.SpecBaseDir = ""
+	cloned.Headers = append([]string(nil), base.Headers...)
+	cloned.SafeWords = append([]string(nil), base.SafeWords...)
+	if !base.TargetExplicit {
+		cloned.APITarget = ""
+	}
+	if !base.BasePathExplicit {
+		cloned.BasePath = ""
+	}
+	return &cloned
 }
 
 func init() {
@@ -71,6 +149,8 @@ func init() {
 	automateCmd.PersistentFlags().BoolVar(&cfg.ProgressDisplay, "progress", false, "Show console-style progress on stderr while using a structured output format (json/jsonl/csv).")
 	automateCmd.PersistentFlags().BoolVar(&cfg.RetryOnHint, "retry-on-hint", false, "Retry requests that return 401 with hints about missing parameters.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.RequiredOnly, "required-only", false, "Populate only required operation parameters.")
+	automateCmd.PersistentFlags().StringVarP(&cfg.AutomateURLFile, "url-file", "U", "", "Load specification URLs from a text, brute JSON, or brute JSONL file.")
+	automateCmd.PersistentFlags().IntVar(&cfg.MaxAutomateTargets, "max-targets", 10_000, "Maximum specification URLs to process from --url-file.")
 	automateCmd.PersistentFlags().StringVar(&cfg.TestString, "test-string", "testvalue", "The string to use when testing endpoints with string values.")
 	automateCmd.PersistentFlags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose mode, which shows a preview of each response.")
 	automateCmd.PersistentFlags().IntVar(&cfg.ResponsePreview, "response-preview-length", 50, "Sets the response preview length when using verbose output.")

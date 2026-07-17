@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,14 @@ func BuildRequestsFromPaths(spec map[string]any, client *httpclient.Client, cfg 
 }
 
 func BuildRequestsFromPathsE(spec map[string]any, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	return buildRequestsFromPathsE(spec, client, cfg, writer, resolver, true)
+}
+
+func buildRequestsFromPathsE(spec map[string]any, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver, finalize bool) error {
+	return buildRequestsFromPathsContextE(context.Background(), spec, client, cfg, writer, resolver, finalize)
+}
+
+func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver, finalize bool) error {
 	if cfg.Mode == config.ModeEndpoints {
 		paths, err := endpointPaths(spec, cfg.BasePath)
 		if err != nil {
@@ -59,9 +68,12 @@ func BuildRequestsFromPathsE(spec map[string]any, client *httpclient.Client, cfg
 	}
 
 	for _, plan := range plans {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("request generation canceled: %w", err)
+		}
 		switch cfg.Mode {
 		case config.ModeAutomate:
-			if err := executePlan(plan, client, cfg, writer); err != nil {
+			if err := executePlanContext(ctx, plan, client, cfg, writer); err != nil {
 				return err
 			}
 		case config.ModePrepare:
@@ -75,12 +87,9 @@ func BuildRequestsFromPathsE(spec map[string]any, client *httpclient.Client, cfg
 		}
 	}
 
-	if cfg.Mode == config.ModeAutomate {
-		format := strings.ToLower(cfg.OutputFormat)
-		if format != "console" || cfg.OutputAllFormats {
-			if err := writer.FinalizeOutput(); err != nil {
-				return fmt.Errorf("write output: %w", err)
-			}
+	if finalize && cfg.Mode == config.ModeAutomate {
+		if err := writer.FinalizeOutput(); err != nil {
+			return fmt.Errorf("write output: %w", err)
 		}
 	}
 	return nil
@@ -925,22 +934,39 @@ func encodeBody(example any, mediaType string) ([]byte, string, error) {
 }
 
 func executePlan(plan RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) error {
+	return executePlanContext(context.Background(), plan, client, cfg, writer)
+}
+
+func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) error {
 	userHeaders := cfg.Headers
 	cfg.Headers = plan.Headers
-	_, response, status := client.MakeRequest(plan.Method, plan.URL, bytes.NewReader(plan.Body))
+	_, response, status := client.MakeRequestContext(ctx, plan.Method, plan.URL, bytes.NewReader(plan.Body))
+	if err := ctx.Err(); err != nil {
+		cfg.Headers = userHeaders
+		return fmt.Errorf("execute %s %s: %w", plan.Method, plan.Path, err)
+	}
 
 	if cfg.RetryOnHint && status == http.StatusUnauthorized {
-		response, status = RetryWithHints(client, cfg, plan.Method, plan.URL, string(plan.Body), response, status)
+		response, status = RetryWithHintsContext(ctx, client, cfg, plan.Method, plan.URL, string(plan.Body), response, status)
+		if err := ctx.Err(); err != nil {
+			cfg.Headers = userHeaders
+			return fmt.Errorf("retry %s %s: %w", plan.Method, plan.Path, err)
+		}
 	}
 	if client.Replay != nil && status >= 100 {
-		client.ReplayRequest(plan.Method, plan.URL, bytes.NewReader(plan.Body))
+		client.ReplayRequestContext(ctx, plan.Method, plan.URL, bytes.NewReader(plan.Body))
+		if err := ctx.Err(); err != nil {
+			cfg.Headers = userHeaders
+			return fmt.Errorf("replay %s %s: %w", plan.Method, plan.Path, err)
+		}
 	}
 	cfg.Headers = userHeaders
 	preview := response[:min(len(response), max(cfg.ResponsePreview, 0))]
+	source := specificationResultSource(cfg)
 	if cfg.Verbose {
-		writer.AddVerboseResult(output.VerboseResult{Method: plan.Method, Preview: preview, Status: status, Target: plan.Path, Curl: plan.Curl})
+		writer.AddVerboseResult(output.VerboseResult{Source: source, Method: plan.Method, Preview: preview, Status: status, Target: plan.Path, Curl: plan.Curl})
 	} else {
-		writer.AddResult(output.Result{Method: plan.Method, Status: status, Target: plan.Path})
+		writer.AddResult(output.Result{Source: source, Method: plan.Method, Status: status, Target: plan.Path})
 	}
 
 	accessible := status >= 200 && status < 300
@@ -958,6 +984,19 @@ func executePlan(plan RequestPlan, client *httpclient.Client, cfg *config.Config
 		output.LogProgress(status, plan.Path, plan.Method, preview)
 	}
 	return nil
+}
+
+func specificationResultSource(cfg *config.Config) string {
+	if cfg.SwaggerURL == "" {
+		return cfg.LocalFile
+	}
+	parsed, err := url.Parse(cfg.SwaggerURL)
+	if err != nil {
+		return "remote specification"
+	}
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	return parsed.String()
 }
 
 func curlCommand(plan RequestPlan) string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -133,6 +134,38 @@ func TestNewClientRejectsInvalidProxyConfiguration(t *testing.T) {
 	cfg.Proxy = "://bad"
 	if err := NewClient(cfg).InitErr; err == nil {
 		t.Fatal("invalid proxy was silently accepted")
+	}
+}
+
+func TestNewClientInstallsSOCKS5DialerAndPreservesHTTP2(t *testing.T) {
+	cfg := config.New()
+	cfg.SOCKS5Proxy = "socks5://proxy.example:1080"
+	client := NewClient(cfg)
+	if client.InitErr != nil {
+		t.Fatal(client.InitErr)
+	}
+	transport, ok := client.HTTP.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T", client.HTTP.Transport)
+	}
+	defaultDial := http.DefaultTransport.(*http.Transport).DialContext
+	if reflect.ValueOf(transport.DialContext).Pointer() == reflect.ValueOf(defaultDial).Pointer() {
+		t.Fatal("SOCKS5 configuration retained the direct network dialer")
+	}
+	if transport.Proxy != nil {
+		t.Fatal("SOCKS5 transport retained an HTTP proxy function")
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("custom SOCKS5 dialer disabled HTTP/2 attempts")
+	}
+}
+
+func TestNewClientRejectsConflictingHTTPAndSOCKS5Proxies(t *testing.T) {
+	cfg := config.New()
+	cfg.Proxy = "http://http-proxy.example:8080"
+	cfg.SOCKS5Proxy = "socks5://socks-proxy.example:1080"
+	if err := NewClient(cfg).InitErr; err == nil {
+		t.Fatal("client accepted simultaneous HTTP and SOCKS5 proxies")
 	}
 }
 

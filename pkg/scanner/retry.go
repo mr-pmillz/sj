@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,11 +20,18 @@ const maxHintRetries = 3
 var parameterNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`)
 
 func RetryWithHints(client *httpclient.Client, cfg *config.Config, method, targetURL, requestBody, previousResponse string, previousStatus int) (string, int) {
+	return RetryWithHintsContext(context.Background(), client, cfg, method, targetURL, requestBody, previousResponse, previousStatus)
+}
+
+func RetryWithHintsContext(ctx context.Context, client *httpclient.Client, cfg *config.Config, method, targetURL, requestBody, previousResponse string, previousStatus int) (string, int) {
 	if !retryableHintMethod(method) {
 		return previousResponse, previousStatus
 	}
 	response, status := previousResponse, previousStatus
 	for attempt := 0; attempt < maxHintRetries && status == http.StatusUnauthorized; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
 		hints := extractMissingParams(response)
 		if len(hints) == 0 {
 			break
@@ -33,7 +41,7 @@ func RetryWithHints(client *httpclient.Client, cfg *config.Config, method, targe
 			break
 		}
 		output.PrintInfo("[retry %d] authentication response identified missing parameters %v\n", attempt+1, hints)
-		_, nextResponse, nextStatus := client.MakeRequest(method, updatedURL, bytes.NewReader([]byte(requestBody)))
+		_, nextResponse, nextStatus := client.MakeRequestContext(ctx, method, updatedURL, bytes.NewReader([]byte(requestBody)))
 		if nextResponse == response && nextStatus == status {
 			break
 		}

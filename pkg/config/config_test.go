@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,8 +14,8 @@ func TestNewUsesBoundedProductionDefaults(t *testing.T) {
 	if cfg.MaxResponseBytes != 10*1024*1024 || cfg.MaxSpecBytes != 10*1024*1024 {
 		t.Fatalf("size limits = response:%d spec:%d", cfg.MaxResponseBytes, cfg.MaxSpecBytes)
 	}
-	if cfg.MaxCandidates != 10_000 {
-		t.Fatalf("candidate limit = %d", cfg.MaxCandidates)
+	if cfg.MaxCandidates != 10_000 || cfg.MaxAutomateTargets != 10_000 {
+		t.Fatalf("target limits = brute:%d automate:%d", cfg.MaxCandidates, cfg.MaxAutomateTargets)
 	}
 	if cfg.Mode != ModeUnknown {
 		t.Fatalf("default mode = %v, want unknown", cfg.Mode)
@@ -27,11 +28,13 @@ func TestValidateRejectsNonPositiveResourceLimits(t *testing.T) {
 		"response":           func(cfg *Config) { cfg.MaxResponseBytes = 0 },
 		"spec":               func(cfg *Config) { cfg.MaxSpecBytes = 0 },
 		"candidates":         func(cfg *Config) { cfg.MaxCandidates = 0 },
+		"automate targets":   func(cfg *Config) { cfg.MaxAutomateTargets = 0 },
 		"preview":            func(cfg *Config) { cfg.ResponsePreview = -1 },
 		"timeout overflow":   func(cfg *Config) { cfg.Timeout = maxConfiguredTimeout + time.Second },
 		"response overflow":  func(cfg *Config) { cfg.MaxResponseBytes = maxConfiguredBodyBytes + 1 },
 		"spec overflow":      func(cfg *Config) { cfg.MaxSpecBytes = maxConfiguredBodyBytes + 1 },
 		"candidate overflow": func(cfg *Config) { cfg.MaxCandidates = maxConfiguredCandidates + 1 },
+		"automate overflow":  func(cfg *Config) { cfg.MaxAutomateTargets = maxConfiguredCandidates + 1 },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -56,5 +59,51 @@ func TestValidateRejectsMalformedOrInjectedHeaders(t *testing.T) {
 	cfg.Headers = []string{"Authorization: Bearer token", "X-Custom: value:with:colons"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("rejected valid headers: %v", err)
+	}
+}
+
+func TestValidateSOCKS5Configuration(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"credentials without proxy", func(cfg *Config) { cfg.SOCKS5Username = "user" }},
+		{"password without username", func(cfg *Config) { cfg.SOCKS5Proxy = "socks5://proxy.example"; cfg.SOCKS5Password = "secret" }},
+		{"HTTP and SOCKS conflict", func(cfg *Config) {
+			cfg.Proxy = "http://proxy.example:8080"
+			cfg.SOCKS5Proxy = "socks5://proxy.example:1080"
+		}},
+		{"username too long", func(cfg *Config) {
+			cfg.SOCKS5Proxy = "socks5://proxy.example"
+			cfg.SOCKS5Username = strings.Repeat("u", 256)
+		}},
+		{"password too long", func(cfg *Config) {
+			cfg.SOCKS5Proxy = "socks5://proxy.example"
+			cfg.SOCKS5Username = "user"
+			cfg.SOCKS5Password = strings.Repeat("p", 256)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := New()
+			test.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate accepted invalid SOCKS5 configuration")
+			}
+		})
+	}
+
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.SOCKS5Proxy = "socks5://proxy.example" },
+		func(cfg *Config) {
+			cfg.SOCKS5Proxy = "socks5://proxy.example"
+			cfg.SOCKS5Username = "user"
+			cfg.SOCKS5Password = "secret"
+		},
+	} {
+		cfg := New()
+		mutate(cfg)
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate rejected valid SOCKS5 configuration: %v", err)
+		}
 	}
 }

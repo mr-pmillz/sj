@@ -31,6 +31,9 @@ type Config struct {
 	BasePath         string
 	Proxy            string
 	ReplayProxy      string
+	SOCKS5Proxy      string
+	SOCKS5Username   string
+	SOCKS5Password   string
 	Insecure         bool
 	Timeout          time.Duration
 	MaxResponseBytes int64
@@ -61,6 +64,8 @@ type Config struct {
 	GetAccessibleEndpoints bool
 	RetryOnHint            bool
 	RequiredOnly           bool
+	AutomateURLFile        string
+	MaxAutomateTargets     int
 
 	EndpointOnly      bool
 	EndpointWordlist  string
@@ -81,21 +86,22 @@ type Option func(*Config)
 
 func New(opts ...Option) *Config {
 	cfg := &Config{
-		CustomDate:        "1990-01-01",
-		CustomEmail:       "noreply@localhost.localdomain",
-		CustomURL:         "https://example.com",
-		TestString:        "testvalue",
-		Proxy:             "NOPROXY",
-		Format:            "json",
-		OutputFormat:      "console",
-		BruteOutputFormat: "console",
-		PrepareFor:        "curl",
-		Timeout:           30 * time.Second,
-		MaxResponseBytes:  10 * 1024 * 1024,
-		MaxSpecBytes:      10 * 1024 * 1024,
-		MaxCandidates:     10_000,
-		ResponsePreview:   50,
-		RandomUserAgent:   true,
+		CustomDate:         "1990-01-01",
+		CustomEmail:        "noreply@localhost.localdomain",
+		CustomURL:          "https://example.com",
+		TestString:         "testvalue",
+		Proxy:              "NOPROXY",
+		Format:             "json",
+		OutputFormat:       "console",
+		BruteOutputFormat:  "console",
+		PrepareFor:         "curl",
+		Timeout:            30 * time.Second,
+		MaxResponseBytes:   10 * 1024 * 1024,
+		MaxSpecBytes:       10 * 1024 * 1024,
+		MaxCandidates:      10_000,
+		MaxAutomateTargets: 10_000,
+		ResponsePreview:    50,
+		RandomUserAgent:    true,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -116,8 +122,14 @@ func (c *Config) Validate() error {
 	if c.MaxCandidates <= 0 || c.MaxCandidates > maxConfiguredCandidates {
 		return fmt.Errorf("maximum brute-force candidates must be between 1 and %d", maxConfiguredCandidates)
 	}
+	if c.MaxAutomateTargets <= 0 || c.MaxAutomateTargets > maxConfiguredCandidates {
+		return fmt.Errorf("maximum automate targets must be between 1 and %d", maxConfiguredCandidates)
+	}
 	if c.ResponsePreview < 0 {
 		return fmt.Errorf("response preview length cannot be negative")
+	}
+	if err := c.validateSOCKS5(); err != nil {
+		return err
 	}
 	for _, header := range c.Headers {
 		name, value, ok := strings.Cut(header, ":")
@@ -125,6 +137,25 @@ func (c *Config) Validate() error {
 		if !ok || !validHeaderName(name) || strings.ContainsAny(name+value, "\r\n") {
 			return fmt.Errorf("invalid header %q; use 'Name: Value' without control characters", header)
 		}
+	}
+	return nil
+}
+
+func (c *Config) validateSOCKS5() error {
+	if c.SOCKS5Proxy == "" {
+		if c.SOCKS5Username != "" || c.SOCKS5Password != "" {
+			return fmt.Errorf("SOCKS5 credentials require --socks5-proxy")
+		}
+		return nil
+	}
+	if c.Proxy != "" && c.Proxy != "NOPROXY" {
+		return fmt.Errorf("--proxy and --socks5-proxy are mutually exclusive")
+	}
+	if c.SOCKS5Password != "" && c.SOCKS5Username == "" {
+		return fmt.Errorf("--socks5-password requires --socks5-username")
+	}
+	if len(c.SOCKS5Username) > 255 || len(c.SOCKS5Password) > 255 {
+		return fmt.Errorf("SOCKS5 username and password must each be no more than 255 bytes")
 	}
 	return nil
 }

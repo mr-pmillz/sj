@@ -32,7 +32,6 @@ go.work.sum
 Thumbs.db
 
 /sj
-dist/
 *.txt
 *.json
 targets/

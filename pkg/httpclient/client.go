@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/mr-pmillz/sj/pkg/config"
+	xproxy "golang.org/x/net/proxy"
 )
 
 const defaultMaxResponseBodyBytes int64 = 10 * 1024 * 1024
@@ -31,7 +35,24 @@ func NewClient(cfg *config.Config) *Client {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
 	}
 	c := &Client{Cfg: cfg}
-	if cfg.Proxy != "NOPROXY" {
+	httpProxyConfigured := cfg.Proxy != "" && cfg.Proxy != "NOPROXY"
+	if cfg.SOCKS5Proxy != "" {
+		if httpProxyConfigured {
+			c.InitErr = errors.New("HTTP and SOCKS5 proxies are mutually exclusive")
+		} else {
+			forward := &net.Dialer{Timeout: cfg.Timeout, KeepAlive: 30 * time.Second}
+			dialer, err := newSOCKS5ContextDialer(cfg.SOCKS5Proxy, cfg.SOCKS5Username, cfg.SOCKS5Password, forward)
+			if err != nil {
+				c.InitErr = fmt.Errorf("invalid SOCKS5 proxy configuration: %w", err)
+			} else {
+				transport.Proxy = nil
+				transport.DialContext = dialer.DialContext
+				transport.ForceAttemptHTTP2 = true
+			}
+		}
+	} else if cfg.SOCKS5Username != "" || cfg.SOCKS5Password != "" {
+		c.InitErr = errors.New("SOCKS5 credentials require a SOCKS5 proxy")
+	} else if httpProxyConfigured {
 		proxyURL, err := parseProxyURL(cfg.Proxy)
 		if err != nil {
 			c.InitErr = fmt.Errorf("invalid proxy URL: %w", err)
@@ -83,6 +104,58 @@ func parseProxyURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("proxy must be an absolute http(s) URL")
 	}
 	return proxyURL, nil
+}
+
+func newSOCKS5ContextDialer(raw, username, password string, forward xproxy.Dialer) (xproxy.ContextDialer, error) {
+	proxyURL, err := url.Parse(raw)
+	if err != nil {
+		return nil, errors.New("proxy URL could not be parsed")
+	}
+	proxyURL.Scheme = strings.ToLower(proxyURL.Scheme)
+	if proxyURL.Scheme != "socks5" && proxyURL.Scheme != "socks5h" {
+		return nil, errors.New("proxy URL must use socks5 or socks5h")
+	}
+	if proxyURL.Host == "" || proxyURL.Hostname() == "" {
+		return nil, errors.New("proxy URL must include a host")
+	}
+	if proxyURL.User != nil {
+		return nil, errors.New("proxy URL must not contain user information; use the SOCKS5 credential flags")
+	}
+	if (proxyURL.Path != "" && proxyURL.Path != "/") || proxyURL.RawQuery != "" || proxyURL.Fragment != "" {
+		return nil, errors.New("proxy URL must not contain a path, query, or fragment")
+	}
+	if password != "" && username == "" {
+		return nil, errors.New("SOCKS5 password requires a username")
+	}
+	if len(username) > 255 || len(password) > 255 {
+		return nil, errors.New("SOCKS5 username and password must each be no more than 255 bytes")
+	}
+	if forward == nil {
+		return nil, errors.New("SOCKS5 forward dialer is required")
+	}
+
+	port := proxyURL.Port()
+	if port == "" {
+		port = "1080"
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return nil, errors.New("proxy URL must contain a valid TCP port")
+	}
+	address := net.JoinHostPort(proxyURL.Hostname(), port)
+	var auth *xproxy.Auth
+	if username != "" {
+		auth = &xproxy.Auth{User: username, Password: password}
+	}
+	dialer, err := xproxy.SOCKS5("tcp", address, auth, forward)
+	if err != nil {
+		return nil, fmt.Errorf("create SOCKS5 dialer: %w", err)
+	}
+	contextDialer, ok := dialer.(xproxy.ContextDialer)
+	if !ok {
+		return nil, errors.New("SOCKS5 dialer does not support context cancellation")
+	}
+	return contextDialer, nil
 }
 
 func (c *Client) userAgent() string {
@@ -291,11 +364,15 @@ func (c *Client) CheckContentType(target string) string {
 }
 
 func (c *Client) ReplayRequest(method, target string, reqData io.Reader) {
+	c.ReplayRequestContext(context.Background(), method, target, reqData)
+}
+
+func (c *Client) ReplayRequestContext(ctx context.Context, method, target string, reqData io.Reader) {
 	if c.Replay == nil {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.Cfg.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, c.Cfg.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, method, target, reqData)

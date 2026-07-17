@@ -2,9 +2,11 @@ package scanner
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -417,6 +419,32 @@ type scannerRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn scannerRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+func TestBuildRequestsFromPathsEFinalizesStructuredOutput(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.APITarget = "https://api.example"
+	cfg.SwaggerURL = "https://api.example/openapi.json"
+	cfg.OutputFormat = "json"
+	cfg.Outfile = filepath.Join(t.TempDir(), "results.json")
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	})
+	spec := map[string]any{"paths": map[string]any{
+		"/health": map[string]any{"get": map[string]any{}},
+	}}
+	if err := BuildRequestsFromPathsE(spec, client, cfg, output.NewWriter(cfg), openapi.NewResolver("")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(cfg.Outfile)
+	if err != nil {
+		t.Fatalf("structured output was not finalized: %v", err)
+	}
+	if !json.Valid(data) || !bytes.Contains(data, []byte(`"source":"https://api.example/openapi.json"`)) {
+		t.Fatalf("output = %s", data)
+	}
 }
 
 func TestExecutePlanReplaysOperationSpecificHeadersAndRestoresConfig(t *testing.T) {
