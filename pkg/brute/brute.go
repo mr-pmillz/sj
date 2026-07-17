@@ -19,20 +19,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Scanner drives the brute-force search for OpenAPI specification files.
 type Scanner struct {
 	Client *httpclient.Client
 	Cfg    *config.Config
 }
 
-// NewScanner returns a Scanner wired to the given HTTP client and config.
 func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
 	return &Scanner{Client: client, Cfg: cfg}
 }
 
-// RunTarget brute-forces a single target URL looking for spec files.
-// When dumpSpec is true the first discovered spec body is written to
-// the configured outfile or stdout.
 func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
 	u, err := url.Parse(targetURL)
 	if err != nil {
@@ -62,7 +57,7 @@ func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
 		}
 	}
 
-	output.PrintInfo("Sending %d requests. This could take a while...\n", len(allURLs))
+	output.PrintInfo("Sending up to %d requests. This could take a while...\n", len(allURLs))
 
 	matches, interesting, summary := s.findAllDefinitionFiles(allURLs)
 
@@ -86,30 +81,29 @@ func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
 		return report
 	}
 
-	if len(matches) > 0 {
-		fmt.Fprintln(os.Stderr)
+	// Console summary (individual finds were already printed live)
+	if len(matches) == 0 {
+		output.PrintErr("\nNo definition file found for:\t%s", targetURL)
+	} else if dumpSpec {
 		for i, m := range matches {
-			output.PrintInfo("Definition file found: %s\n", m.url)
-			if s.Cfg.EndpointOnly {
+			if s.Cfg.EndpointOnly || i > 0 {
 				continue
 			}
-			if dumpSpec && i == 0 {
-				definedOperations, marshalErr := json.Marshal(m.spec)
-				if marshalErr != nil {
-					output.PrintErr("Error parsing definition file: %s", marshalErr)
-					continue
-				}
-				if s.Cfg.Outfile != "" {
-					writeErr := os.WriteFile(s.Cfg.Outfile, definedOperations, 0644)
-					if writeErr != nil {
-						output.PrintErr("Error writing file: %s", writeErr)
-					} else {
-						f, _ := filepath.Abs(s.Cfg.Outfile)
-						output.PrintInfo("Wrote file to %s\n", f)
-					}
+			definedOperations, marshalErr := json.Marshal(m.spec)
+			if marshalErr != nil {
+				output.PrintErr("Error parsing definition file: %s", marshalErr)
+				continue
+			}
+			if s.Cfg.Outfile != "" {
+				writeErr := os.WriteFile(s.Cfg.Outfile, definedOperations, 0644)
+				if writeErr != nil {
+					output.PrintErr("Error writing file: %s", writeErr)
 				} else {
-					fmt.Println(string(definedOperations))
+					f, _ := filepath.Abs(s.Cfg.Outfile)
+					output.PrintInfo("Wrote file to %s\n", f)
 				}
+			} else {
+				fmt.Println(string(definedOperations))
 			}
 		}
 
@@ -124,8 +118,6 @@ func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
 				output.PrintInfo("%s\n", line)
 			}
 		}
-	} else {
-		output.PrintErr("\nNo definition file found for:\t%s", targetURL)
 	}
 
 	if len(interesting) > 0 {
@@ -141,9 +133,6 @@ func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
 	return report
 }
 
-// findAllDefinitionFiles iterates over candidate URLs, fetches each one, and
-// attempts to parse the response as an OpenAPI spec. HTML pages are scanned
-// for embedded spec-URL references, which are then also fetched.
 func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting, Summary) {
 	var matches []match
 	var interesting []Interesting
@@ -153,20 +142,43 @@ func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting,
 	for _, u := range urls {
 		tested[u] = true
 	}
-
 	foundURLs := make(map[string]bool)
-	var extraURLs []string
 
-	processURL := func(targetURL string, index, total int) {
-		summary.URLsTested++
+	// variationQueue holds smart path variations generated from found specs.
+	var variationQueue []string
 
-		bodyBytes, ct, statusCode := s.Client.BruteFetch(targetURL)
-
-		if index == total-1 {
-			fmt.Fprintf(os.Stderr, "\033[2K\r%s%d\n", "Request: ", index+1)
-		} else {
-			fmt.Fprintf(os.Stderr, "\033[2K\r%s%d", "Request: ", index+1)
+	addMatch := func(targetURL, ct, version string, spec *openapi3.T) {
+		if foundURLs[targetURL] {
+			return
 		}
+		foundURLs[targetURL] = true
+		m := match{url: targetURL, contentType: ct, spec: spec, version: version}
+		if spec.Info != nil {
+			m.title = spec.Info.Title
+			m.description = spec.Info.Description
+		}
+		matches = append(matches, m)
+
+		// Print immediately so the operator sees results in real time.
+		fmt.Fprintf(os.Stderr, "\033[2K\r")
+		if m.title != "" {
+			output.PrintInfo("Definition file found: %s (OpenAPI %s, %s)\n", targetURL, version, m.title)
+		} else {
+			output.PrintInfo("Definition file found: %s (OpenAPI %s)\n", targetURL, version)
+		}
+
+		// Generate smart variations and queue them.
+		for _, v := range GeneratePathVariations(targetURL) {
+			if !tested[v] {
+				tested[v] = true
+				variationQueue = append(variationQueue, v)
+			}
+		}
+	}
+
+	processURL := func(targetURL string) {
+		summary.URLsTested++
+		bodyBytes, ct, statusCode := s.Client.BruteFetch(targetURL)
 
 		if statusCode == 0 {
 			summary.Errors++
@@ -192,15 +204,7 @@ func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting,
 
 		if strings.Contains(ctLower, "application/json") || isYAMLContentType(ctLower) {
 			if spec, version := TryParseAsSpec(bodyBytes); spec != nil {
-				if !foundURLs[targetURL] {
-					foundURLs[targetURL] = true
-					m := match{url: targetURL, contentType: ct, spec: spec, version: version}
-					if spec.Info != nil {
-						m.title = spec.Info.Title
-						m.description = spec.Info.Description
-					}
-					matches = append(matches, m)
-				}
+				addMatch(targetURL, ct, version, spec)
 			}
 			return
 		}
@@ -208,12 +212,7 @@ func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting,
 		if strings.Contains(ctLower, "application/javascript") || strings.Contains(ctLower, "text/javascript") {
 			if jsonContent, ok := openapi.ExtractJSONFromJSSpec(bodyBytes); ok {
 				if spec, version := TryParseAsSpec(jsonContent); spec != nil {
-					m := match{url: targetURL, contentType: ct, spec: spec, version: version}
-					if spec.Info != nil {
-						m.title = spec.Info.Title
-						m.description = spec.Info.Description
-					}
-					matches = append(matches, m)
+					addMatch(targetURL, ct, version, spec)
 				}
 			}
 			return
@@ -224,13 +223,15 @@ func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting,
 			for _, su := range specURLs {
 				if !tested[su] {
 					tested[su] = true
-					extraURLs = append(extraURLs, su)
+					variationQueue = append(variationQueue, su)
 				}
 			}
 			if len(specURLs) > 0 {
 				interesting = append(interesting, Interesting{
 					URL: targetURL, StatusCode: statusCode, ContentType: ct,
 				})
+				fmt.Fprintf(os.Stderr, "\033[2K\r")
+				output.PrintInfo("Interesting: %s (HTML with %d spec URLs)\n", targetURL, len(specURLs))
 			}
 			return
 		}
@@ -238,36 +239,42 @@ func (s *Scanner) findAllDefinitionFiles(urls []string) ([]match, []Interesting,
 		urlLower := strings.ToLower(targetURL)
 		if strings.HasSuffix(urlLower, ".json") || strings.HasSuffix(urlLower, ".yaml") || strings.HasSuffix(urlLower, ".yml") {
 			if spec, version := TryParseAsSpec(bodyBytes); spec != nil {
-				if !foundURLs[targetURL] {
-					foundURLs[targetURL] = true
-					m := match{url: targetURL, contentType: ct, spec: spec, version: version}
-					if spec.Info != nil {
-						m.title = spec.Info.Title
-						m.description = spec.Info.Description
-					}
-					matches = append(matches, m)
-				}
+				addMatch(targetURL, ct, version, spec)
 			}
 		}
 	}
 
+	// Phase 1: test all URLs, but drain the variation queue eagerly after each hit.
 	for i, u := range urls {
-		processURL(u, i, len(urls))
-	}
+		fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", i+1, len(urls))
+		processURL(u)
 
-	if len(extraURLs) > 0 {
-		output.PrintInfo("\nDiscovered %d additional spec URLs from HTML pages. Testing...\n", len(extraURLs))
-		for i, u := range extraURLs {
-			processURL(u, i, len(extraURLs))
+		// After each main URL, drain any queued variations immediately.
+		for len(variationQueue) > 0 {
+			batch := variationQueue
+			variationQueue = nil
+			for _, v := range batch {
+				fmt.Fprintf(os.Stderr, "\033[2K\rVariation: %s", v)
+				processURL(v)
+			}
+		}
+
+		// Once we've found specs and finished priority URLs, stop the bulk scan.
+		// Priority URLs are at the front of the list; bulk prefix-dir combos follow.
+		// We use a heuristic: if we have matches and we're past the priority phase
+		// (index > len(PriorityURLs)), stop early to avoid triggering WAF/CDN blocks.
+		if len(matches) > 0 && i >= len(PriorityURLs) {
+			fmt.Fprintf(os.Stderr, "\033[2K\r")
+			output.PrintInfo("Found %d spec(s), stopping early to avoid excessive requests (%d/%d tested).\n",
+				len(matches), summary.URLsTested, len(urls))
+			break
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "\033[2K\r")
 	return matches, interesting, summary
 }
 
-// TryParseAsSpec attempts to parse raw bytes as an OpenAPI 3.x or Swagger 2.0
-// spec (JSON or YAML). Returns the parsed spec and its version string, or nil
-// if parsing fails.
 func TryParseAsSpec(bodyBytes []byte) (*openapi3.T, string) {
 	var doc3 openapi3.T
 	_ = json.Unmarshal(bodyBytes, &doc3)
@@ -302,7 +309,6 @@ func TryParseAsSpec(bodyBytes []byte) (*openapi3.T, string) {
 	return nil, ""
 }
 
-// isYAMLContentType returns true when ct looks like a YAML media type.
 func isYAMLContentType(ct string) bool {
 	return strings.Contains(ct, "application/yaml") ||
 		strings.Contains(ct, "application/x-yaml") ||
