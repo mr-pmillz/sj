@@ -34,12 +34,12 @@ func Die(format string, args ...interface{}) {
 }
 
 type Writer struct {
-	Cfg                    *config.Config
-	Results                []Result
-	VerboseResults         []VerboseResult
-	AccessibleEndpoints    []string
-	SpecTitle              string
-	SpecDescription        string
+	Cfg                 *config.Config
+	Results             []Result
+	VerboseResults      []VerboseResult
+	AccessibleEndpoints []string
+	SpecTitle           string
+	SpecDescription     string
 }
 
 func NewWriter(cfg *config.Config) *Writer {

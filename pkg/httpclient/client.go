@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/mr-pmillz/sj/pkg/config"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"github.com/mr-pmillz/sj/pkg/config"
 )
 
 type Client struct {
