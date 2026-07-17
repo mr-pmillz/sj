@@ -9,7 +9,7 @@
 
 sj is a command line tool designed to assist with auditing exposed Swagger/OpenAPI definition files by checking the associated API endpoints for weak authentication. It also provides command templates for manual vulnerability testing.
 
-It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Use one of six subcommands:
+It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Use one of seven subcommands:
 
 | Command | Description |
 |---------|-------------|
@@ -19,6 +19,7 @@ It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON S
 | `endpoints` | Lists raw API routes (no parameter substitution) |
 | `brute` | Discovers hidden definition files via common file paths |
 | `convert` | Converts Swagger v2 definitions to OpenAPI v3 |
+| `mcp` | Starts an optional, policy-constrained MCP server for AI agents |
 
 ## Installation
 
@@ -154,6 +155,23 @@ Convert a Swagger v2 file to OpenAPI v3:
 sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 ```
 
+### MCP Server
+
+Expose typed `sj` tools to an MCP client over standard input/output:
+
+```json
+{
+  "mcpServers": {
+    "sj": {
+      "command": "/absolute/path/to/sj",
+      "args": ["mcp", "--allow-host", "api.example.com", "--allow-active"]
+    }
+  }
+}
+```
+
+The server provides passive audit, request-planning, and conversion tools plus opt-in active scanning and definition discovery. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
+
 ## Key Features
 
 - **OpenAPI 3.2 Support** — Handles `QUERY`, `additionalOperations`, `querystring` parameters, webhooks, callbacks, modern JSON Schema keywords, and layered server/parameter overrides.
@@ -166,6 +184,7 @@ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 - **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).
+- **MCP Server** — Lets AI agents use typed, structured audit tools over stdio with host allowlists, local-file isolation, active/destructive gates, cancellation, and bounded results.
 
 ## Global Flags
 
@@ -206,7 +225,9 @@ sj/
 │   ├── audit/                # Passive security and contract checks
 │   ├── httpclient/           # HTTP client with random UA
 │   ├── openapi/              # Spec parsing, schema resolution
+│   ├── mcpserver/             # Typed MCP tools and policy enforcement
 │   ├── output/               # Multi-format result output
+│   ├── specsource/            # Bounded URL/local specification loading
 │   ├── scanner/              # Request building & scanning
 │   └── brute/                # Brute-force URL discovery
 ├── docs/                     # Astro Starlight documentation

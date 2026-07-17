@@ -19,6 +19,7 @@ sj/
 │       ├── brute.go          # brute subcommand
 │       ├── convert.go        # convert subcommand
 │       ├── endpoints.go      # endpoints subcommand
+│       ├── mcp.go            # MCP stdio server subcommand
 │       ├── prepare.go        # prepare subcommand
 │       └── spec.go           # Shared spec-loading helper
 ├── pkg/
@@ -26,9 +27,11 @@ sj/
 │   ├── audit/                # Passive security and contract analysis
 │   ├── config/               # Config struct and mode constants
 │   ├── httpclient/           # HTTP client wrapper (proxy, TLS, User-Agent)
+│   ├── mcpserver/            # Typed MCP handlers and security policy
 │   ├── openapi/              # OpenAPI/Swagger parsing, conversion, resolution
 │   ├── output/               # Colored console output, structured writers
-│   └── scanner/              # Request generation and endpoint scanning
+│   ├── scanner/              # Request generation and endpoint scanning
+│   └── specsource/           # Shared bounded source loading
 ├── version.go                # Version, commit, and build-date variables
 ├── Makefile                  # Build, test, lint, and install targets
 ├── Dockerfile                # Multi-arch container image
@@ -53,6 +56,14 @@ Wraps the standard `net/http` client with explicit proxy configuration, TLS 1.2 
 
 Parses Swagger 2.0 and OpenAPI 3.0–3.2 definition files. Handles confined local `$ref` resolution, v2-to-v3 conversion, modern JSON Schema examples, and endpoint metadata.
 
+### `pkg/mcpserver`
+
+Registers typed tools using the official MCP Go SDK. It applies host allowlists, local-file and active-request gates, output limits, context cancellation, and structured tool errors before calling the same audit, scanner, brute-force, and conversion packages used by the CLI.
+
+### `pkg/specsource`
+
+Loads remote and local specifications with the configured size, timeout, redirect, proxy, and confined-reference policies. Both Cobra commands and MCP tools use this package.
+
 ### `pkg/audit`
 
 Performs deterministic, network-free checks of security requirements, schemes, servers, operation metadata, path parameters, callbacks, and webhooks. It renders console, JSON, and SARIF reports.
@@ -75,7 +86,7 @@ Provides colored console output helpers (`PrintInfo`, `PrintErr`, `Die`) and str
 CLI flags → config.Config
                 │
                 ▼
-        loadSpec (URL or file)
+        specsource.Load (URL or file)
                 │
                 ▼
         openapi.Parse / Validate / Resolve

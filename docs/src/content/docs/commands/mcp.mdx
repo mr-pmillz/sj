@@ -1,0 +1,61 @@
+---
+title: mcp
+description: Run sj as a policy-constrained Model Context Protocol server for AI agents.
+---
+
+The `mcp` command exposes typed `sj` tools over the Model Context Protocol (MCP) standard input/output transport. It uses `github.com/modelcontextprotocol/go-sdk` v1.6.1 and returns JSON-schema-described structured results.
+
+```bash
+sj mcp [policy flags] [global network flags]
+```
+
+Stdout is reserved for MCP protocol messages. Diagnostics are written to stderr.
+
+## Client Configuration
+
+Point an MCP client at the absolute path to the `sj` binary:
+
+```json
+{
+  "mcpServers": {
+    "sj": {
+      "command": "/absolute/path/to/sj",
+      "args": [
+        "mcp",
+        "--allow-host", "api.example.com",
+        "--allow-host", "*.staging.example.com",
+        "--allow-active"
+      ]
+    }
+  }
+}
+```
+
+## Available Tools
+
+| Tool | Behavior |
+|---|---|
+| `audit_openapi` | Passively returns security and contract findings. |
+| `plan_openapi_requests` | Builds operation URLs without sending requests or returning credentials. |
+| `convert_openapi` | Converts Swagger 2 to bounded OpenAPI 3 JSON or YAML. |
+| `scan_openapi` | Sends documented API requests when active access is enabled. |
+| `discover_openapi` | Probes common definition paths when active access is enabled. |
+
+Each document tool accepts exactly one source: inline `document`, allowlisted `url`, or an enabled `local_file`.
+
+## Security Policy
+
+The default server permits only passive operations on inline documents. Enable additional authority explicitly:
+
+| Flag | Default | Purpose |
+|---|---:|---|
+| `--allow-host HOST` | none | Permit remote specification or target access. Repeat for exact hosts, `host:port`, `*.example.com`, IP addresses, or use `'*'` explicitly. |
+| `--allow-local-files` | false | Permit local files and references confined beneath the source directory. |
+| `--allow-active` | false | Permit bounded scanning and definition discovery. |
+| `--allow-destructive` | false | Permit `scan_openapi` calls with `accept_risk=true`; requires active access. |
+| `--max-results N` | `1000` | Bound findings, operations, and returned discovery rows per call; discovery reports indicate truncation. |
+| `--max-output-bytes N` | `1048576` | Bound encoded structured output per call. |
+| `--max-input-bytes N` | `16777216` | Reject oversized protocol messages before the SDK decodes tool arguments. |
+| `--max-concurrent N` | `4` | Bound concurrently executing tool calls across one server process. |
+
+Global timeout, response/specification size, header, TLS, HTTP proxy, and SOCKS5 flags apply to MCP network calls. Configure authentication only in a controlled launcher: command arguments and client configuration may be visible to local users. MCP client cancellation is propagated to in-flight requests.

@@ -45,6 +45,7 @@ export default defineConfig({
                 'commands/brute',
                 'commands/convert',
                 'commands/endpoints',
+                'commands/mcp',
                 'commands/prepare',
               ],
             },

@@ -67,16 +67,16 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 		return fmt.Errorf("build requests: %w", err)
 	}
 
-	for _, plan := range plans {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("request generation canceled: %w", err)
+	switch cfg.Mode {
+	case config.ModeAutomate:
+		if err := ExecuteRequestPlansContextE(ctx, plans, client, cfg, writer); err != nil {
+			return err
 		}
-		switch cfg.Mode {
-		case config.ModeAutomate:
-			if err := executePlanContext(ctx, plan, client, cfg, writer); err != nil {
-				return err
+	case config.ModePrepare:
+		for _, plan := range plans {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("request generation canceled: %w", err)
 			}
-		case config.ModePrepare:
 			command := plan.Curl
 			if strings.EqualFold(cfg.PrepareFor, "sqlmap") {
 				command = sqlmapCommand(plan)
@@ -90,6 +90,21 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 	if finalize && cfg.Mode == config.ModeAutomate {
 		if err := writer.FinalizeOutput(); err != nil {
 			return fmt.Errorf("write output: %w", err)
+		}
+	}
+	return nil
+}
+
+// ExecuteRequestPlansContextE executes a preflighted set of request plans and
+// records their results without finalizing output. Callers can enforce policy
+// and result limits before any network side effect occurs.
+func ExecuteRequestPlansContextE(ctx context.Context, plans []RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) error {
+	for _, plan := range plans {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("request execution canceled: %w", err)
+		}
+		if err := executePlanContext(ctx, plan, client, cfg, writer); err != nil {
+			return err
 		}
 	}
 	return nil
