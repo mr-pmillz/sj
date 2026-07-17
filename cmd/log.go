@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/fatih/color"
 )
@@ -50,7 +53,7 @@ func die(format string, args ...interface{}) {
 }
 
 // writeLog is the main dispatch function for endpoint results.
-func writeLog(sc int, target, method, errorMsg, response string) {
+func writeLog(sc int, target, method, _ string, response string) {
 	var out io.Writer = os.Stdout
 	tempResponsePreviewLength := responsePreviewLength
 
@@ -84,14 +87,14 @@ func writeLog(sc int, target, method, errorMsg, response string) {
 			logJSON(specTitle, specDescription, out)
 		}
 	default:
-		logResult(sc, target, method, errorMsg, preview, out)
+		logResult(sc, target, method, preview, out)
 	}
 
 	responsePreviewLength = tempResponsePreviewLength
 }
 
 // logResult renders a single endpoint result line.
-func logResult(sc int, target, method, errorMsg, preview string, out io.Writer) {
+func logResult(sc int, target, method, preview string, out io.Writer) {
 	var sym string
 	var painter func(a ...interface{}) string
 
@@ -131,6 +134,11 @@ func logResult(sc int, target, method, errorMsg, preview string, out io.Writer) 
 	}
 }
 
+// logProgress prints a console-style progress line to stderr.
+func logProgress(sc int, target, method, preview string) {
+	logResult(sc, target, method, preview, os.Stderr)
+}
+
 func logJSON(title, description string, out io.Writer) {
 	output := struct {
 		APITitle    string   `json:"apiTitle"`
@@ -157,4 +165,132 @@ func logVerboseJSON(title, description string, out io.Writer) {
 	}
 	data, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Fprintln(out, string(data))
+}
+
+// --- Multi-format output ---
+
+func writeJSONL(title, description string, out io.Writer) {
+	if verbose {
+		for _, r := range jsonVerboseResultArray {
+			data, _ := json.Marshal(r)
+			fmt.Fprintln(out, string(data))
+		}
+	} else {
+		for _, r := range jsonResultArray {
+			data, _ := json.Marshal(r)
+			fmt.Fprintln(out, string(data))
+		}
+	}
+}
+
+func writeCSV(out io.Writer) {
+	w := csv.NewWriter(out)
+	defer w.Flush()
+
+	if verbose {
+		w.Write([]string{"method", "status", "target", "preview", "curl"})
+		for _, r := range jsonVerboseResultArray {
+			w.Write([]string{
+				r.Method,
+				fmt.Sprintf("%d", r.Status),
+				r.Target,
+				r.Preview,
+				r.Curl,
+			})
+		}
+	} else {
+		w.Write([]string{"method", "status", "target"})
+		for _, r := range jsonResultArray {
+			w.Write([]string{
+				r.Method,
+				fmt.Sprintf("%d", r.Status),
+				r.Target,
+			})
+		}
+	}
+}
+
+// writeAllFormats writes json, jsonl, and csv files using the outfile base name.
+func writeAllFormats(title, description string) {
+	base := strings.TrimSuffix(outfile, filepath.Ext(outfile))
+
+	jsonPath := base + ".json"
+	jsonlPath := base + ".jsonl"
+	csvPath := base + ".csv"
+
+	// JSON
+	if f, err := os.Create(jsonPath); err == nil {
+		color.NoColor = true
+		if verbose {
+			logVerboseJSON(title, description, f)
+		} else {
+			logJSON(title, description, f)
+		}
+		f.Close()
+		color.NoColor = false
+		printInfo("Wrote %s\n", jsonPath)
+	} else {
+		printErr("Error writing %s: %v", jsonPath, err)
+	}
+
+	// JSONL
+	if f, err := os.Create(jsonlPath); err == nil {
+		writeJSONL(title, description, f)
+		f.Close()
+		printInfo("Wrote %s\n", jsonlPath)
+	} else {
+		printErr("Error writing %s: %v", jsonlPath, err)
+	}
+
+	// CSV
+	if f, err := os.Create(csvPath); err == nil {
+		writeCSV(f)
+		f.Close()
+		printInfo("Wrote %s\n", csvPath)
+	} else {
+		printErr("Error writing %s: %v", csvPath, err)
+	}
+}
+
+// finalizeOutput is called at the end of automate to write results in the
+// requested format(s).
+func finalizeOutput(title, description string) {
+	ofmt := strings.ToLower(outputFormat)
+
+	if outputAllFormats {
+		writeAllFormats(title, description)
+		return
+	}
+
+	var out io.Writer = os.Stdout
+	if outfile != "" {
+		f, err := os.Create(outfile)
+		if err != nil {
+			die("Error opening output file: %v", err)
+		}
+		defer f.Close()
+		out = f
+		color.NoColor = true
+		defer func() { color.NoColor = false }()
+	}
+
+	switch ofmt {
+	case "json":
+		if verbose {
+			logVerboseJSON(title, description, out)
+		} else {
+			logJSON(title, description, out)
+		}
+	case "jsonl":
+		writeJSONL(title, description, out)
+	case "csv":
+		writeCSV(out)
+	default:
+		// console — already written inline during processing
+		return
+	}
+
+	if outfile != "" {
+		printInfo("Wrote %s\n", outfile)
+	}
 }

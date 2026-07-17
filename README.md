@@ -13,12 +13,12 @@ It does this by parsing the definition file for paths, parameters, and accepted 
 
 ## Build
 
-To compile from source, ensure you have Go version `>= 1.22.5` installed and run `go build` from within the repository:
+To compile from source, ensure you have Go version `>= 1.26.5` installed and run `go build` from within the repository:
 
 ```bash
-$ git clone https://github.com/BishopFox/sj.git
+$ git clone https://github.com/mr-pmillz/sj.git
 $ cd sj/
-$ go build .
+$ make build
 ```
 
 ## Install
@@ -26,7 +26,7 @@ $ go build .
 To install the latest version of the tool, run:
 
 ```bash
-$ go install github.com/BishopFox/sj@latest
+$ go install github.com/mr-pmillz/sj@latest
 
 # Note: you may also need to place the path to your Go binaries within your PATH environment variable:
 $ export PATH=$PATH:~/go/bin

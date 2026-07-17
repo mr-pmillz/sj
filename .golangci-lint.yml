@@ -1,0 +1,52 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - dupl
+    - errorlint
+    - gocognit
+    - goconst
+    - gocritic
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - staticcheck
+    - unconvert
+    - unused
+    - whitespace
+  settings:
+    goconst:
+      ignore-tests: true
+    gosec:
+      excludes:
+        - G306
+    staticcheck:
+      checks:
+        - -S1028
+        - all
+        - -QF1002
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+    rules:
+      - linters:
+          - goconst
+          - dupl
+        path: _test\.go$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

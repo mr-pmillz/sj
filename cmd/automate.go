@@ -11,9 +11,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var acceptRisk bool
 var getAccessibleEndpoints bool
 var outputFormat string
+var outputAllFormats bool
+var progressDisplay bool
 var responsePreviewLength int
+var retryOnHint bool
 var testString string
 var verbose bool
 
@@ -24,19 +28,26 @@ var automateCmd = &cobra.Command{
 This enables the user to get a quick look at which endpoints require authentication and which ones do not. If a request
 responds in an abnormal way, manual testing should be conducted (prepare manual tests using the "prepare" command).`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if outfile != "" && strings.ToLower(outputFormat) != "" {
-			if !strings.HasSuffix(strings.ToLower(outfile), "json") && strings.ToLower(outputFormat) != "json" {
-				die("Only the JSON output format is supported at the moment.")
-			} else if strings.HasSuffix(strings.ToLower(outfile), "json") && strings.ToLower(outputFormat) == "console" {
-				outputFormat = "json"
-			}
+		ofmt := strings.ToLower(outputFormat)
+
+		if outputAllFormats && outfile == "" {
+			die("The --output-all-formats flag requires -o to set a base output path.")
 		}
 
-		/* // NEED TO RE-IMPLEMENT RATE LIMIT
-		if rateLimit <= 0 {
-			log.Fatal("Invalid rate supplied. Must be a positive number")
+		if outfile != "" && ofmt != "" {
+			if !outputAllFormats {
+				switch ofmt {
+				case "json", "jsonl", "csv", "console":
+					// valid
+				default:
+					die("Unsupported output format '%s'. Supported: console, json, jsonl, csv.", outputFormat)
+				}
+				if strings.HasSuffix(strings.ToLower(outfile), "json") && ofmt == "console" {
+					outputFormat = "json"
+					ofmt = "json"
+				}
+			}
 		}
-		*/
 
 		if randomUserAgent {
 			if UserAgent != "Swagger Jacker (github.com/BishopFox/sj)" {
@@ -54,7 +65,7 @@ responds in an abnormal way, manual testing should be conducted (prepare manual 
 
 		client, replayClient := CheckAndConfigureProxy()
 
-		if strings.ToLower(outputFormat) != "json" {
+		if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
 			fmt.Printf("\n")
 			printInfo("Gathering API details.\n")
 		}
@@ -66,7 +77,6 @@ responds in an abnormal way, manual testing should be conducted (prepare manual 
 			if err != nil {
 				die("Error opening file: %v", err)
 			}
-			// Set the base directory for resolving external refs
 			specBaseDir = filepath.Dir(localFile)
 			if specBaseDir == "." {
 				if absPath, err := filepath.Abs(localFile); err == nil {
@@ -76,20 +86,19 @@ responds in an abnormal way, manual testing should be conducted (prepare manual 
 
 			bodyBytes, _ = io.ReadAll(specFile)
 		}
-		/* // NEED TO RE-IMPLEMENT RATE LIMIT
-		if rateLimit > 0 && strings.ToLower(outputFormat) != "json" {
-			log.Info("Sending requests at a rate of ", rateLimit, " requests per second.")
-		}
-		*/
+
 		GenerateRequests(bodyBytes, client, replayClient)
 	},
 }
 
 func init() {
-	automateCmd.PersistentFlags().StringVarP(&outputFormat, "output-format", "F", "console", "The output format. Only 'console' (default) and 'json' are supported at the moment.")
+	automateCmd.PersistentFlags().BoolVar(&acceptRisk, "accept-risk", false, "Automatically accept all dangerous keyword warnings without prompting.")
+	automateCmd.PersistentFlags().StringVarP(&outputFormat, "output-format", "F", "console", "Output format: 'console' (default), 'json', 'jsonl', or 'csv'.")
 	automateCmd.PersistentFlags().BoolVar(&getAccessibleEndpoints, "get-accessible-endpoints", false, "Only output the accessible endpoints (those that return a 200 status code).")
+	automateCmd.PersistentFlags().BoolVarP(&outputAllFormats, "output-all-formats", "O", false, "Write results in all formats (json, jsonl, csv). Requires -o for base filename.")
+	automateCmd.PersistentFlags().BoolVar(&progressDisplay, "progress", false, "Show console-style progress on stderr while using a structured output format (json/jsonl/csv).")
+	automateCmd.PersistentFlags().BoolVar(&retryOnHint, "retry-on-hint", false, "Retry requests that return 401 with hints about missing parameters.")
 	automateCmd.PersistentFlags().StringVar(&testString, "test-string", "bishopfox", "The string to use when testing endpoints with string values.")
-	automateCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose mode, which shows a preview of each response.")
-	automateCmd.PersistentFlags().IntVar(&responsePreviewLength, "response-preview-length", 50, "sets the response preview length when using verbose output.")
-
+	automateCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose mode, which shows a preview of each response.")
+	automateCmd.PersistentFlags().IntVar(&responsePreviewLength, "response-preview-length", 50, "Sets the response preview length when using verbose output.")
 }

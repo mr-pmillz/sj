@@ -1,3 +1,58 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+.env
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage/
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
 sj
 dist/
 *.txt
+*.json
+targets/
+
+# MCP config (contains API keys)
+mcp.json
+.mcp.json
+
+# Worktrees
+.worktrees/
+
+# Configs
+config.yaml
+
+# git-cliff release changelog
+RELEASE_CHANGELOG.md
+
+# codex files
+.codex
+
+# claude
+.observer.lock
+Plans/
+.playwright-mcp/

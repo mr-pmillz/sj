@@ -16,7 +16,6 @@ import (
 )
 
 var accessibleEndpoints []string
-var jsonResultsStringArray []string
 var jsonResultArray []Result
 var jsonVerboseResultArray []VerboseResult
 var specTitle string
@@ -309,42 +308,36 @@ func BuildRequestsFromPaths(spec map[string]interface{}, client http.Client, rep
 
 							_, resp, sc := MakeRequest(client, strings.ToUpper(method), targetURL, timeout, bytes.NewReader([]byte(postBodyData)))
 
+							if retryOnHint && sc == 401 {
+								resp, sc = retryWithHints(client, strings.ToUpper(method), targetURL, postBodyData, resp, sc)
+							}
+
 							tempResponsePreviewLength := responsePreviewLength
 							if len(resp) <= responsePreviewLength {
 								tempResponsePreviewLength = len(resp)
 							}
 
-							var result []byte
+							preview := resp[:tempResponsePreviewLength]
 
 							if verbose {
-								result, _ = json.Marshal(VerboseResult{Method: method, Preview: resp[:tempResponsePreviewLength], Status: sc, Target: logURL.Path, Curl: curl})
+								jsonVerboseResultArray = append(jsonVerboseResultArray, VerboseResult{
+									Method: method, Preview: preview, Status: sc, Target: logURL.Path, Curl: curl,
+								})
 							} else {
-								result, _ = json.Marshal(Result{Method: method, Status: sc, Target: logURL.Path})
+								jsonResultArray = append(jsonResultArray, Result{
+									Method: method, Status: sc, Target: logURL.Path,
+								})
 							}
 
-							if getAccessibleEndpoints {
-								if sc == 200 {
+							shouldRecord := !getAccessibleEndpoints || sc == 200
+							if shouldRecord {
+								if getAccessibleEndpoints {
 									accessibleEndpoints = append(accessibleEndpoints, logURL.Path)
-									if jsonResultsStringArray == nil {
-										jsonResultsStringArray = append(jsonResultsStringArray, string(result))
-									} else {
-										jsonResultsStringArray = append(jsonResultsStringArray, ","+string(result))
-									}
-									if outputFormat == "console" {
-										writeLog(sc, logURL.Path, strings.ToUpper(method), errorDescriptions[sc], resp[:tempResponsePreviewLength])
-									}
-									if replayClient != nil {
-										ReplayRequest(replayClient, strings.ToUpper(method), targetURL, timeout, bytes.NewReader([]byte(postBodyData)))
-									}
-								}
-							} else {
-								if jsonResultsStringArray == nil {
-									jsonResultsStringArray = append(jsonResultsStringArray, string(result))
-								} else {
-									jsonResultsStringArray = append(jsonResultsStringArray, ","+string(result))
 								}
 								if outputFormat == "console" {
-									writeLog(sc, logURL.Path, strings.ToUpper(method), errorDescriptions[sc], resp[:tempResponsePreviewLength])
+									writeLog(sc, logURL.Path, strings.ToUpper(method), "", preview)
+								} else if progressDisplay {
+									logProgress(sc, logURL.Path, strings.ToUpper(method), preview)
 								}
 								if replayClient != nil {
 									ReplayRequest(replayClient, strings.ToUpper(method), targetURL, timeout, bytes.NewReader([]byte(postBodyData)))
@@ -372,25 +365,11 @@ func BuildRequestsFromPaths(spec map[string]interface{}, client http.Client, rep
 			}
 		}
 	}
-	if os.Args[1] == "automate" && outputFormat == "json" {
-		for r := range jsonResultsStringArray {
-			var result Result
-			var verboseResult VerboseResult
-			if verbose {
-				err := json.Unmarshal([]byte(strings.TrimPrefix(jsonResultsStringArray[r], ",")), &verboseResult)
-				if err != nil {
-					die("Error marshalling JSON: %v", err)
-				}
-				jsonVerboseResultArray = append(jsonVerboseResultArray, verboseResult)
-			} else {
-				err := json.Unmarshal([]byte(strings.TrimPrefix(jsonResultsStringArray[r], ",")), &result)
-				if err != nil {
-					die("Error marshalling JSON: %v", err)
-				}
-				jsonResultArray = append(jsonResultArray, result)
-			}
+	if os.Args[1] == "automate" {
+		ofmt := strings.ToLower(outputFormat)
+		if ofmt != "console" || outputAllFormats {
+			finalizeOutput(specTitle, specDescription)
 		}
-		writeLog(8899, "", "", "", "")
 	}
 }
 
@@ -824,19 +803,23 @@ func PrintSpecInfo(spec map[string]interface{}) {
 	} else {
 		title, ok := info["title"].(string)
 		if ok && title != "" {
-			if outputFormat == "json" {
-				specTitle = title
-			} else {
+			specTitle = title
+			ofmt := strings.ToLower(outputFormat)
+			if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
 				fmt.Printf("Title: %s\n", title)
+			} else {
+				printInfo("Title: %s\n", title)
 			}
 		}
 
 		description, ok := info["description"].(string)
 		if ok && description != "" {
-			if outputFormat == "json" {
-				specDescription = description
-			} else {
+			specDescription = description
+			ofmt := strings.ToLower(outputFormat)
+			if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
 				fmt.Printf("Description: %s\n", description)
+			} else {
+				printInfo("Description: %s\n", description)
 			}
 		}
 	}
@@ -931,4 +914,152 @@ func XmlFromObject(obj map[string]interface{}) string {
 	}
 
 	return b.String()
+}
+
+// retryWithHints retries a request when it returns 401 and the response body
+// contains hints about missing parameters. It parses common error patterns,
+// extracts mentioned parameter names, adds them to the request, and retries
+// up to 3 times. Returns the final response and status code.
+func retryWithHints(client http.Client, method, targetURL, postBodyData, prevResp string, prevSC int) (string, int) {
+	const maxRetries = 3
+	resp := prevResp
+	sc := prevSC
+
+	for attempt := 0; attempt < maxRetries && sc == 401; attempt++ {
+		hints := extractMissingParams(resp)
+		if len(hints) == 0 {
+			break
+		}
+
+		printInfo("[retry %d] 401 response mentions missing params %v — retrying with placeholders\n", attempt+1, hints)
+
+		if strings.ToUpper(method) == "GET" {
+			sep := "&"
+			if !strings.Contains(targetURL, "?") {
+				sep = "?"
+			}
+			for _, param := range hints {
+				targetURL += sep + param + "=" + testString
+				sep = "&"
+			}
+		} else {
+			var bodyObj map[string]interface{}
+			if err := json.Unmarshal([]byte(postBodyData), &bodyObj); err == nil {
+				for _, param := range hints {
+					if _, exists := bodyObj[param]; !exists {
+						bodyObj[param] = testString
+					}
+				}
+				updated, err := json.Marshal(bodyObj)
+				if err == nil {
+					postBodyData = string(updated)
+				}
+			} else {
+				for _, param := range hints {
+					if postBodyData != "" {
+						postBodyData += "&"
+					}
+					postBodyData += param + "=" + testString
+				}
+			}
+		}
+
+		_, newResp, newSC := MakeRequest(client, method, targetURL, timeout, bytes.NewReader([]byte(postBodyData)))
+		if newResp == resp {
+			break
+		}
+		resp = newResp
+		sc = newSC
+	}
+
+	return resp, sc
+}
+
+// extractMissingParams looks for common error-response patterns that name
+// missing or required parameters and returns the extracted parameter names.
+func extractMissingParams(body string) []string {
+	var params []string
+	seen := map[string]bool{}
+
+	var errObj map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &errObj); err != nil {
+		return nil
+	}
+
+	msg := ""
+	for _, key := range []string{"message", "error", "detail", "details", "msg"} {
+		if v, ok := errObj[key]; ok {
+			switch val := v.(type) {
+			case string:
+				msg = val
+			case []interface{}:
+				for _, item := range val {
+					if s, ok := item.(string); ok {
+						msg += " " + s
+					} else if m, ok := item.(map[string]interface{}); ok {
+						if s, ok := m["message"].(string); ok {
+							msg += " " + s
+						}
+						if s, ok := m["msg"].(string); ok {
+							msg += " " + s
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if msg == "" {
+		return nil
+	}
+
+	msgLower := strings.ToLower(msg)
+
+	patterns := []struct {
+		prefix string
+		sep    string
+	}{
+		{"missing parameter", ","},
+		{"missing required parameter", ","},
+		{"required parameter", ","},
+		{"missing field", ","},
+		{"required field", ","},
+		{"missing:", ","},
+		{"required:", ","},
+		{"missing subscript", ""},
+	}
+
+	for _, p := range patterns {
+		idx := strings.Index(msgLower, p.prefix)
+		if idx < 0 {
+			continue
+		}
+		after := strings.TrimSpace(msg[idx+len(p.prefix):])
+		after = strings.Trim(after, ".:;'\"` ")
+		if after == "" {
+			continue
+		}
+
+		if p.sep != "" {
+			for _, part := range strings.Split(after, p.sep) {
+				name := strings.TrimSpace(part)
+				name = strings.Trim(name, "'\"` ")
+				if name != "" && !seen[name] {
+					seen[name] = true
+					params = append(params, name)
+				}
+			}
+		} else {
+			name := strings.Fields(after)
+			if len(name) > 0 {
+				clean := strings.Trim(name[0], "'\"` ")
+				if clean != "" && !seen[clean] {
+					seen[clean] = true
+					params = append(params, clean)
+				}
+			}
+		}
+	}
+
+	return params
 }

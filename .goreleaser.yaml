@@ -1,66 +1,109 @@
+project_name: sj
 version: 2
+
+release:
+  github:
+    owner: mr-pmillz
+    name: sj
+  include_meta: true
+
+env:
+  - GO111MODULE=on
+  - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - windows
-      - darwin
+  - env: [CGO_ENABLED=0]
+    id: sj
+    main: ./cmd/sj
+    binary: sj
     flags:
       - -trimpath
-    ldflags:
-      - -s -w -X main.build={{.Version}}
+    asmflags:
+      - all=-trimpath={{.Env.GOPATH}}
+    gcflags:
+      - all=-trimpath={{.Env.GOPATH}}
+    ldflags: |
+      -s -w -X github.com/mr-pmillz/sj.version={{.Version}} -X github.com/mr-pmillz/sj.commit={{.Commit}} -X github.com/mr-pmillz/sj.date={{ .CommitDate }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # ensures mod timestamp to be the commit timestamp
+    mod_timestamp: "{{ .CommitTimestamp }}"
 
 
 archives:
-  - format: tar.gz
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    format_overrides:
-      - goos: windows
-        format: zip
+  - id: tgz
 
-dockers_v2:
-  - images:
-      - "ghcr.io/bishopfox/sj"
-    dockerfile: Dockerfile
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    tags:
-      - "{{ .Version }}"
-      - "latest"
-    labels:
-      org.opencontainers.image.title: "{{ .ProjectName }}"
-      org.opencontainers.image.description: "Swagger Jacker"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.revision: "{{ .FullCommit }}"
-      org.opencontainers.image.source: "https://github.com/BishopFox/sj"
-      org.opencontainers.image.licenses: "MIT"
+# Configures the checksum file generation
+# https://goreleaser.com/customization/checksum/
+checksum:
+  name_template: 'checksums.txt'
+
+# Change the digests filename for attestation
+# https://goreleaser.com/customization/attestations/?h=docker_digest
+docker_digest:
+  name_template: "digests.txt"
+
+# Creates a source code archive (tar.gz and zip)
+# https://goreleaser.com/customization/source/
+source:
+  enabled: true
 
 changelog:
-  disable: false
   sort: asc
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
   groups:
     - title: Features
-      regexp: "^(?i).*add.*$"
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
       order: 0
     - title: "Bug fixes"
-      regexp: "^(?i).*fix.*$"
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
       order: 1
-    - title: Others
-      order: 999
+    - title: "Performance"
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+
+# Creates Docker images and pushes them to registries using Docker v2 API
+# https://goreleaser.com/customization/docker/
+dockers_v2:
+  - images:
+      - "ghcr.io/mr-pmillz/{{ .ProjectName }}"
+    tags:
+      - "v{{ .Version }}"
+      - "latest"
+    dockerfile: Dockerfile
+    extra_files:
+      - entrypoint.sh
+    platforms:
+      - linux/amd64
+    annotations:
+      "org.opencontainers.image.description": "A tool for auditing endpoints defined in exposed (Swagger/OpenAPI) definition files."
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.name": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
+    labels:
+      "org.opencontainers.image.description": "A tool for auditing endpoints defined in exposed (Swagger/OpenAPI) definition files."
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.name": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
+
+announce:
+  teams:
+    enabled: true
+    title_template: '{{ .ProjectName }} {{ .Tag }} is out!'
+    message_template: '{{ .ReleaseNotes }}'
