@@ -1,0 +1,136 @@
+:root {
+  /* Security-tool green/teal accent */
+  --sl-color-accent-low: #0d3b2e;
+  --sl-color-accent: #10b981;
+  --sl-color-accent-high: #6ee7b7;
+
+  /* Typography */
+  --sl-font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, 'Andale Mono', monospace;
+
+  /* Layout */
+  --sl-sidebar-width: 280px;
+  --sl-content-width: 75rem;
+}
+
+/* Make table of contents (right sidebar) narrower */
+.right-sidebar {
+  width: 180px;
+  min-width: 180px;
+}
+
+.right-sidebar-container {
+  width: 180px;
+}
+
+/* Dark mode overrides */
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #064e3b;
+  --sl-color-accent: #34d399;
+  --sl-color-accent-high: #a7f3d0;
+}
+
+/* Code block styling */
+.expressive-code {
+  --ec-brdRad: 0.5rem;
+}
+
+/* Callout improvements */
+.starlight-aside {
+  border-radius: 0.5rem;
+}
+
+/* Table styling */
+table {
+  display: table;
+  width: 100%;
+  font-size: 0.875rem;
+  overflow-x: auto;
+}
+
+th {
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+/* Hero section for landing page */
+.hero {
+  text-align: center;
+  padding: 4rem 1rem;
+}
+
+.hero h1 {
+  font-size: 3rem;
+  font-weight: 800;
+  margin-bottom: 1rem;
+}
+
+.hero p {
+  font-size: 1.25rem;
+  color: var(--sl-color-gray-2);
+  max-width: 600px;
+  margin: 0 auto 2rem;
+}
+
+.hero-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.hero-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.hero-button.primary {
+  background: var(--sl-color-accent);
+  color: white;
+}
+
+.hero-button.primary:hover {
+  background: var(--sl-color-accent-high);
+}
+
+.hero-button.secondary {
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-text);
+}
+
+.hero-button.secondary:hover {
+  background: var(--sl-color-gray-5);
+}
+
+/* Feature cards */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  padding: 1.5rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
+}
+
+.feature-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+}
+
+.feature-card p {
+  margin: 0;
+  color: var(--sl-color-gray-2);
+  font-size: 0.875rem;
+}

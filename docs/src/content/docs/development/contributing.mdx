@@ -1,0 +1,90 @@
+---
+title: Contributing
+description: How to contribute to the sj project.
+---
+
+Contributions to `sj` are welcome. This guide covers the development workflow.
+
+## Getting Started
+
+1. Fork the repository on GitHub.
+2. Clone your fork:
+
+   ```bash
+   git clone https://github.com/<your-username>/sj.git
+   cd sj
+   ```
+
+3. Create a feature branch:
+
+   ```bash
+   git checkout -b feat/my-feature
+   ```
+
+## Development Setup
+
+Ensure you have Go 1.26+ installed, then install dependencies:
+
+```bash
+go mod download
+```
+
+Build and verify:
+
+```bash
+make build
+./bin/sj --version
+```
+
+## Running Tests
+
+```bash
+# Run all tests
+make test
+
+# Run tests with the race detector
+make test-race
+
+# Generate a coverage report
+make test-coverage
+open coverage/coverage.html
+```
+
+## Linting
+
+The project uses `golangci-lint`. Install it and run:
+
+```bash
+make lint
+```
+
+## Code Formatting
+
+```bash
+make fmt
+```
+
+This runs `gofmt` and `goimports` across the codebase.
+
+## Project Conventions
+
+- **Error handling**: Always wrap errors with context using `fmt.Errorf("...: %w", err)`.
+- **Packages**: Keep packages focused. Business logic belongs in `pkg/`; CLI wiring belongs in `internal/cli/`.
+- **Flags**: Global flags go on the root command in `root.go`. Command-specific flags go in that command's `init()` function.
+- **Testing**: Write table-driven tests. Use `go test -race ./...` before submitting.
+
+## Adding a New Command
+
+1. Create a new file in `internal/cli/` (e.g., `mycommand.go`).
+2. Define a `cobra.Command` variable and its `Run` function.
+3. Register the command in `root.go`'s `init()` with `rootCmd.AddCommand(myCommandCmd)`.
+4. Add any command-specific flags in the new file's `init()` function.
+5. Add documentation in `docs/src/content/docs/commands/mycommand.mdx`.
+6. Update the sidebar in `docs/astro.config.mjs`.
+
+## Submitting a Pull Request
+
+1. Ensure all tests pass: `make test`
+2. Ensure the linter is clean: `make lint`
+3. Push your branch and open a pull request against `main`.
+4. Describe your changes and include any relevant testing steps.

@@ -1,0 +1,90 @@
+---
+title: automate
+description: Send automated requests to discovered API endpoints.
+---
+
+The `automate` command sends a request to each endpoint discovered in a Swagger/OpenAPI definition file and reports the HTTP status code of each response. This gives you a quick view of which endpoints require authentication and which do not.
+
+## Usage
+
+```bash
+sj automate -u <URL> [flags]
+sj automate -l <FILE> [flags]
+```
+
+## Flags
+
+In addition to the [global flags](/commands/global-flags/), `automate` accepts:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--test-string` | | `testvalue` | The string value to use when testing endpoints that accept string parameters. |
+| `--verbose` | `-v` | `false` | Show a preview of each response body. |
+| `--response-preview-length` | | `50` | Number of characters to show in the response preview (requires `--verbose`). |
+| `--accept-risk` | | `false` | Automatically accept all dangerous-keyword warnings without prompting. |
+| `--get-accessible-endpoints` | | `false` | Only output endpoints that return a 200 status code. |
+| `--retry-on-hint` | | `false` | Retry requests that return 401 with hints about missing parameters. |
+| `--output-format` | `-F` | `console` | Output format: `console`, `json`, `jsonl`, or `csv`. |
+| `--output-all-formats` | `-O` | `false` | Write results in all formats (json, jsonl, csv). Requires `-o`. |
+| `--progress` | | `false` | Show console-style progress on stderr while using a structured output format. |
+
+## Examples
+
+### Basic scan
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json
+```
+
+### Verbose output with response previews
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json -v --response-preview-length 100
+```
+
+### Filter for accessible endpoints only
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json --get-accessible-endpoints
+```
+
+### JSON output to file
+
+```bash
+sj automate -u https://target.example.com/swagger.json -F json -o results.json
+```
+
+### Export all formats at once
+
+```bash
+sj automate -u https://target.example.com/swagger.json -O -o results
+```
+
+This writes `results.json`, `results.jsonl`, and `results.csv`.
+
+### Through a proxy with custom headers
+
+```bash
+sj automate -u https://target.example.com/swagger.json \
+  -p http://127.0.0.1:8080 \
+  -H "Authorization: Bearer TOKEN" \
+  --accept-risk
+```
+
+### From a local file
+
+```bash
+sj automate -l ./swagger.json -v
+```
+
+## How It Works
+
+1. The definition file is fetched from the URL or loaded from a local file.
+2. All endpoints and their HTTP methods are extracted.
+3. For each endpoint, parameter placeholders are filled with test values (the default string value is `testvalue`; URL parameters use `https://example.com`; date parameters use `1990-01-01`).
+4. A request is sent to each endpoint and the status code is recorded.
+5. Results are printed to the console or written to a file in the requested format.
+
+:::caution
+Some endpoints may perform write operations (POST, PUT, DELETE). Use `--quiet` or `--force` with care, and consider using `--safe-word` to exclude known safe terms from the dangerous-word prompt.
+:::

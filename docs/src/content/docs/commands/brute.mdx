@@ -1,0 +1,90 @@
+---
+title: brute
+description: Discover hidden Swagger/OpenAPI definition files by brute-forcing common paths.
+---
+
+The `brute` command sends requests to a target host to discover Swagger/OpenAPI definition files at commonly used paths. This is useful when you suspect a target exposes an API but do not know where the definition file is located.
+
+## Usage
+
+```bash
+sj brute -u <URL> [flags]
+sj brute -U <FILE> [flags]
+```
+
+## Flags
+
+In addition to the [global flags](/commands/global-flags/), `brute` accepts:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--wordlist` | `-w` | *(built-in)* | Path to a custom wordlist of paths to brute-force. |
+| `--endpoint-only` | `-e` | `false` | Only print the discovered endpoint path (no extra output). |
+| `--output-format` | `-F` | `console` | Output format: `console` or `json`. |
+| `--url-file` | `-U` | | File containing a list of target URLs to brute-force (one per line). |
+
+## Examples
+
+### Basic brute-force
+
+```bash
+sj brute -u https://target.example.com
+```
+
+### With a custom wordlist
+
+```bash
+sj brute -u https://target.example.com -w /path/to/wordlist.txt
+```
+
+### Endpoint-only output
+
+```bash
+sj brute -u https://target.example.com -e
+```
+
+### Batch mode with a URL file
+
+```bash
+sj brute -U urls.txt
+```
+
+Where `urls.txt` contains one target URL per line:
+
+```text
+https://target1.example.com
+https://target2.example.com
+https://target3.example.com
+```
+
+### JSON output
+
+```bash
+sj brute -u https://target.example.com -F json -o brute-results.json
+```
+
+### Through a proxy
+
+```bash
+sj brute -u https://target.example.com -p http://127.0.0.1:8080
+```
+
+## How It Works
+
+1. A list of common Swagger/OpenAPI paths is loaded (from the built-in list or a custom wordlist).
+2. Each path is appended to the target URL and a request is sent.
+3. Responses are analyzed to determine if a valid definition file was found.
+4. Discovered definition files are reported.
+5. In batch mode (`-U`), a summary is printed after all targets are processed.
+
+:::tip
+Combine `brute` with `automate` for a complete workflow: first discover the definition file, then scan all its endpoints.
+
+```bash
+# Step 1: Find the definition file
+sj brute -u https://target.example.com -e
+
+# Step 2: Scan the discovered endpoints
+sj automate -u https://target.example.com/swagger.json
+```
+:::

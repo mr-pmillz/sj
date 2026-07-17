@@ -1,0 +1,76 @@
+---
+title: prepare
+description: Generate commands for manual testing of each discovered endpoint.
+---
+
+The `prepare` command generates ready-to-use command-line commands (curl by default) for manual testing of each endpoint in a Swagger/OpenAPI definition file. This is useful for detailed investigation of specific endpoints after an initial `automate` scan.
+
+## Usage
+
+```bash
+sj prepare -u <URL> [flags]
+sj prepare -l <FILE> [flags]
+```
+
+## Flags
+
+In addition to the [global flags](/commands/global-flags/), `prepare` accepts:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--external-tool` | `-e` | `curl` | The external tool to generate commands for. Generates `curl` syntax by default. |
+
+## Examples
+
+### Generate curl commands
+
+```bash
+sj prepare -u https://petstore.swagger.io/v2/swagger.json
+```
+
+### From a local file
+
+```bash
+sj prepare -l ./swagger.json
+```
+
+### With a custom target host
+
+```bash
+sj prepare -u https://docs.example.com/swagger.json -T https://api.example.com
+```
+
+### With custom test values
+
+```bash
+sj prepare -u https://petstore.swagger.io/v2/swagger.json \
+  -c "https://evil.example.com" \
+  -d "2024-01-15"
+```
+
+### With authentication headers
+
+```bash
+sj prepare -u https://target.example.com/swagger.json \
+  -H "Authorization: Bearer TOKEN"
+```
+
+## How It Works
+
+1. The definition file is loaded and parsed.
+2. All endpoints and their HTTP methods are extracted.
+3. For each endpoint, parameter placeholders are filled with test values:
+   - String parameters use the `--custom-url` value (default: `https://example.com`)
+   - Date parameters use the `--custom-date` value (default: `1990-01-01`)
+   - Email parameters use the `--custom-email` value
+4. A command string is generated for the specified external tool.
+5. Commands are printed to stdout for copying or piping.
+
+:::tip
+Pipe the output to a file and use it as a testing checklist:
+
+```bash
+sj prepare -u https://target.example.com/swagger.json > test-commands.sh
+chmod +x test-commands.sh
+```
+:::

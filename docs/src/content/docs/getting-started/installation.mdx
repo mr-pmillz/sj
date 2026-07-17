@@ -1,0 +1,67 @@
+---
+title: Installation
+description: How to install sj on your system.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+- [Go](https://go.dev/dl/) 1.26+ (for building from source or `go install`)
+- Or [Docker](https://docs.docker.com/get-docker/) for containerized usage
+
+## Install with Go
+
+The simplest way to install `sj` is with `go install`:
+
+```bash
+go install github.com/mr-pmillz/sj/cmd/sj@latest
+```
+
+This places the `sj` binary in your `$GOPATH/bin` directory. Make sure that directory is in your `PATH`.
+
+## Build from Source
+
+Clone the repository and build using the Makefile:
+
+```bash
+git clone https://github.com/mr-pmillz/sj.git
+cd sj
+make build
+```
+
+The compiled binary is placed in `bin/sj`. You can also install it directly into your `$GOPATH/bin`:
+
+```bash
+make install
+```
+
+## Docker
+
+Pull and run the pre-built Docker image:
+
+```bash
+docker pull ghcr.io/mr-pmillz/sj:latest
+docker run --rm ghcr.io/mr-pmillz/sj:latest automate -u https://petstore.swagger.io/v2/swagger.json
+```
+
+Or build the image locally:
+
+```bash
+docker build -t sj .
+docker run --rm sj automate -u https://petstore.swagger.io/v2/swagger.json
+```
+
+## Verify Installation
+
+After installing, confirm `sj` is available:
+
+```bash
+sj --version
+```
+
+You should see output like:
+
+```
+sj version v1.x.x
+```

@@ -1,0 +1,102 @@
+---
+title: Architecture
+description: Package layout and design of the sj codebase.
+---
+
+This page describes the high-level structure of the `sj` codebase to help contributors orient themselves quickly.
+
+## Repository Layout
+
+```text
+sj/
+├── cmd/sj/
+│   └── main.go              # Entrypoint — calls internal/cli.Execute()
+├── internal/
+│   └── cli/
+│       ├── root.go           # Root cobra command, persistent flags
+│       ├── automate.go       # automate subcommand
+│       ├── brute.go          # brute subcommand
+│       ├── convert.go        # convert subcommand
+│       ├── endpoints.go      # endpoints subcommand
+│       ├── prepare.go        # prepare subcommand
+│       └── spec.go           # Shared spec-loading helper
+├── pkg/
+│   ├── brute/                # Brute-force scanner logic
+│   ├── config/               # Config struct and mode constants
+│   ├── httpclient/           # HTTP client wrapper (proxy, TLS, User-Agent)
+│   ├── openapi/              # OpenAPI/Swagger parsing, conversion, resolution
+│   ├── output/               # Colored console output, structured writers
+│   └── scanner/              # Request generation and endpoint scanning
+├── version.go                # Version, commit, and build-date variables
+├── Makefile                  # Build, test, lint, and install targets
+├── Dockerfile                # Multi-arch container image
+└── docs/                     # This Starlight documentation site
+```
+
+## Key Packages
+
+### `internal/cli`
+
+Defines the Cobra command tree. Each file registers one subcommand and its flags. The root command (`root.go`) defines all persistent (global) flags and initializes the shared `config.Config` struct.
+
+### `pkg/config`
+
+Holds the `Config` struct that carries all flag values and runtime state. Mode constants (`ModeAutomate`, `ModeBrute`, `ModePrepare`, etc.) control which code path is taken in the scanner.
+
+### `pkg/httpclient`
+
+Wraps the standard `net/http` client with proxy support, TLS configuration, random User-Agent selection, custom headers, and timeout handling.
+
+### `pkg/openapi`
+
+Parses Swagger v2 and OpenAPI v3 definition files. Handles `$ref` resolution, spec conversion (v2 to v3), and extraction of endpoint metadata (paths, methods, parameters).
+
+### `pkg/scanner`
+
+The core request-generation engine. Given a parsed spec and a config, it builds requests for each endpoint, fills parameter placeholders with test values, sends the requests (in `automate` mode), and formats the output.
+
+### `pkg/brute`
+
+Implements the brute-force discovery logic. Maintains a built-in list of common Swagger/OpenAPI paths and supports custom wordlists. Handles batch scanning and report generation.
+
+### `pkg/output`
+
+Provides colored console output helpers (`PrintInfo`, `PrintErr`, `Die`) and structured output writers for JSON, JSONL, and CSV formats.
+
+## Data Flow
+
+```text
+CLI flags → config.Config
+                │
+                ▼
+        loadSpec (URL or file)
+                │
+                ▼
+        openapi.Parse / Resolve
+                │
+                ▼
+        scanner.GenerateRequests
+                │
+                ├── automate: send requests, collect status codes
+                ├── prepare: generate curl commands
+                └── endpoints: print raw paths
+                │
+                ▼
+        output.Writer (console / json / jsonl / csv)
+```
+
+## Build System
+
+The `Makefile` provides the standard targets:
+
+| Target | Description |
+|--------|-------------|
+| `make build` | Compile to `bin/sj` with version info via ldflags |
+| `make install` | Install to `$GOPATH/bin` |
+| `make test` | Run all tests with coverage |
+| `make test-race` | Run tests with the race detector |
+| `make test-coverage` | Generate an HTML coverage report |
+| `make lint` | Run `golangci-lint` |
+| `make fmt` | Format with `gofmt` and `goimports` |
+| `make vet` | Run `go vet` |
+| `make tidy` | Run `go mod tidy` |
