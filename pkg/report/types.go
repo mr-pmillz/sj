@@ -30,6 +30,11 @@ type Operation struct {
 	RequestBody       string `json:"request_body,omitempty"`
 	ResponseBody      string `json:"response_body,omitempty"`
 	ResponseTruncated bool   `json:"response_truncated,omitempty"`
+	BaselineURL       string `json:"baseline_url,omitempty"`
+	Case              string `json:"case,omitempty"`
+	Category          string `json:"category,omitempty"`
+	Identity          string `json:"identity,omitempty"`
+	Guidance          string `json:"guidance,omitempty"`
 }
 
 type Failure struct {
@@ -109,6 +114,7 @@ type Metrics struct {
 	DiscoveredSpecifications    int
 	SourcesWithResults          int
 	Operations                  int
+	ActiveProbes                int
 	Failures                    int
 	BruteURLsTested             int
 	BruteRequestErrors          int
@@ -128,11 +134,19 @@ type Metrics struct {
 }
 
 type Evidence struct {
-	Source string
-	Method string
-	Status int
-	Target string
-	Note   string
+	Source            string
+	Method            string
+	Status            int
+	Target            string
+	URL               string
+	ContentType       string
+	RequestBody       string
+	ResponseBody      string
+	ResponseTruncated bool
+	Case              string
+	Identity          string
+	Guidance          string
+	Note              string
 }
 
 type Finding struct {

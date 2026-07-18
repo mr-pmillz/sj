@@ -1,6 +1,7 @@
 package bruno
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,12 +33,17 @@ func TestGenerateBuildsAtomicPentestCollectionWithPopulatedPayloads(t *testing.T
 		}
 	}
 	var requestContent string
-	err = filepath.WalkDir(output, func(path string, entry os.DirEntry, walkErr error) error {
+	root, err := os.OpenRoot(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".bru") {
-			data, readErr := os.ReadFile(path)
+			data, readErr := root.ReadFile(path)
 			if readErr != nil {
 				return readErr
 			}
@@ -66,5 +72,33 @@ func TestGenerateRefusesToOverwriteExistingCollection(t *testing.T) {
 	_, err := Generate([]pentestreport.Operation{{Method: "GET", URL: "https://api.example/health", Target: "/health"}}, output, Options{Scope: "all"})
 	if err == nil {
 		t.Fatal("existing collection was overwritten")
+	}
+}
+
+func TestGeneratePreservesCapturedBaselineBodyAboveMutationLimit(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "large-baseline")
+	body := `{"payload":"` + strings.Repeat("a", 8*1024) + `","marker":"full-baseline"}`
+	_, err := Generate([]pentestreport.Operation{{
+		Method: "POST", URL: "https://api.example/import", Target: "/import",
+		ContentType: "application/json", RequestBody: body,
+	}}, output, Options{Scope: "all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	paths, err := fs.Glob(root.FS(), "00 Baseline/*.bru")
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("baseline paths = %v, %v", paths, err)
+	}
+	data, err := root.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "full-baseline") || len(data) < len(body) {
+		t.Fatal("captured baseline request body was not preserved")
 	}
 }

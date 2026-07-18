@@ -264,135 +264,195 @@ func buildOperationPlan(spec map[string]any, pathName string, pathItem map[strin
 	if err != nil {
 		return RequestPlan{}, err
 	}
-	requestPath := joinURLPath(requestBasePath, pathName)
-	query := url.Values{}
-	queryString := ""
-	queryFragments := make([]string, 0)
-	headers := append([]string(nil), cfg.Headers...)
-	cookies := make([]string, 0)
-
+	state := operationPlanState{
+		requestPath: joinURLPath(requestBasePath, pathName), query: url.Values{},
+		queryFragments: make([]string, 0), headers: append([]string(nil), cfg.Headers...), cookies: make([]string, 0),
+	}
 	parameters := mergeParameters(spec, pathItem, operation, resolver)
 	if err := validateParameters(parameters); err != nil {
 		return RequestPlan{}, err
 	}
 	for _, parameter := range parameters {
-		name, _ := parameter["name"].(string)
-		location, _ := parameter["in"].(string)
-		if name == "" || location == "" {
+		if skipOptionalParameter(parameter, cfg.RequiredOnly) {
 			continue
 		}
-		if cfg.RequiredOnly {
-			required, _ := parameter["required"].(bool)
-			if !required {
-				continue
-			}
-		}
-		value := exampleForParameter(spec, parameter, cfg, resolver)
-		serialized, hasSerialized := serializedExample(spec, parameter, resolver)
-		switch location {
-		case "path":
-			if hasSerialized {
-				if strings.ContainsAny(serialized, "/?#\r\n") {
-					return RequestPlan{}, fmt.Errorf("path parameter %q has unsafe serialized example", name)
-				}
-			} else {
-				serialized = serializePathParameter(name, value, stringValue(parameter["style"]), boolValue(parameter["explode"], false))
-			}
-			placeholder := "{" + name + "}"
-			if !strings.Contains(requestPath, placeholder) {
-				return RequestPlan{}, fmt.Errorf("path parameter %q has no matching template", name)
-			}
-			requestPath = strings.ReplaceAll(requestPath, placeholder, serialized)
-		case "query":
-			if hasSerialized {
-				if !validRawQuery(serialized) || strings.HasPrefix(serialized, "?") || strings.HasPrefix(serialized, "&") {
-					return RequestPlan{}, fmt.Errorf("query parameter %q has unsafe serialized example", name)
-				}
-				queryFragments = append(queryFragments, serialized)
-			} else {
-				style := stringValue(parameter["style"])
-				fragments := serializeQueryParameter(query, name, value, style, boolValue(parameter["explode"], style == "" || style == "form"))
-				queryFragments = append(queryFragments, fragments...)
-			}
-		case "querystring":
-			if hasSerialized {
-				if !validRawQuery(serialized) {
-					return RequestPlan{}, fmt.Errorf("querystring parameter %q has unsafe serialized example", name)
-				}
-				queryString = serialized
-			} else {
-				queryString, err = serializeQueryStringParameter(parameter, value)
-				if err != nil {
-					return RequestPlan{}, err
-				}
-			}
-		case "header":
-			if reservedParameterHeader(name) {
-				continue
-			}
-			if hasSerialized {
-				if strings.ContainsAny(serialized, "\r\n") {
-					return RequestPlan{}, fmt.Errorf("header parameter %q has unsafe serialized example", name)
-				}
-				headers = setHeader(headers, name, serialized)
-			} else {
-				headers = setHeader(headers, name, serializeSimple(value, boolValue(parameter["explode"], false)))
-			}
-		case "cookie":
-			if hasSerialized {
-				if strings.ContainsAny(serialized, "\r\n") {
-					return RequestPlan{}, fmt.Errorf("cookie parameter %q has unsafe serialized example", name)
-				}
-				cookies = append(cookies, serialized)
-			} else {
-				style := stringValue(parameter["style"])
-				defaultExplode := style == "" || style == "form" || style == "cookie"
-				cookies = append(cookies, serializeCookieParameter(name, value, style, boolValue(parameter["explode"], defaultExplode)))
-			}
+		if err := state.applyParameter(spec, parameter, cfg, resolver); err != nil {
+			return RequestPlan{}, err
 		}
 	}
-	if strings.Contains(requestPath, "{") {
-		return RequestPlan{}, fmt.Errorf("unresolved path template in %q", requestPath)
+	requestURL, escapedPath, err := state.buildURL(requestBase)
+	if err != nil {
+		return RequestPlan{}, err
 	}
-	if len(cookies) > 0 {
-		headers = setHeader(headers, "Cookie", strings.Join(cookies, "; "))
-	}
-
-	requestURL := *requestBase
-	escapedPath := joinURLPath(requestBase.EscapedPath(), requestPath)
-	decodedPath, decodeErr := url.PathUnescape(escapedPath)
-	if decodeErr != nil {
-		return RequestPlan{}, fmt.Errorf("invalid escaped request path: %w", decodeErr)
-	}
-	requestURL.Path = decodedPath
-	requestURL.RawPath = escapedPath
-	if queryString != "" {
-		requestURL.RawQuery = queryString
-	} else {
-		if encoded := query.Encode(); encoded != "" {
-			queryFragments = append([]string{encoded}, queryFragments...)
-		}
-		requestURL.RawQuery = strings.Join(queryFragments, "&")
-	}
-
 	body, contentType, err := operationBody(spec, operation, cfg, resolver)
 	if err != nil {
 		return RequestPlan{}, err
 	}
 	if contentType != "" {
-		headers = setHeader(headers, "Content-Type", contentType)
+		state.headers = setHeader(state.headers, "Content-Type", contentType)
 	}
-	headers = compactHeaders(headers)
-
 	plan := RequestPlan{
 		Method:  strings.ToUpper(method),
 		URL:     requestURL.String(),
 		Path:    escapedPath,
-		Headers: headers,
+		Headers: compactHeaders(state.headers),
 		Body:    body,
 	}
 	plan.Curl = curlCommand(plan)
 	return plan, nil
+}
+
+type operationPlanState struct {
+	requestPath    string
+	query          url.Values
+	queryString    string
+	queryFragments []string
+	headers        []string
+	cookies        []string
+}
+
+func skipOptionalParameter(parameter map[string]any, requiredOnly bool) bool {
+	if !requiredOnly {
+		return false
+	}
+	required, _ := parameter["required"].(bool)
+	return !required
+}
+
+func (state *operationPlanState) applyParameter(spec map[string]any, parameter map[string]any, cfg *config.Config, resolver *openapi.Resolver) error {
+	name, _ := parameter["name"].(string)
+	location, _ := parameter["in"].(string)
+	value := exampleForParameter(spec, parameter, cfg, resolver)
+	serialized, hasSerialized := serializedExample(spec, parameter, resolver)
+	switch location {
+	case "path":
+		return state.applyPathParameter(parameter, name, value, serialized, hasSerialized)
+	case "query":
+		return state.applyQueryParameter(parameter, name, value, serialized, hasSerialized)
+	case "querystring":
+		return state.applyQueryStringParameter(parameter, name, value, serialized, hasSerialized)
+	case "header":
+		return state.applyHeaderParameter(parameter, name, value, serialized, hasSerialized)
+	case "cookie":
+		return state.applyCookieParameter(parameter, name, value, serialized, hasSerialized)
+	default:
+		return nil
+	}
+}
+
+func (state *operationPlanState) applyPathParameter(parameter map[string]any, name string, value any, serialized string, hasSerialized bool) error {
+	if hasSerialized {
+		if strings.ContainsAny(serialized, "/?#\r\n") {
+			return fmt.Errorf("path parameter %q has unsafe serialized example", name)
+		}
+	} else {
+		serialized = serializePathParameter(name, value, stringValue(parameter["style"]), boolValue(parameter["explode"], false))
+	}
+	placeholder, exists := pathParameterPlaceholder(state.requestPath, name)
+	if !exists {
+		return fmt.Errorf("path parameter %q has no matching template", name)
+	}
+	state.requestPath = strings.ReplaceAll(state.requestPath, placeholder, serialized)
+	return nil
+}
+
+func pathParameterPlaceholder(requestPath, name string) (string, bool) {
+	for _, suffix := range []string{"", "+", "*"} {
+		placeholder := "{" + name + suffix + "}"
+		if strings.Contains(requestPath, placeholder) {
+			return placeholder, true
+		}
+	}
+	return "", false
+}
+
+func (state *operationPlanState) applyQueryParameter(parameter map[string]any, name string, value any, serialized string, hasSerialized bool) error {
+	if hasSerialized {
+		if !validRawQuery(serialized) || strings.HasPrefix(serialized, "?") || strings.HasPrefix(serialized, "&") {
+			return fmt.Errorf("query parameter %q has unsafe serialized example", name)
+		}
+		state.queryFragments = append(state.queryFragments, serialized)
+		return nil
+	}
+	style := stringValue(parameter["style"])
+	fragments := serializeQueryParameter(state.query, name, value, style, boolValue(parameter["explode"], style == "" || style == "form"))
+	state.queryFragments = append(state.queryFragments, fragments...)
+	return nil
+}
+
+func (state *operationPlanState) applyQueryStringParameter(parameter map[string]any, name string, value any, serialized string, hasSerialized bool) error {
+	if hasSerialized {
+		if !validRawQuery(serialized) {
+			return fmt.Errorf("querystring parameter %q has unsafe serialized example", name)
+		}
+		state.queryString = serialized
+		return nil
+	}
+	queryString, err := serializeQueryStringParameter(parameter, value)
+	if err != nil {
+		return err
+	}
+	state.queryString = queryString
+	return nil
+}
+
+func (state *operationPlanState) applyHeaderParameter(parameter map[string]any, name string, value any, serialized string, hasSerialized bool) error {
+	if reservedParameterHeader(name) {
+		return nil
+	}
+	if hasSerialized {
+		if strings.ContainsAny(serialized, "\r\n") {
+			return fmt.Errorf("header parameter %q has unsafe serialized example", name)
+		}
+		state.headers = setHeader(state.headers, name, serialized)
+		return nil
+	}
+	state.headers = setHeader(state.headers, name, serializeSimple(value, boolValue(parameter["explode"], false)))
+	return nil
+}
+
+func (state *operationPlanState) applyCookieParameter(parameter map[string]any, name string, value any, serialized string, hasSerialized bool) error {
+	if hasSerialized {
+		if strings.ContainsAny(serialized, "\r\n") {
+			return fmt.Errorf("cookie parameter %q has unsafe serialized example", name)
+		}
+		state.cookies = append(state.cookies, serialized)
+		return nil
+	}
+	style := stringValue(parameter["style"])
+	defaultExplode := style == "" || style == "form" || style == "cookie"
+	state.cookies = append(state.cookies, serializeCookieParameter(name, value, style, boolValue(parameter["explode"], defaultExplode)))
+	return nil
+}
+
+func (state *operationPlanState) buildURL(requestBase *url.URL) (url.URL, string, error) {
+	if strings.Contains(state.requestPath, "{") {
+		return url.URL{}, "", fmt.Errorf("unresolved path template in %q", state.requestPath)
+	}
+	if len(state.cookies) > 0 {
+		state.headers = setHeader(state.headers, "Cookie", strings.Join(state.cookies, "; "))
+	}
+	requestURL := *requestBase
+	escapedPath := joinURLPath(requestBase.EscapedPath(), state.requestPath)
+	decodedPath, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return url.URL{}, "", fmt.Errorf("invalid escaped request path: %w", err)
+	}
+	requestURL.Path = decodedPath
+	requestURL.RawPath = escapedPath
+	requestURL.RawQuery = state.rawQuery()
+	return requestURL, escapedPath, nil
+}
+
+func (state *operationPlanState) rawQuery() string {
+	if state.queryString != "" {
+		return state.queryString
+	}
+	fragments := state.queryFragments
+	if encoded := state.query.Encode(); encoded != "" {
+		fragments = append([]string{encoded}, fragments...)
+	}
+	return strings.Join(fragments, "&")
 }
 
 func validateParameters(parameters []map[string]any) error {

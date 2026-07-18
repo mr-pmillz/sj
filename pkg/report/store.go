@@ -3,6 +3,7 @@ package report
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,8 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 	discoveries := make(map[string]Discovery)
 	interesting := make(map[string]BruteObservation)
 	operations := make(map[string]Operation)
+	successfulSources := make(map[string]struct{})
+	failures := make(map[string]Failure)
 	importedFindings := make(map[string]ImportedFinding)
 	summaries := make(map[string]brute.Summary)
 	for index, observation := range observations {
@@ -55,6 +58,38 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 			}
 			key := strings.Join([]string{operation.Source, operation.Method, operation.URL, operation.Target, strconv.Itoa(operation.Status)}, "\x00")
 			operations[key] = operation
+			successfulSources[operation.Source] = struct{}{}
+		case "fuzz_probe":
+			metadata, err := observationMetadata(observation.Metadata)
+			if err != nil {
+				return Dataset{}, fmt.Errorf("decode stored fuzz observation %d: %w", index+1, err)
+			}
+			parsed, _ := url.Parse(observation.URL)
+			source, target := "", observation.URL
+			if parsed != nil {
+				source = parsed.Scheme + "://" + parsed.Host
+				target = parsed.EscapedPath()
+			}
+			operation := Operation{
+				Origin: "fuzz", Source: source, Method: strings.ToUpper(observation.Method), Status: observation.Status,
+				Target: target, URL: observation.URL, BaselineURL: stringMetadata(metadata, "baseline_url"),
+				Case: stringMetadata(metadata, "case"), Category: stringMetadata(metadata, "category"),
+				Identity: stringMetadata(metadata, "identity"), Guidance: stringMetadata(metadata, "guidance"), ContentType: observation.ContentType,
+				RequestBody: string(observation.RequestBody), ResponseBody: string(observation.ResponseBody),
+				ResponseTruncated: observation.ResponseTruncated,
+			}
+			key := strings.Join([]string{
+				operation.Source, operation.Method, operation.URL, operation.Target, strconv.Itoa(operation.Status),
+				operation.BaselineURL, operation.Case, operation.Identity,
+			}, "\x00")
+			operations[key] = operation
+		case "automate_failure":
+			metadata, err := observationMetadata(observation.Metadata)
+			if err != nil {
+				return Dataset{}, fmt.Errorf("decode stored automate failure %d: %w", index+1, err)
+			}
+			failure := Failure{Source: observation.Source, Error: stringMetadata(metadata, "error")}
+			failures[failure.Source+"\x00"+failure.Error] = failure
 		}
 	}
 	for target := range targets {
@@ -68,6 +103,14 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 	}
 	for _, item := range operations {
 		dataset.Operations = append(dataset.Operations, item)
+	}
+	for _, item := range failures {
+		if item.Source != "" {
+			if _, succeeded := successfulSources[item.Source]; succeeded {
+				continue
+			}
+		}
+		dataset.Failures = append(dataset.Failures, item)
 	}
 	for _, summary := range summaries {
 		dataset.BruteURLsTested += summary.URLsTested
@@ -83,7 +126,10 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 	sort.Slice(dataset.Operations, func(i, j int) bool {
 		return dataset.Operations[i].Source+dataset.Operations[i].Method+dataset.Operations[i].Target < dataset.Operations[j].Source+dataset.Operations[j].Method+dataset.Operations[j].Target
 	})
-	unique := len(dataset.Targets) + len(dataset.Discoveries) + len(dataset.BruteObservations) + len(dataset.Operations)
+	sort.Slice(dataset.Failures, func(i, j int) bool {
+		return dataset.Failures[i].Source+dataset.Failures[i].Error < dataset.Failures[j].Source+dataset.Failures[j].Error
+	})
+	unique := len(dataset.Targets) + len(dataset.Discoveries) + len(dataset.BruteObservations) + len(dataset.Operations) + len(dataset.Failures)
 	for index, finding := range storedFindings {
 		var evidence struct {
 			Summary string   `json:"summary"`
@@ -139,7 +185,10 @@ func MergeDatasets(datasets ...Dataset) Dataset {
 			interesting[value.URL+"\x00"+strconv.Itoa(value.Status)] = value
 		}
 		for _, value := range dataset.Operations {
-			key := strings.Join([]string{value.Source, value.Method, value.URL, value.Target, strconv.Itoa(value.Status)}, "\x00")
+			key := strings.Join([]string{
+				value.Source, value.Method, value.URL, value.Target, strconv.Itoa(value.Status),
+				value.BaselineURL, value.Case, value.Identity,
+			}, "\x00")
 			operations[key] = value
 		}
 		for _, value := range dataset.Failures {

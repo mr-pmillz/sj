@@ -66,11 +66,6 @@ func Generate(operations []pentestreport.Operation, outputDirectory string, opti
 	if len(selected) > options.MaxOperations {
 		return Summary{}, fmt.Errorf("collection contains %d baseline operations, limit is %d", len(selected), options.MaxOperations)
 	}
-	for _, operation := range selected {
-		if len(operation.RequestBody) > apitest.MaximumPayloadBytes {
-			return Summary{}, fmt.Errorf("request body for %s %s exceeds the %d-byte non-DoS collection limit", operation.Method, operation.URL, apitest.MaximumPayloadBytes)
-		}
-	}
 	absolute, err := filepath.Abs(outputDirectory)
 	if err != nil {
 		return Summary{}, fmt.Errorf("resolve Bruno output directory: %w", err)

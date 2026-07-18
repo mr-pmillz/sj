@@ -1,12 +1,16 @@
 package report
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	scanevidence "github.com/mr-pmillz/sj/pkg/evidence"
 )
 
 var (
@@ -14,6 +18,7 @@ var (
 	businessFlowPath  = regexp.MustCompile(`(?i)(?:^|[/_-])(checkout|purchase|payment|order|reservation|booking|refund|transfer|withdraw|deposit|invoice|invite|register|signup|cancel|approve|access|auth|account|privilege|bulk|process)(?:$|[/_-])`)
 	ssrfPath          = regexp.MustCompile(`(?i)(?:^|[/_-])(url|uri|webhook|callback|proxy|fetch|import|redirect|remote|download)(?:$|[/_-])`)
 	resourcePath      = regexp.MustCompile(`(?i)(?:^|[/_-])(bulk|batch|export|search|report|upload|download|import|query|list|all)(?:$|[/_-])`)
+	verboseErrorBody  = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|ORA-\d+|syntax error at or near|nonetype|json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\/home\/[^\s]+|C:\\Users\\[^\s]+|\.go:\d+|\.java:\d+)`)
 )
 
 const reportMethodology = "This report prioritizes observed HTTP outcomes and heuristic penetration-test candidates. Automate-only candidates are not confirmed vulnerabilities. Imported fuzz findings identify the identity comparisons or explicit workflow read-backs that were actually executed; absence of such evidence must not be treated as proof of authorization or business-logic correctness. sj does not exhaust rate limits or perform denial-of-service testing. Weighted points are triage weights, not CVSS scores or business-risk acceptance decisions."
@@ -31,7 +36,7 @@ func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 	report := Report{Title: options.Title, GeneratedAt: options.GeneratedAt, Methodology: reportMethodology}
 	report.Metrics, report.Hosts = analyzeMetrics(dataset)
 	report.Findings = analyzeFindings(dataset, options.MaxEvidence)
-	report.Findings = append(report.Findings, importedFindings(dataset.ImportedFindings)...)
+	report.Findings = append(report.Findings, importedFindings(dataset.ImportedFindings, dataset.Operations, options.MaxEvidence)...)
 	sort.SliceStable(report.Findings, func(i, j int) bool {
 		left, right := severityWeight(report.Findings[i].Severity), severityWeight(report.Findings[j].Severity)
 		if left != right {
@@ -44,9 +49,12 @@ func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 	return report
 }
 
-func importedFindings(values []ImportedFinding) []Finding {
+func importedFindings(values []ImportedFinding, operations []Operation, maxEvidence int) []Finding {
 	result := make([]Finding, 0, len(values))
 	for _, value := range values {
+		if value.Category == "pii_exposure" && importedPIIDisproved(value, operations) {
+			continue
+		}
 		severity := Severity(strings.ToLower(value.Severity))
 		switch severity {
 		case SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow, SeverityInformational:
@@ -57,22 +65,83 @@ func importedFindings(values []ImportedFinding) []Finding {
 		if id == "" {
 			id = "FUZZ"
 		}
-		result = append(result, Finding{
+		finding := Finding{
 			ID: id, Severity: severity, Title: value.Title, Count: 1, Confidence: "observed active-test candidate",
 			OWASP: value.OWASP, Description: "Imported from a stored sj active fuzzing run.",
 			Recommendation: "Reproduce with the generated collection, compare authorized identities, and validate the business impact.",
 			Evidence:       []Evidence{{Method: value.Method, Target: value.URL, Note: value.Evidence}},
 			WeightedPoints: severityWeight(severity),
-		})
+		}
+		for _, operation := range matchingFindingOperations(value, operations, maxEvidence) {
+			finding.Evidence = append(finding.Evidence, operationEvidence(operation))
+		}
+		result = append(result, finding)
 	}
 	return result
+}
+
+func importedPIIDisproved(finding ImportedFinding, operations []Operation) bool {
+	foundCapturedResponse := false
+	expectedTypes := importedPIITypes(finding.Evidence)
+	for _, operation := range matchingFindingOperations(finding, operations, len(operations)) {
+		if operation.ResponseBody == "" {
+			continue
+		}
+		foundCapturedResponse = true
+		detectedTypes := scanevidence.DetectPIITypes([]byte(operation.ResponseBody))
+		if len(expectedTypes) == 0 && len(detectedTypes) > 0 {
+			return false
+		}
+		for _, detectedType := range detectedTypes {
+			if _, expected := expectedTypes[detectedType]; expected {
+				return false
+			}
+		}
+	}
+	return foundCapturedResponse
+}
+
+func importedPIITypes(evidence string) map[string]struct{} {
+	const marker = "matched_types="
+	start := strings.Index(evidence, marker)
+	if start < 0 {
+		return nil
+	}
+	value := evidence[start+len(marker):]
+	if end := strings.IndexByte(value, ';'); end >= 0 {
+		value = value[:end]
+	}
+	result := make(map[string]struct{})
+	for _, piiType := range strings.Split(value, ",") {
+		if piiType = strings.TrimSpace(piiType); piiType != "" {
+			result[piiType] = struct{}{}
+		}
+	}
+	return result
+}
+
+func matchingFindingOperations(finding ImportedFinding, operations []Operation, limit int) []Operation {
+	matched := make([]Operation, 0, min(limit, len(operations)))
+	for _, operation := range operations {
+		if finding.Method != "" && !strings.EqualFold(finding.Method, operation.Method) {
+			continue
+		}
+		if finding.URL != operation.URL && finding.URL != operation.BaselineURL {
+			continue
+		}
+		matched = append(matched, operation)
+		if len(matched) >= limit {
+			break
+		}
+	}
+	return matched
 }
 
 func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 	metrics := Metrics{
 		InputFiles: len(dataset.Files), IgnoredFiles: len(dataset.IgnoredFiles), RawRecords: dataset.RawRecords,
 		DuplicateRecords: dataset.DuplicateRecords, Targets: len(dataset.Targets), DiscoveredSpecifications: len(dataset.Discoveries),
-		Operations: len(dataset.Operations), Failures: len(dataset.Failures), BruteURLsTested: dataset.BruteURLsTested,
+		Failures: len(dataset.Failures), BruteURLsTested: dataset.BruteURLsTested,
 		BruteRequestErrors: dataset.BruteRequestErrors, BruteFalsePositivesFiltered: dataset.BruteFalsePositivesFiltered,
 		TransportLimitedTargets: dataset.TransportLimitedTargets,
 	}
@@ -82,6 +151,11 @@ func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 	methodCounts := make(map[string]int)
 	hosts := make(map[string]*HostMetric)
 	for _, operation := range dataset.Operations {
+		if isFuzzProbe(operation) {
+			metrics.ActiveProbes++
+			continue
+		}
+		metrics.Operations++
 		sources[operation.Source] = struct{}{}
 		methodCounts[operation.Method]++
 		host := sourceHost(operation.Source)
@@ -147,8 +221,9 @@ func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 }
 
 func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
+	dataset.Operations = baselineOperations(dataset.Operations)
 	var findings []Finding
-	deleteSuccess := filterOperations(dataset.Operations, func(item Operation) bool { return success(item.Status) && item.Method == "DELETE" })
+	deleteSuccess := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && item.Method == "DELETE" })
 	findings = appendFinding(findings, Finding{
 		ID: "PENTEST-DESTRUCTIVE-SUCCESS", Severity: SeverityCritical, Title: "Successful DELETE responses require authorization validation",
 		Confidence: "observed response; persisted deletion not verified", OWASP: []string{"API1:2023", "API5:2023", "API6:2023"},
@@ -157,7 +232,7 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 	}, deleteSuccess, maxEvidence)
 
 	writeSuccess := filterOperations(dataset.Operations, func(item Operation) bool {
-		return success(item.Status) && (item.Method == "POST" || item.Method == "PUT" || item.Method == "PATCH")
+		return operationSuccess(item) && (item.Method == "POST" || item.Method == "PUT" || item.Method == "PATCH")
 	})
 	findings = appendFinding(findings, Finding{
 		ID: "PENTEST-STATE-CHANGE-CANDIDATE", Severity: SeverityHigh, Title: "State-changing operations returned 2xx",
@@ -166,7 +241,7 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 		Recommendation: "Compare pre/post state, test lower-privileged identities, mutate object properties, and exercise workflow steps out of order.",
 	}, writeSuccess, maxEvidence)
 
-	idor := filterOperations(dataset.Operations, func(item Operation) bool { return success(item.Status) && hasIdentifier(item.Target) })
+	idor := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && hasIdentifier(item.Target) })
 	findings = appendFinding(findings, Finding{
 		ID: "PENTEST-IDOR-CANDIDATE", Severity: SeverityHigh, Title: "IDOR/BOLA review candidates",
 		Confidence: "heuristic candidate; ownership boundary not tested", OWASP: []string{"API1:2023"},
@@ -174,7 +249,7 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 		Recommendation: "Replay each request with an object identifier owned by a different test identity and assert denial without disclosing object existence or data.",
 	}, idor, maxEvidence)
 
-	business := filterOperations(dataset.Operations, func(item Operation) bool { return success(item.Status) && businessFlowPath.MatchString(item.Target) })
+	business := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && businessFlowPath.MatchString(item.Target) })
 	findings = appendFinding(findings, Finding{
 		ID: "PENTEST-BUSINESS-FLOW", Severity: SeverityHigh, Title: "Sensitive business-flow review candidates",
 		Confidence: "heuristic candidate; complete workflow not exercised", OWASP: []string{"API5:2023", "API6:2023"},
@@ -183,7 +258,7 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 	}, business, maxEvidence)
 
 	readSuccess := filterOperations(dataset.Operations, func(item Operation) bool {
-		return success(item.Status) && (item.Method == "GET" || item.Method == "HEAD") && !hasIdentifier(item.Target)
+		return operationSuccess(item) && (item.Method == "GET" || item.Method == "HEAD") && !hasIdentifier(item.Target)
 	})
 	findings = appendFinding(findings, Finding{
 		ID: "PENTEST-READ-ACCESS", Severity: SeverityMedium, Title: "Readable endpoints returned 2xx",
@@ -191,6 +266,26 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 		Description:    "Read-oriented operations returned successful responses. Public behavior may be intentional, but response bodies and object-property authorization require review.",
 		Recommendation: "Classify returned data, compare anonymous and authenticated responses, and verify field-level filtering for each role.",
 	}, readSuccess, maxEvidence)
+
+	applicationFailures := filterOperations(dataset.Operations, func(item Operation) bool {
+		return success(item.Status) && responseIndicatesFailure(item.ResponseBody)
+	})
+	findings = appendFinding(findings, Finding{
+		ID: "PENTEST-APPLICATION-FAILURE", Severity: SeverityMedium, Title: "HTTP success responses contain application failure envelopes",
+		Confidence: "observed application-level failure", OWASP: []string{"API8:2023"},
+		Description:    "The API returned a 2xx HTTP status while its JSON body explicitly reported failure. Clients, monitors, and scanners can misclassify these outcomes, and the body may reveal internal processing details.",
+		Recommendation: "Return an appropriate 4xx/5xx status, a stable machine-readable error code, and a non-sensitive message; verify that no partial side effect occurred.",
+	}, applicationFailures, maxEvidence)
+
+	verboseErrors := filterOperations(dataset.Operations, func(item Operation) bool {
+		return verboseErrorBody.MatchString(item.ResponseBody)
+	})
+	findings = appendFinding(findings, Finding{
+		ID: "PENTEST-VERBOSE-ERROR", Severity: SeverityMedium, Title: "API responses disclose implementation-oriented error details",
+		Confidence: "observed response-body pattern", OWASP: []string{"API8:2023"},
+		Description:    "Responses include runtime, parser, stack, filesystem, database, or language-specific error details that can help an attacker refine requests.",
+		Recommendation: "Log detailed exceptions server-side and return a stable, minimal client error with a correlation identifier.",
+	}, verboseErrors, maxEvidence)
 
 	serverErrors := filterOperations(dataset.Operations, func(item Operation) bool { return item.Status >= 500 && item.Status < 600 })
 	findings = appendFinding(findings, Finding{
@@ -272,10 +367,19 @@ func appendFinding(findings []Finding, finding Finding, operations []Operation, 
 	}
 	finding.Count = len(operations)
 	for _, operation := range operations[:min(len(operations), maxEvidence)] {
-		finding.Evidence = append(finding.Evidence, Evidence{Source: operation.Source, Method: operation.Method, Status: operation.Status, Target: operation.Target})
+		finding.Evidence = append(finding.Evidence, operationEvidence(operation))
 	}
 	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
 	return append(findings, finding)
+}
+
+func operationEvidence(operation Operation) Evidence {
+	return Evidence{
+		Source: operation.Source, Method: operation.Method, Status: operation.Status, Target: operation.Target,
+		URL: operation.URL, ContentType: operation.ContentType, RequestBody: operation.RequestBody,
+		ResponseBody: operation.ResponseBody, ResponseTruncated: operation.ResponseTruncated,
+		Case: operation.Case, Identity: operation.Identity, Guidance: operation.Guidance,
+	}
 }
 
 func filterOperations(operations []Operation, include func(Operation) bool) []Operation {
@@ -289,9 +393,10 @@ func filterOperations(operations []Operation, include func(Operation) bool) []Op
 }
 
 func analyzeOWASP(dataset Dataset) []OWASPCategory {
+	dataset.Operations = baselineOperations(dataset.Operations)
 	count := func(include func(Operation) bool) int { return len(filterOperations(dataset.Operations, include)) }
-	idor := count(func(item Operation) bool { return success(item.Status) && hasIdentifier(item.Target) })
-	stateChanges := count(func(item Operation) bool { return success(item.Status) && isStateChanging(item.Method) })
+	idor := count(func(item Operation) bool { return operationSuccess(item) && hasIdentifier(item.Target) })
+	stateChanges := count(func(item Operation) bool { return operationSuccess(item) && isStateChanging(item.Method) })
 	business := count(func(item Operation) bool { return businessFlowPath.MatchString(item.Target) })
 	ssrf := count(func(item Operation) bool { return ssrfPath.MatchString(item.Target) })
 	resource := count(func(item Operation) bool { return resourcePath.MatchString(item.Target) })
@@ -310,6 +415,20 @@ func analyzeOWASP(dataset Dataset) []OWASPCategory {
 		{"API9:2023", "Improper Inventory Management", len(dataset.Discoveries), "Discovered specifications and failed sources define the observed inventory and its coverage gaps.", "Assign owners, environments, versions, retirement dates, and exposure policy to every API.", base + "0xa9-improper-inventory-management/"},
 		{"API10:2023", "Unsafe Consumption of APIs", ssrf, "Integration-style routes may consume third-party data; downstream trust boundaries were not observed.", "Validate, authenticate, constrain, and time-bound every downstream API response.", base + "0xaa-unsafe-consumption-of-apis/"},
 	}
+}
+
+func baselineOperations(operations []Operation) []Operation {
+	result := make([]Operation, 0, len(operations))
+	for _, operation := range operations {
+		if !isFuzzProbe(operation) {
+			result = append(result, operation)
+		}
+	}
+	return result
+}
+
+func isFuzzProbe(operation Operation) bool {
+	return strings.EqualFold(operation.Origin, "fuzz")
 }
 
 func summarizeSeverity(findings []Finding) SeveritySummary {
@@ -363,6 +482,80 @@ func severityWeight(severity Severity) int {
 func severityRank(severity Severity) int { return severityWeight(severity) }
 
 func success(status int) bool { return status >= 200 && status < 300 }
+
+func operationSuccess(operation Operation) bool {
+	return success(operation.Status) && !responseIndicatesFailure(operation.ResponseBody)
+}
+
+func responseIndicatesFailure(body string) bool {
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewBufferString(body))
+	decoder.UseNumber()
+	var decoded map[string]any
+	if err := decoder.Decode(&decoded); err != nil {
+		return false
+	}
+	for key, value := range decoded {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "ok", "success", "valid":
+			if boolean, ok := value.(bool); ok && !boolean {
+				return true
+			}
+		case "error", "errors", "exception":
+			if substantiveJSONValue(value) {
+				return true
+			}
+		case "status":
+			if text, ok := value.(string); ok && (strings.EqualFold(text, "error") || strings.EqualFold(text, "failed") || strings.EqualFold(text, "failure")) {
+				return true
+			}
+			if failureStatusValue(value) {
+				return true
+			}
+		case "code", "statuscode", "status_code":
+			if failureStatusValue(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func failureStatusValue(value any) bool {
+	number, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	parsed, err := number.Int64()
+	return err == nil && parsed >= 400 && parsed <= 599
+}
+
+func substantiveJSONValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		for _, item := range typed {
+			if substantiveJSONValue(item) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		for _, item := range typed {
+			if substantiveJSONValue(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
 
 func isStateChanging(method string) bool {
 	switch method {

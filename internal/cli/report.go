@@ -22,6 +22,7 @@ type reportCLIOptions struct {
 	MaxInputBytes int64
 	MaxFiles      int
 	MaxRecords    int
+	MaxEvidence   int
 }
 
 var reportOptions = reportCLIOptions{
@@ -30,6 +31,7 @@ var reportOptions = reportCLIOptions{
 	MaxInputBytes: 256 * 1024 * 1024,
 	MaxFiles:      10_000,
 	MaxRecords:    1_000_000,
+	MaxEvidence:   100,
 }
 
 var reportCmd = &cobra.Command{
@@ -57,6 +59,12 @@ func runReport(ctx context.Context, cfg *config.Config, options reportCLIOptions
 	if len(options.Inputs) == 0 && len(options.RunIDs) == 0 {
 		return fmt.Errorf("at least one --input or --run is required")
 	}
+	if options.MaxEvidence == 0 {
+		options.MaxEvidence = 100
+	}
+	if options.MaxEvidence < 1 || options.MaxEvidence > 1_000 {
+		return fmt.Errorf("--max-evidence must be between 1 and 1000")
+	}
 	datasets := make([]pentestreport.Dataset, 0, 2)
 	if len(options.Inputs) > 0 {
 		dataset, err := pentestreport.Load(options.Inputs, pentestreport.LoadOptions{
@@ -82,7 +90,9 @@ func runReport(ctx context.Context, cfg *config.Config, options reportCLIOptions
 		return err
 	}
 	defer func() { resultErr = resultRun.finish(resultErr) }()
-	report := pentestreport.Analyze(dataset, pentestreport.AnalyzeOptions{Title: options.Title, GeneratedAt: time.Now().UTC()})
+	report := pentestreport.Analyze(dataset, pentestreport.AnalyzeOptions{
+		Title: options.Title, GeneratedAt: time.Now().UTC(), MaxEvidence: options.MaxEvidence,
+	})
 	if err := resultRun.addPentestReport(ctx, report); err != nil {
 		return fmt.Errorf("store penetration-test report: %w", err)
 	}
@@ -139,4 +149,5 @@ func init() {
 	reportCmd.Flags().Int64Var(&reportOptions.MaxInputBytes, "max-input-bytes", 256*1024*1024, "Maximum bytes to read from each result file.")
 	reportCmd.Flags().IntVar(&reportOptions.MaxFiles, "max-files", 10_000, "Maximum files accepted across report inputs.")
 	reportCmd.Flags().IntVar(&reportOptions.MaxRecords, "max-records", 1_000_000, "Maximum raw result records accepted before deduplication.")
+	reportCmd.Flags().IntVar(&reportOptions.MaxEvidence, "max-evidence", 100, "Maximum proof records retained per finding in Markdown and HTML reports.")
 }

@@ -88,40 +88,80 @@ func validateWorkflows(workflows []Workflow, identities []Identity) error {
 		identityNames[identity.Name] = struct{}{}
 	}
 	for workflowIndex, workflow := range workflows {
-		if strings.TrimSpace(workflow.Name) == "" || len(workflow.Steps) == 0 {
-			return fmt.Errorf("workflow %d must define a name and at least one step", workflowIndex+1)
+		if err := validateWorkflow(workflow, workflowIndex, identityNames); err != nil {
+			return err
 		}
-		for stepIndex, step := range workflow.Steps {
-			if strings.TrimSpace(step.Name) == "" || !validMethod(step.Method) || strings.TrimSpace(step.URL) == "" || strings.TrimSpace(step.URL) != step.URL {
-				return fmt.Errorf("workflow %q step %d must define a name, valid HTTP method, and URL", workflow.Name, stepIndex+1)
-			}
-			parsedURL, err := url.Parse(step.URL)
-			if err != nil || parsedURL.User != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-				return fmt.Errorf("workflow %q step %q must use an absolute http(s) URL without user information", workflow.Name, step.Name)
-			}
-			if len(step.Body) > apitest.MaximumPayloadBytes || len(step.URL) > 8*1024 {
-				return fmt.Errorf("workflow %q step %q exceeds bounded request size limits", workflow.Name, step.Name)
-			}
-			if step.Identity != "" {
-				if _, exists := identityNames[step.Identity]; !exists {
-					return fmt.Errorf("workflow %q step %q references unknown identity %q", workflow.Name, step.Name, step.Identity)
-				}
-			}
-			for name, value := range step.Headers {
-				if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) {
-					return fmt.Errorf("workflow %q step %q contains an invalid header", workflow.Name, step.Name)
-				}
-			}
-			for _, status := range step.ExpectStatus {
-				if status < 100 || status > 599 {
-					return fmt.Errorf("workflow %q step %q contains invalid expected status %d", workflow.Name, step.Name, status)
-				}
-			}
-			for variable, path := range step.Capture {
-				if strings.TrimSpace(variable) == "" || strings.TrimSpace(path) == "" {
-					return fmt.Errorf("workflow %q step %q contains an empty capture name or path", workflow.Name, step.Name)
-				}
-			}
+	}
+	return nil
+}
+
+func validateWorkflow(workflow Workflow, index int, identityNames map[string]struct{}) error {
+	if strings.TrimSpace(workflow.Name) == "" || len(workflow.Steps) == 0 {
+		return fmt.Errorf("workflow %d must define a name and at least one step", index+1)
+	}
+	for stepIndex, step := range workflow.Steps {
+		if err := validateWorkflowStep(workflow.Name, step, stepIndex, identityNames); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateWorkflowStep(workflowName string, step WorkflowStep, index int, identityNames map[string]struct{}) error {
+	if strings.TrimSpace(step.Name) == "" || !validMethod(step.Method) || strings.TrimSpace(step.URL) == "" || strings.TrimSpace(step.URL) != step.URL {
+		return fmt.Errorf("workflow %q step %d must define a name, valid HTTP method, and URL", workflowName, index+1)
+	}
+	parsedURL, err := url.Parse(step.URL)
+	if err != nil || parsedURL.User != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return fmt.Errorf("workflow %q step %q must use an absolute http(s) URL without user information", workflowName, step.Name)
+	}
+	if len(step.Body) > apitest.MaximumPayloadBytes || len(step.URL) > 8*1024 {
+		return fmt.Errorf("workflow %q step %q exceeds bounded request size limits", workflowName, step.Name)
+	}
+	if err := validateWorkflowIdentity(workflowName, step, identityNames); err != nil {
+		return err
+	}
+	if err := validateWorkflowHeaders(workflowName, step); err != nil {
+		return err
+	}
+	if err := validateWorkflowStatuses(workflowName, step); err != nil {
+		return err
+	}
+	return validateWorkflowCaptures(workflowName, step)
+}
+
+func validateWorkflowIdentity(workflowName string, step WorkflowStep, identityNames map[string]struct{}) error {
+	if step.Identity == "" {
+		return nil
+	}
+	if _, exists := identityNames[step.Identity]; !exists {
+		return fmt.Errorf("workflow %q step %q references unknown identity %q", workflowName, step.Name, step.Identity)
+	}
+	return nil
+}
+
+func validateWorkflowHeaders(workflowName string, step WorkflowStep) error {
+	for name, value := range step.Headers {
+		if !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("workflow %q step %q contains an invalid header", workflowName, step.Name)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowStatuses(workflowName string, step WorkflowStep) error {
+	for _, status := range step.ExpectStatus {
+		if status < 100 || status > 599 {
+			return fmt.Errorf("workflow %q step %q contains invalid expected status %d", workflowName, step.Name, status)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowCaptures(workflowName string, step WorkflowStep) error {
+	for variable, path := range step.Capture {
+		if strings.TrimSpace(variable) == "" || strings.TrimSpace(path) == "" {
+			return fmt.Errorf("workflow %q step %q contains an empty capture name or path", workflowName, step.Name)
 		}
 	}
 	return nil
@@ -147,84 +187,156 @@ func executeWorkflows(ctx context.Context, client *http.Client, report *Report, 
 	for _, identity := range identities {
 		identityMap[identity.Name] = identity
 	}
-workflowLoop:
+	executor := workflowExecutor{ctx: ctx, client: client, report: report, identities: identities, identityMap: identityMap, options: options, wait: wait}
 	for _, workflow := range options.Workflows {
-		unsafeSteps := 0
-		for _, step := range workflow.Steps {
-			if len(step.Body) > apitest.MaximumPayloadBytes || len(step.URL) > 8*1024 {
-				return fmt.Errorf("workflow %q step %q exceeds bounded request size limits", workflow.Name, step.Name)
-			}
-			if stateChanging(step.Method) {
-				unsafeSteps++
-			}
+		stop, err := executor.execute(workflow)
+		if err != nil {
+			return err
 		}
-		if unsafeSteps > 0 && !options.AcceptRisk {
-			report.Summary.SkippedUnsafe += unsafeSteps
-			continue
+		if stop {
+			return nil
 		}
-		variables := make(map[string]string)
-		for _, step := range workflow.Steps {
-			if report.Summary.Requests >= options.MaxRequests {
-				report.Summary.RequestBudgetHit = true
-				return nil
-			}
-			if report.Summary.Requests > 0 {
-				if err := wait(ctx, options.Delay); err != nil {
-					return fmt.Errorf("workflow pacing canceled: %w", err)
-				}
-			}
-			identity := cloneIdentity(identities[0])
-			if step.Identity != "" {
-				selected, exists := identityMap[step.Identity]
-				if !exists {
-					return fmt.Errorf("workflow %q step %q references unknown identity %q", workflow.Name, step.Name, step.Identity)
-				}
-				identity = cloneIdentity(selected)
-			}
-			for name, value := range step.Headers {
-				identity.Headers[name] = substituteWorkflowVariables(value, variables)
-			}
-			body := []byte(substituteWorkflowVariables(string(step.Body), variables))
-			plan := plannedProbe{
-				method: strings.ToUpper(step.Method), targetURL: substituteWorkflowVariables(step.URL, variables), body: body,
-				contentType: "application/json", caseName: "workflow:" + workflow.Name + ":" + step.Name,
-				category: "business_workflow", identity: identity,
-			}
-			probe, responseBody := executeProbe(ctx, client, plan, options)
-			report.Probes = append(report.Probes, probe)
-			updateSummary(&report.Summary, probe)
-			if shouldStopForRateLimit(probe) {
-				report.Summary.RateLimited = true
-				return nil
-			}
-			statusOK := expectedStatus(step.ExpectStatus, probe.Status)
-			assertionsOK := assertWorkflowJSON(responseBody, step.AssertJSON)
-			if !statusOK || !assertionsOK {
-				report.Findings = append(report.Findings, Finding{
-					Severity: "medium", Category: "business_workflow_verification", Title: "Business workflow step did not satisfy its read-back contract",
-					Method: plan.method, URL: plan.targetURL,
-					Evidence: fmt.Sprintf("workflow=%s step=%s identity=%s status=%d status_expected=%t assertions_passed=%t", workflow.Name, step.Name, identity.Name, probe.Status, statusOK, assertionsOK),
-					OWASP:    []string{"API6:2023"},
-				})
-				continue workflowLoop
-			}
-			if step.VerifySideEffect {
-				report.Summary.SideEffectsVerified++
-			}
-			if len(step.Capture) > 0 {
-				var decoded any
-				if err := json.Unmarshal(responseBody, &decoded); err != nil {
-					return fmt.Errorf("workflow %q step %q capture requires a JSON response: %w", workflow.Name, step.Name, err)
-				}
-				for variable, path := range step.Capture {
-					value, exists := jsonPathValue(decoded, path)
-					if !exists {
-						return fmt.Errorf("workflow %q step %q capture path %q was not found", workflow.Name, step.Name, path)
-					}
-					variables[variable] = fmt.Sprint(value)
-				}
-			}
+	}
+	return nil
+}
+
+type workflowExecutor struct {
+	ctx         context.Context
+	client      *http.Client
+	report      *Report
+	identities  []Identity
+	identityMap map[string]Identity
+	options     Options
+	wait        waitFunc
+}
+
+type workflowStepOutcome int
+
+const (
+	workflowStepContinue workflowStepOutcome = iota
+	workflowStepNextWorkflow
+	workflowStepStop
+)
+
+func (executor *workflowExecutor) execute(workflow Workflow) (bool, error) {
+	unsafeSteps := workflowUnsafeSteps(workflow)
+	if unsafeSteps > 0 && !executor.options.AcceptRisk {
+		executor.report.Summary.SkippedUnsafe += unsafeSteps
+		return false, nil
+	}
+	variables := make(map[string]string)
+	for _, step := range workflow.Steps {
+		outcome, err := executor.executeStep(workflow, step, variables)
+		if err != nil {
+			return false, err
 		}
+		switch outcome {
+		case workflowStepStop:
+			return true, nil
+		case workflowStepNextWorkflow:
+			return false, nil
+		case workflowStepContinue:
+		}
+	}
+	return false, nil
+}
+
+func workflowUnsafeSteps(workflow Workflow) int {
+	count := 0
+	for _, step := range workflow.Steps {
+		if stateChanging(step.Method) {
+			count++
+		}
+	}
+	return count
+}
+
+func (executor *workflowExecutor) executeStep(workflow Workflow, step WorkflowStep, variables map[string]string) (workflowStepOutcome, error) {
+	if executor.report.Summary.Requests >= executor.options.MaxRequests {
+		executor.report.Summary.RequestBudgetHit = true
+		return workflowStepStop, nil
+	}
+	if executor.report.Summary.Requests > 0 {
+		if err := executor.wait(executor.ctx, executor.options.Delay); err != nil {
+			return workflowStepStop, fmt.Errorf("workflow pacing canceled: %w", err)
+		}
+	}
+	identity, err := executor.stepIdentity(workflow, step, variables)
+	if err != nil {
+		return workflowStepStop, err
+	}
+	plan := workflowProbePlan(workflow, step, variables, identity)
+	probe, responseBody := executeProbe(executor.ctx, executor.client, plan, executor.options)
+	executor.report.Probes = append(executor.report.Probes, probe)
+	updateSummary(&executor.report.Summary, probe)
+	if shouldStopForRateLimit(probe) {
+		executor.report.Summary.RateLimited = true
+		return workflowStepStop, nil
+	}
+	if !executor.verifyStep(workflow, step, plan, probe, responseBody) {
+		return workflowStepNextWorkflow, nil
+	}
+	if step.VerifySideEffect {
+		executor.report.Summary.SideEffectsVerified++
+	}
+	if err := captureWorkflowVariables(workflow, step, responseBody, variables); err != nil {
+		return workflowStepStop, err
+	}
+	return workflowStepContinue, nil
+}
+
+func (executor *workflowExecutor) stepIdentity(workflow Workflow, step WorkflowStep, variables map[string]string) (Identity, error) {
+	identity := cloneIdentity(executor.identities[0])
+	if step.Identity != "" {
+		selected, exists := executor.identityMap[step.Identity]
+		if !exists {
+			return Identity{}, fmt.Errorf("workflow %q step %q references unknown identity %q", workflow.Name, step.Name, step.Identity)
+		}
+		identity = cloneIdentity(selected)
+	}
+	for name, value := range step.Headers {
+		identity.Headers[name] = substituteWorkflowVariables(value, variables)
+	}
+	return identity, nil
+}
+
+func workflowProbePlan(workflow Workflow, step WorkflowStep, variables map[string]string, identity Identity) plannedProbe {
+	return plannedProbe{
+		method: strings.ToUpper(step.Method), targetURL: substituteWorkflowVariables(step.URL, variables),
+		body: []byte(substituteWorkflowVariables(string(step.Body), variables)), contentType: "application/json",
+		caseName: "workflow:" + workflow.Name + ":" + step.Name, category: "business_workflow", identity: identity,
+	}
+}
+
+func (executor *workflowExecutor) verifyStep(workflow Workflow, step WorkflowStep, plan plannedProbe, probe ProbeResult, responseBody []byte) bool {
+	statusOK := expectedStatus(step.ExpectStatus, probe.Status)
+	assertionsOK := assertWorkflowJSON(responseBody, step.AssertJSON)
+	if statusOK && assertionsOK {
+		return true
+	}
+	executor.report.Findings = append(executor.report.Findings, Finding{
+		Severity: "medium", Category: "business_workflow_verification", Title: "Business workflow step did not satisfy its read-back contract",
+		Method: plan.method, URL: plan.targetURL,
+		Evidence: fmt.Sprintf("workflow=%s step=%s identity=%s status=%d status_expected=%t assertions_passed=%t", workflow.Name, step.Name, plan.identity.Name, probe.Status, statusOK, assertionsOK),
+		OWASP:    []string{"API6:2023"},
+	})
+	return false
+}
+
+func captureWorkflowVariables(workflow Workflow, step WorkflowStep, responseBody []byte, variables map[string]string) error {
+	if len(step.Capture) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return fmt.Errorf("workflow %q step %q capture requires a JSON response: %w", workflow.Name, step.Name, err)
+	}
+	for variable, path := range step.Capture {
+		value, exists := jsonPathValue(decoded, path)
+		if !exists {
+			return fmt.Errorf("workflow %q step %q capture path %q was not found", workflow.Name, step.Name, path)
+		}
+		variables[variable] = fmt.Sprint(value)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -18,96 +19,102 @@ var bruteCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Long:  `The brute command sends requests to the target to find operation definitions based on commonly used file locations.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg.Mode = config.ModeBrute
-
-		ofmt := strings.ToLower(cfg.BruteOutputFormat)
-		if cfg.BruteAllFormats && cfg.Outfile == "" {
-			return fmt.Errorf("--output-all-formats requires --outfile")
-		}
-		if ofmt != "console" && ofmt != "" {
-			switch ofmt {
-			case "json", "jsonl", "csv", "txt":
-			default:
-				return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv, txt", cfg.BruteOutputFormat)
-			}
-		}
-
-		client, err := newHTTPClient(cfg)
-		if err != nil {
-			return err
-		}
-		scanner := brute.NewScanner(client, cfg)
-
-		var targets []string
-		if cfg.BruteURLFile != "" && cfg.SwaggerURL != "" {
-			return fmt.Errorf("specify only one of --url or --url-file")
-		}
-		if cfg.BruteURLFile != "" {
-			file, err := os.Open(cfg.BruteURLFile)
-			if err != nil {
-				return fmt.Errorf("open URL file: %w", err)
-			}
-			sc := bufio.NewScanner(file)
-			sc.Buffer(make([]byte, 64*1024), 1024*1024)
-			for sc.Scan() {
-				line := strings.TrimSpace(sc.Text())
-				if line != "" && !strings.HasPrefix(line, "#") {
-					targets = append(targets, line)
-					if len(targets) > cfg.MaxCandidates {
-						_ = file.Close()
-						return fmt.Errorf("URL file exceeds %d target limit", cfg.MaxCandidates)
-					}
-				}
-			}
-			if err := sc.Err(); err != nil {
-				_ = file.Close()
-				return fmt.Errorf("read URL file: %w", err)
-			}
-			if err := file.Close(); err != nil {
-				return fmt.Errorf("close URL file: %w", err)
-			}
-			if len(targets) == 0 {
-				return fmt.Errorf("no URLs found in file %q", cfg.BruteURLFile)
-			}
-		} else if cfg.SwaggerURL != "" {
-			targets = append(targets, cfg.SwaggerURL)
-		} else {
-			return fmt.Errorf("no target specified; use --url or --url-file")
-		}
-		resultRun, err := beginResultRun(cmd.Context(), cfg, "brute", map[string]any{"target_count": len(targets), "workers": cfg.BruteWorkers})
-		if err != nil {
-			return err
-		}
-
-		var allReports []brute.Report
-		isBatch := len(targets) > 1
-		if isBatch {
-			output.PrintInfo("Brute-forcing %d targets with %d workers.\n", len(targets), min(cfg.BruteWorkers, len(targets)))
-			allReports, err = scanner.RunTargetsContext(cmd.Context(), targets, cfg.BruteWorkers)
-			if err != nil {
-				return resultRun.finish(err)
-			}
-		} else {
-			report, err := scanner.RunTargetContext(cmd.Context(), targets[0], true)
-			if err != nil {
-				return resultRun.finish(err)
-			}
-			allReports = append(allReports, report)
-		}
-		if err := resultRun.addBruteReports(cmd.Context(), allReports); err != nil {
-			return resultRun.finish(err)
-		}
-
-		var outputErr error
-		if cfg.BruteAllFormats {
-			outputErr = brute.OutputAllFormats(allReports, cfg.Outfile)
-		} else if ofmt != "console" && ofmt != "" {
-			outputErr = brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
-		} else if isBatch {
-			brute.PrintBatchSummary(allReports)
-		}
-		return resultRun.finish(outputErr)
+		return runBrute(cmd.Context(), cfg)
 	},
+}
+
+func runBrute(ctx context.Context, cfg *config.Config) error {
+	cfg.Mode = config.ModeBrute
+	ofmt := strings.ToLower(cfg.BruteOutputFormat)
+	if cfg.BruteAllFormats && cfg.Outfile == "" {
+		return fmt.Errorf("--output-all-formats requires --outfile")
+	}
+	if ofmt != "console" && ofmt != "" {
+		switch ofmt {
+		case "json", "jsonl", "csv", "txt":
+		default:
+			return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv, txt", cfg.BruteOutputFormat)
+		}
+	}
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return err
+	}
+	scanner := brute.NewScanner(client, cfg)
+	targets, err := bruteTargets(cfg)
+	if err != nil {
+		return err
+	}
+	resultRun, err := beginResultRun(ctx, cfg, "brute", map[string]any{"target_count": len(targets), "workers": cfg.BruteWorkers})
+	if err != nil {
+		return err
+	}
+	var allReports []brute.Report
+	isBatch := len(targets) > 1
+	if isBatch {
+		output.PrintInfo("Brute-forcing %d targets with %d workers.\n", len(targets), min(cfg.BruteWorkers, len(targets)))
+		allReports, err = scanner.RunTargetsContext(ctx, targets, cfg.BruteWorkers)
+	} else {
+		var report brute.Report
+		report, err = scanner.RunTargetContext(ctx, targets[0], true)
+		allReports = append(allReports, report)
+	}
+	if err != nil {
+		return resultRun.finish(err)
+	}
+	if err := resultRun.addBruteReports(ctx, allReports); err != nil {
+		return resultRun.finish(err)
+	}
+	var outputErr error
+	if cfg.BruteAllFormats {
+		outputErr = brute.OutputAllFormats(allReports, cfg.Outfile)
+	} else if ofmt != "console" && ofmt != "" {
+		outputErr = brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
+	} else if isBatch {
+		brute.PrintBatchSummary(allReports)
+	}
+	return resultRun.finish(outputErr)
+}
+
+func bruteTargets(cfg *config.Config) ([]string, error) {
+	if cfg.BruteURLFile != "" && cfg.SwaggerURL != "" {
+		return nil, fmt.Errorf("specify only one of --url or --url-file")
+	}
+	if cfg.BruteURLFile == "" {
+		if cfg.SwaggerURL == "" {
+			return nil, fmt.Errorf("no target specified; use --url or --url-file")
+		}
+		return []string{cfg.SwaggerURL}, nil
+	}
+	file, err := os.Open(cfg.BruteURLFile)
+	if err != nil {
+		return nil, fmt.Errorf("open URL file: %w", err)
+	}
+	var targets []string
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		targets = append(targets, line)
+		if len(targets) > cfg.MaxCandidates {
+			_ = file.Close()
+			return nil, fmt.Errorf("URL file exceeds %d target limit", cfg.MaxCandidates)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("read URL file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("close URL file: %w", err)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no URLs found in file %q", cfg.BruteURLFile)
+	}
+	return targets, nil
 }
 
 func init() {

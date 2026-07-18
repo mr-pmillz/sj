@@ -138,14 +138,20 @@ type scanInput struct {
 	RetryOnHint          bool        `json:"retry_on_hint,omitempty" jsonschema:"Retry safe 401 responses that contain structured missing-parameter hints."`
 	AcceptRisk           bool        `json:"accept_risk,omitempty" jsonschema:"Request state-changing methods and dangerous paths. Requires server-side destructive authorization."`
 	ResponsePreviewBytes int         `json:"response_preview_bytes,omitempty" jsonschema:"Return this many response bytes per operation, from 0 through 4096."`
+	StoreResponses       bool        `json:"store_responses,omitempty" jsonschema:"Return complete response bodies up to the MCP server's configured emergency response ceiling."`
 }
 
 type scanResult struct {
-	Source  string `json:"source,omitempty"`
-	Method  string `json:"method"`
-	Status  int    `json:"status"`
-	Target  string `json:"target"`
-	Preview string `json:"preview,omitempty"`
+	Source            string `json:"source,omitempty"`
+	Method            string `json:"method"`
+	Status            int    `json:"status"`
+	Target            string `json:"target"`
+	URL               string `json:"url,omitempty"`
+	ContentType       string `json:"content_type,omitempty"`
+	RequestBody       string `json:"request_body,omitempty"`
+	ResponseBody      string `json:"response_body,omitempty"`
+	ResponseTruncated bool   `json:"response_truncated,omitempty"`
+	Preview           string `json:"preview,omitempty"`
 }
 
 type scanOutput struct {
@@ -182,6 +188,7 @@ func (service *service) scan(ctx context.Context, _ *mcp.CallToolRequest, input 
 	cfg.Force = false
 	cfg.Verbose = input.ResponsePreviewBytes > 0
 	cfg.ResponsePreview = input.ResponsePreviewBytes
+	configureResponseCapture(cfg, input.StoreResponses)
 	applyTarget(cfg, input.Target)
 	if err := scanner.ConfigureTarget(spec, cfg); err != nil {
 		return nil, scanOutput{}, err
@@ -213,20 +220,34 @@ func (service *service) scan(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if err := scanner.ExecuteRequestPlansContextE(ctx, plans, client, cfg, writer); err != nil {
 		return nil, scanOutput{}, err
 	}
-	result := scanOutput{Title: writer.SpecTitle, Description: writer.SpecDescription, Results: make([]scanResult, 0, len(plans))}
-	if cfg.Verbose {
-		for _, item := range writer.VerboseResults {
-			result.Results = append(result.Results, scanResult{Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target, Preview: item.Preview})
-		}
-	} else {
-		for _, item := range writer.Results {
-			result.Results = append(result.Results, scanResult{Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target})
-		}
-	}
+	result := scanOutput{Title: writer.SpecTitle, Description: writer.SpecDescription, Results: scanResults(writer)}
 	if err := service.ensureOutputSize(result); err != nil {
 		return nil, scanOutput{}, err
 	}
 	return nil, result, nil
+}
+
+func configureResponseCapture(cfg *config.Config, enabled bool) {
+	cfg.StoreResponses = enabled
+	if enabled {
+		cfg.MaxStoredResponseBytes = cfg.MaxResponseBytes
+	}
+}
+
+func scanResultFromResult(item output.Result) scanResult {
+	return scanResult{
+		Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target,
+		URL: item.URL, ContentType: item.ContentType, RequestBody: item.RequestBody,
+		ResponseBody: item.ResponseBody, ResponseTruncated: item.ResponseTruncated,
+	}
+}
+
+func scanResultFromVerboseResult(item output.VerboseResult) scanResult {
+	return scanResult{
+		Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target,
+		URL: item.URL, ContentType: item.ContentType, RequestBody: item.RequestBody,
+		ResponseBody: item.ResponseBody, ResponseTruncated: item.ResponseTruncated, Preview: item.Preview,
+	}
 }
 
 type discoverInput struct {

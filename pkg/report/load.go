@@ -231,6 +231,11 @@ func (state *loader) parseJSON(data []byte) error {
 		var probes []struct {
 			Method            string `json:"method"`
 			URL               string `json:"url"`
+			BaselineURL       string `json:"baseline_url"`
+			Case              string `json:"case"`
+			Category          string `json:"category"`
+			Identity          string `json:"identity"`
+			Guidance          string `json:"guidance"`
 			Status            int    `json:"status"`
 			ContentType       string `json:"content_type"`
 			RequestBody       string `json:"request_body"`
@@ -249,7 +254,12 @@ func (state *loader) parseJSON(data []byte) error {
 				source = parsed.Scheme + "://" + parsed.Host
 				target = parsed.EscapedPath()
 			}
-			if err := state.addOperation(Operation{Source: source, Method: probe.Method, Status: probe.Status, Target: target, URL: probe.URL, ContentType: probe.ContentType, RequestBody: probe.RequestBody, ResponseBody: probe.ResponseBody, ResponseTruncated: probe.ResponseTruncated}); err != nil {
+			if err := state.addOperation(Operation{
+				Source: source, Method: probe.Method, Status: probe.Status, Target: target, URL: probe.URL,
+				BaselineURL: probe.BaselineURL, Case: probe.Case, Category: probe.Category, Identity: probe.Identity, Guidance: probe.Guidance,
+				ContentType: probe.ContentType, RequestBody: probe.RequestBody, ResponseBody: probe.ResponseBody,
+				ResponseTruncated: probe.ResponseTruncated,
+			}); err != nil {
 				return err
 			}
 		}
@@ -317,6 +327,11 @@ func (state *loader) parseJSONMap(object map[string]json.RawMessage) error {
 			var encoded struct {
 				Method            string `json:"method"`
 				URL               string `json:"url"`
+				BaselineURL       string `json:"baseline_url"`
+				Case              string `json:"case"`
+				Category          string `json:"category"`
+				Identity          string `json:"identity"`
+				Guidance          string `json:"guidance"`
 				ContentType       string `json:"content_type"`
 				RequestBody       string `json:"request_body"`
 				ResponseBody      string `json:"response_body"`
@@ -332,7 +347,12 @@ func (state *loader) parseJSONMap(object map[string]json.RawMessage) error {
 				source, target = parsed.Scheme+"://"+parsed.Host, parsed.EscapedPath()
 			}
 			state.currentKind = "fuzz-jsonl"
-			return state.addOperation(Operation{Source: source, Method: encoded.Method, Status: encoded.Status, Target: target, URL: encoded.URL, ContentType: encoded.ContentType, RequestBody: encoded.RequestBody, ResponseBody: encoded.ResponseBody, ResponseTruncated: encoded.ResponseTruncated})
+			return state.addOperation(Operation{
+				Source: source, Method: encoded.Method, Status: encoded.Status, Target: target, URL: encoded.URL,
+				BaselineURL: encoded.BaselineURL, Case: encoded.Case, Category: encoded.Category, Identity: encoded.Identity, Guidance: encoded.Guidance,
+				ContentType: encoded.ContentType, RequestBody: encoded.RequestBody, ResponseBody: encoded.ResponseBody,
+				ResponseTruncated: encoded.ResponseTruncated,
+			})
 		case "finding":
 			var finding ImportedFinding
 			if err := json.Unmarshal(object["finding"], &finding); err != nil {
@@ -539,7 +559,10 @@ func (state *loader) addOperation(operation Operation) error {
 	if err := state.countRecord(); err != nil {
 		return err
 	}
-	key := strings.Join([]string{operation.Source, operation.Method, strconv.Itoa(operation.Status), operation.Target, operation.URL}, "\x00")
+	key := strings.Join([]string{
+		operation.Source, operation.Method, strconv.Itoa(operation.Status), operation.Target, operation.URL,
+		operation.BaselineURL, operation.Case, operation.Identity,
+	}, "\x00")
 	state.operations[key] = operation
 	return nil
 }

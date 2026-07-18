@@ -70,7 +70,10 @@ func WriteFile(report Report, format, path, colorMode string) error {
 }
 
 func writeTerminal(report Report, destination io.Writer, colorMode string) error {
-	if _, err := fmt.Fprintf(destination, "Fuzz requests: %d; findings: %d; unsafe skipped: %d; rate limited: %t\n", report.Summary.Requests, len(report.Findings), report.Summary.SkippedUnsafe, report.Summary.RateLimited); err != nil {
+	if _, err := fmt.Fprintf(destination, "Fuzz requests: %d; IDOR baselines qualified: %d; IDOR baselines rejected: %d; invalid IDOR probes skipped: %d; guided retries: %d; guided successes: %d; unresolved hints: %d; findings: %d; unsafe skipped: %d; rate limited: %t\n",
+		report.Summary.Requests, report.Summary.QualifiedIDORBaselines, report.Summary.RejectedIDORBaselines, report.Summary.SkippedInvalidIDOR,
+		report.Summary.GuidedRetries, report.Summary.GuidedSuccesses, report.Summary.UnresolvedHints,
+		len(report.Findings), report.Summary.SkippedUnsafe, report.Summary.RateLimited); err != nil {
 		return err
 	}
 	for _, probe := range report.Probes {

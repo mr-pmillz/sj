@@ -138,6 +138,7 @@ func TestAuditPlanAndConvertToolsReturnStructuredResults(t *testing.T) {
 func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 	var getCalls atomic.Int64
 	var deleteCalls atomic.Int64
+	responseBody := `{"ok":"` + strings.Repeat("complete-response-", 700) + `"}`
 	factory := func(cfg *config.Config) (*httpclient.Client, error) {
 		client := httpclient.NewClient(cfg)
 		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -147,7 +148,7 @@ func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 			case http.MethodGet:
 				getCalls.Add(1)
 			}
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request}, nil
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(responseBody)), Request: request}, nil
 		})
 		return client, client.InitErr
 	}
@@ -164,6 +165,7 @@ func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 		"sources":         []any{map[string]any{"document": spec}},
 		"accept_risk":     true,
 		"exclude_methods": []any{"delete"},
+		"store_responses": true,
 	})
 	if result.IsError {
 		t.Fatalf("automate failed: %s", toolText(result))
@@ -172,6 +174,23 @@ func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 	decodeStructured(t, result, &response)
 	if getCalls.Load() != 1 || deleteCalls.Load() != 0 || len(response.Results) != 1 || response.Results[0].Method != http.MethodGet {
 		t.Fatalf("get=%d delete=%d results=%#v", getCalls.Load(), deleteCalls.Load(), response.Results)
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured struct {
+		Results []struct {
+			URL               string `json:"url"`
+			ResponseBody      string `json:"response_body"`
+			ResponseTruncated bool   `json:"response_truncated"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(encoded, &captured); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Results) != 1 || captured.Results[0].URL != "https://api.example.com/widgets" || captured.Results[0].ResponseBody != responseBody || captured.Results[0].ResponseTruncated {
+		t.Fatalf("complete MCP response was not preserved: %#v", captured.Results)
 	}
 
 	allExcluded := callTool(t, session, "automate_openapi", map[string]any{
@@ -582,6 +601,43 @@ func TestAutomateToolConsumesBruteReportsAndPreflightsEveryOperation(t *testing.
 	}
 }
 
+func TestAutomateToolDeduplicatesIdenticalOperationPlansAcrossSources(t *testing.T) {
+	var operationCalls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			operationCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{
+			map[string]any{"document": testOpenAPI},
+			map[string]any{"document": testOpenAPI},
+		},
+	})
+	if result.IsError {
+		t.Fatalf("automate failed: %s", toolText(result))
+	}
+	var output struct {
+		Sources int          `json:"sources"`
+		Results []scanResult `json:"results"`
+	}
+	decodeStructured(t, result, &output)
+	if output.Sources != 2 || len(output.Results) != 1 || operationCalls.Load() != 1 {
+		t.Fatalf("sources=%d results=%d operation calls=%d", output.Sources, len(output.Results), operationCalls.Load())
+	}
+}
+
 func TestAutomateToolReportsInvalidSourceAndContinuesPreparedBatch(t *testing.T) {
 	var operationCalls atomic.Int64
 	factory := func(cfg *config.Config) (*httpclient.Client, error) {
@@ -603,8 +659,7 @@ func TestAutomateToolReportsInvalidSourceAndContinuesPreparedBatch(t *testing.T)
   "servers":[{"url":"https://api.example.com"}],
   "paths":{"/orgs/{oid}/schema/{schema_name+}":{"get":{
     "parameters":[
-      {"name":"oid","in":"path","required":true,"schema":{"type":"string"}},
-      {"name":"schema_name","in":"path","required":true,"schema":{"type":"string"}}
+      {"name":"oid","in":"path","required":true,"schema":{"type":"string"}}
     ],
     "responses":{"200":{"description":"ok"}}
   }}}
@@ -673,12 +728,16 @@ func TestBatchToolsInheritSOCKS5BaseConfiguration(t *testing.T) {
 	base.SOCKS5Proxy = "socks5://127.0.0.1:9000"
 	var factoryCalls atomic.Int64
 	var automateProgress atomic.Bool
+	var automateFullURLs atomic.Bool
+	var automateColorAlways atomic.Bool
 	factory := func(cfg *config.Config) (*httpclient.Client, error) {
 		if cfg.SOCKS5Proxy != base.SOCKS5Proxy {
 			t.Fatalf("SOCKS5 proxy = %q, want %q", cfg.SOCKS5Proxy, base.SOCKS5Proxy)
 		}
 		if cfg.Mode == config.ModeAutomate && cfg.ProgressDisplay {
 			automateProgress.Store(true)
+			automateFullURLs.Store(cfg.FullURLs)
+			automateColorAlways.Store(cfg.ColorMode == config.ColorAlways)
 		}
 		factoryCalls.Add(1)
 		client := httpclient.NewClient(config.New())
@@ -713,8 +772,10 @@ func TestBatchToolsInheritSOCKS5BaseConfiguration(t *testing.T) {
 		t.Fatalf("brute failed: %s", toolText(bruteResult))
 	}
 	automateResult := callTool(t, session, "automate_openapi", map[string]any{
-		"sources":  []any{map[string]any{"document": testOpenAPI}},
-		"progress": true,
+		"sources":   []any{map[string]any{"document": testOpenAPI}},
+		"progress":  true,
+		"full_urls": true,
+		"color":     "always",
 	})
 	if automateResult.IsError {
 		t.Fatalf("automate failed: %s", toolText(automateResult))
@@ -724,6 +785,19 @@ func TestBatchToolsInheritSOCKS5BaseConfiguration(t *testing.T) {
 	}
 	if !automateProgress.Load() {
 		t.Fatal("automate progress setting did not reach the scanner configuration")
+	}
+	if !automateFullURLs.Load() {
+		t.Fatal("automate full URL setting did not reach the scanner configuration")
+	}
+	if !automateColorAlways.Load() {
+		t.Fatal("automate color setting did not reach the scanner configuration")
+	}
+	invalidColor := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": testOpenAPI}},
+		"color":   "sometimes",
+	})
+	if !invalidColor.IsError || !strings.Contains(toolText(invalidColor), "color mode") {
+		t.Fatalf("invalid color result = isError:%v text:%q", invalidColor.IsError, toolText(invalidColor))
 	}
 }
 

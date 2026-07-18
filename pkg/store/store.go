@@ -24,7 +24,7 @@ const (
 	RunCanceled  = "canceled"
 
 	maximumBatchRecords = 1_000_000
-	maximumBlobBytes    = 16 * 1024 * 1024
+	maximumBlobBytes    = 1 << 30
 	maximumJSONBytes    = 1 * 1024 * 1024
 )
 
@@ -378,27 +378,21 @@ func (s *Store) Observations(ctx context.Context, query Query) ([]Observation, e
 	if limit < 1 || limit > maximumBatchRecords {
 		return nil, fmt.Errorf("observation query limit must be between 1 and %d", maximumBatchRecords)
 	}
-	clauses := make([]string, 0, 2)
-	arguments := make([]any, 0, len(query.RunIDs)+len(query.Kinds)+1)
-	if len(query.RunIDs) > 0 {
-		clauses = append(clauses, "run_id IN ("+placeholders(len(query.RunIDs))+")")
-		for _, value := range query.RunIDs {
-			arguments = append(arguments, value)
-		}
+	runIDsJSON, err := stringSliceJSON(query.RunIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode observation run filters: %w", err)
 	}
-	if len(query.Kinds) > 0 {
-		clauses = append(clauses, "kind IN ("+placeholders(len(query.Kinds))+")")
-		for _, value := range query.Kinds {
-			arguments = append(arguments, value)
-		}
+	kindsJSON, err := stringSliceJSON(query.Kinds)
+	if err != nil {
+		return nil, fmt.Errorf("encode observation kind filters: %w", err)
 	}
-	statement := `SELECT id, run_id, kind, source, method, url, path, status, content_type, request_body, response_body, response_truncated, metadata_json, created_at FROM observations`
-	if len(clauses) > 0 {
-		statement += " WHERE " + strings.Join(clauses, " AND ")
-	}
-	statement += " ORDER BY id LIMIT ?"
-	arguments = append(arguments, limit)
-	rows, err := s.db.QueryContext(ctx, statement, arguments...)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, run_id, kind, source, method, url, path, status, content_type, request_body, response_body, response_truncated, metadata_json, created_at
+FROM observations
+WHERE (? = '[]' OR run_id IN (SELECT value FROM json_each(?)))
+  AND (? = '[]' OR kind IN (SELECT value FROM json_each(?)))
+ORDER BY id
+LIMIT ?`, runIDsJSON, runIDsJSON, kindsJSON, kindsJSON, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query observations: %w", err)
 	}
@@ -434,17 +428,16 @@ func (s *Store) Findings(ctx context.Context, query Query) ([]Finding, error) {
 	if limit < 1 || limit > maximumBatchRecords {
 		return nil, fmt.Errorf("finding query limit must be between 1 and %d", maximumBatchRecords)
 	}
-	statement := `SELECT id, run_id, severity, category, title, method, url, evidence_json, created_at FROM findings`
-	arguments := make([]any, 0, len(query.RunIDs)+1)
-	if len(query.RunIDs) > 0 {
-		statement += " WHERE run_id IN (" + placeholders(len(query.RunIDs)) + ")"
-		for _, runID := range query.RunIDs {
-			arguments = append(arguments, runID)
-		}
+	runIDsJSON, err := stringSliceJSON(query.RunIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode finding run filters: %w", err)
 	}
-	statement += " ORDER BY id LIMIT ?"
-	arguments = append(arguments, limit)
-	rows, err := s.db.QueryContext(ctx, statement, arguments...)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, run_id, severity, category, title, method, url, evidence_json, created_at
+FROM findings
+WHERE (? = '[]' OR run_id IN (SELECT value FROM json_each(?)))
+ORDER BY id
+LIMIT ?`, runIDsJSON, runIDsJSON, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query findings: %w", err)
 	}
@@ -530,12 +523,15 @@ func newRunID() (string, error) {
 	return hex.EncodeToString(buffer), nil
 }
 
-func placeholders(count int) string {
-	values := make([]string, count)
-	for index := range values {
-		values[index] = "?"
+func stringSliceJSON(values []string) (string, error) {
+	if len(values) == 0 {
+		return "[]", nil
 	}
-	return strings.Join(values, ",")
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }

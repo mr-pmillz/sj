@@ -36,7 +36,8 @@ func NewClient(cfg *config.Config) *Client {
 	}
 	c := &Client{Cfg: cfg}
 	httpProxyConfigured := cfg.Proxy != "" && cfg.Proxy != "NOPROXY"
-	if cfg.SOCKS5Proxy != "" {
+	switch {
+	case cfg.SOCKS5Proxy != "":
 		if httpProxyConfigured {
 			c.InitErr = errors.New("HTTP and SOCKS5 proxies are mutually exclusive")
 		} else {
@@ -50,9 +51,9 @@ func NewClient(cfg *config.Config) *Client {
 				transport.ForceAttemptHTTP2 = true
 			}
 		}
-	} else if cfg.SOCKS5Username != "" || cfg.SOCKS5Password != "" {
+	case cfg.SOCKS5Username != "" || cfg.SOCKS5Password != "":
 		c.InitErr = errors.New("SOCKS5 credentials require a SOCKS5 proxy")
-	} else if httpProxyConfigured {
+	case httpProxyConfigured:
 		proxyURL, err := parseProxyURL(cfg.Proxy)
 		if err != nil {
 			c.InitErr = fmt.Errorf("invalid proxy URL: %w", err)

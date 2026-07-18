@@ -22,6 +22,7 @@ It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON S
 | `collection` | Generates populated Bruno API penetration-testing collections from automate results |
 | `fuzz` | Runs rate-safe active API mutation, identity-comparison, PII, enumeration, and error checks |
 | `report` | Builds terminal, Markdown, and HTML API penetration-test reports |
+| `run --full-workflow` | Chains authorized recon, enumeration, bounded exploitation, collection generation, and reporting |
 | `runs` | Lists runs in the default-on SQLite result database |
 | `mcp` | Starts an optional, policy-constrained MCP server for AI agents |
 
@@ -189,7 +190,7 @@ State-changing Bruno requests contain a pre-request guard. The generated environ
 
 ### Bounded API fuzzing
 
-Fuzz interesting operations (the default), all operations, or explicit endpoints:
+Fuzz interesting operations (the default), all operations, IDOR candidates, or explicit endpoints:
 
 ```bash
 sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
@@ -200,9 +201,15 @@ sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
 
 sj fuzz -I automate.json --scope all -F json -o fuzz.json
 sj fuzz -I automate.json --endpoint 'GET https://api.example/users/1'
+sj fuzz --run AUTOMATE_RUN_ID --scope idor --idor-range 1-100 \
+  --max-cases 4096 --max-requests 10000 --delay 500ms \
+  --store-responses --max-stored-response-bytes 1073741824 \
+  -F json -o idor-fuzz.json
 ```
 
-`fuzz` is sequential, enforces a hard request budget and bounded payload/response sizes, and stops immediately on HTTP 429. It does not generate oversized, recursive, sleep, resource-exhaustion, or denial-of-service payloads. State-changing operations require `--accept-risk`.
+Numeric IDOR ranges are inclusive and limited to 1,000 values. sj mutates every identifier-bearing path segment, query parameter, and top-level JSON property, rejects a partial range when `--max-cases` is too small, and reports a high-severity active-test candidate only when multiple successful IDs have distinct response hashes. Identical wildcard/catch-all responses are not reported as differential IDOR evidence.
+
+`fuzz` is sequential, enforces a hard request budget and bounded payload/response sizes, and stops immediately on HTTP 429 or a near-empty advertised rate budget. It returns an incomplete-coverage error if `--max-requests` prevents every planned case from running. It does not generate oversized, recursive, sleep, resource-exhaustion, or denial-of-service payloads. State-changing operations require `--accept-risk`.
 
 Complete business workflows and persisted side-effect verification are explicit rather than guessed. Supply a generated or hand-reviewed workflow file whose steps can capture JSON values, substitute them into later requests, compare named identities, assert status/JSON values, and mark read-back steps with `verify_side_effect`:
 
@@ -227,7 +234,23 @@ sj report --input targets/results -O -o targets/results/api-pentest-report --col
 sj report --run BRUTE_RUN_ID --run AUTOMATE_RUN_ID --run FUZZ_RUN_ID -O -o api-pentest-report
 ```
 
-The report deduplicates equivalent output formats and includes HTTP, method, and specification-host distributions; wildcard-response filtering and coverage metrics; weighted critical/high/medium/low/informational findings; stored fuzz evidence; and OWASP API Security Top 10 (2023) review guidance. IDOR, business-logic, SSRF, and resource-consumption entries are explicitly labeled as testing candidates unless active evidence supports a stronger conclusion.
+The report deduplicates equivalent output formats and includes HTTP, method, and specification-host distributions; wildcard-response filtering and coverage metrics; weighted critical/high/medium/low/informational findings; stored fuzz evidence; and OWASP API Security Top 10 (2023) review guidance. HTML findings include native, toggleable request/response proof blocks when response capture was enabled. Target-controlled markup is escaped, and incomplete evidence is labeled as truncated. Use `--max-evidence` to control the number of proof records attached to each finding. IDOR, business-logic, SSRF, and resource-consumption entries are explicitly labeled as testing candidates unless active evidence supports a stronger conclusion.
+
+### Full assessment workflow
+
+Run discovery, endpoint enumeration, bounded numeric IDOR testing, Bruno generation, and Markdown/HTML reporting as one artifact-producing workflow:
+
+```bash
+sj --socks5-proxy socks5://127.0.0.1:9000 \
+  --database targets/results/authorized-qa.db \
+  --max-response-bytes 1073741824 \
+  -o targets/results/full-workflow \
+  run --full-workflow --url-file targets/unique-base-urls.txt \
+  --workers 20 --exclude DELETE --idor-range 1-100 \
+  --max-cases 4096 --max-fuzz-requests 10000 --delay 500ms
+```
+
+The output directory must not already exist. DELETE is always excluded, response capture is enabled for automate and fuzz with the configured response read limit, and SQLite storage remains enabled. Non-DELETE state-changing requests still require `--accept-risk`. A rate-limit signal stops active fuzzing immediately; already captured artifacts are still used to generate the Bruno collection and final reports.
 
 ### SQLite result database
 
@@ -257,7 +280,7 @@ Expose typed `sj` tools to an MCP client over standard input/output:
 }
 ```
 
-The server provides passive audit, request-planning, and conversion tools plus opt-in single-target and batch scanning and definition discovery. The `brute_openapi` tool supports bounded target-level workers, and `automate_openapi` accepts its structured reports directly. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, workers, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
+The server provides passive audit, request-planning, and conversion tools plus opt-in single-target and batch scanning and definition discovery. The `brute_openapi` tool supports bounded target-level workers, and `automate_openapi` accepts its structured reports directly. Batch automation deduplicates identical operation plans and supports method exclusions, complete response capture, full-URL progress, and `auto`, `always`, or `never` color modes. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, workers, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
 
 ## Key Features
 

@@ -130,8 +130,11 @@ type automateInput struct {
 	RetryOnHint          bool           `json:"retry_on_hint,omitempty" jsonschema:"Retry safe 401 responses that contain structured missing-parameter hints."`
 	AcceptRisk           bool           `json:"accept_risk,omitempty" jsonschema:"Request state-changing methods and dangerous paths. Requires server-side destructive authorization."`
 	Progress             bool           `json:"progress,omitempty" jsonschema:"Write per-operation progress to server stderr during the active scan."`
+	FullURLs             bool           `json:"full_urls,omitempty" jsonschema:"Show complete operation URLs instead of paths in progress output."`
+	ColorMode            string         `json:"color,omitempty" jsonschema:"Progress color mode: auto, always, or never."`
 	ResponsePreviewBytes int            `json:"response_preview_bytes,omitempty" jsonschema:"Return this many response bytes per operation, from 0 through 4096."`
 	ExcludeMethods       []string       `json:"exclude_methods,omitempty" jsonschema:"HTTP methods to omit from request planning, matched case-insensitively."`
+	StoreResponses       bool           `json:"store_responses,omitempty" jsonschema:"Return complete response bodies up to the MCP server's configured emergency response ceiling."`
 }
 
 type automateOutput struct {
@@ -166,6 +169,9 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 	}
 	validationCfg := service.config()
 	validationCfg.ExcludeMethods = append([]string(nil), input.ExcludeMethods...)
+	if input.ColorMode != "" {
+		validationCfg.ColorMode = input.ColorMode
+	}
 	if err := validationCfg.Validate(); err != nil {
 		return nil, automateOutput{}, fmt.Errorf("invalid automate options: %w", err)
 	}
@@ -192,6 +198,7 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 	prepared := make([]preparedAutomateScan, 0, len(sources))
 	failures := make([]automateFailure, 0)
 	totalPlans := 0
+	plannedOperations := make(map[automateOperationIdentity]struct{})
 	for index, source := range sources {
 		sourceLabel := mcpInputSourceLabel(source, index)
 		spec, cfg, resolver, err := service.parseSource(ctx, source)
@@ -210,8 +217,13 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 		cfg.AcceptRisk = input.AcceptRisk
 		cfg.Force = false
 		cfg.ProgressDisplay = input.Progress
+		cfg.FullURLs = input.FullURLs
+		if input.ColorMode != "" {
+			cfg.ColorMode = input.ColorMode
+		}
 		cfg.Verbose = input.ResponsePreviewBytes > 0
 		cfg.ResponsePreview = input.ResponsePreviewBytes
+		configureResponseCapture(cfg, input.StoreResponses)
 		cfg.ExcludeMethods = append([]string(nil), input.ExcludeMethods...)
 		applyTarget(cfg, input.Target)
 		if err := scanner.ConfigureTarget(spec, cfg); err != nil {
@@ -232,6 +244,10 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 		if operationPolicyErr != nil {
 			failures = append(failures, newAutomateFailure(sourceLabel, source, operationPolicyErr))
+			continue
+		}
+		plans = uniqueAutomatePlans(plans, plannedOperations)
+		if len(plans) == 0 {
 			continue
 		}
 		totalPlans += len(plans)
@@ -260,11 +276,36 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 			failures = append(failures, newAutomateFailure(scan.sourceLabel, sourceInput{URL: scan.cfg.SwaggerURL, LocalFile: scan.cfg.LocalFile}, err))
 		}
 	}
-	result := automateOutput{Sources: len(sources), Results: scanResults(writer, input.ResponsePreviewBytes > 0), Failures: failures}
+	result := automateOutput{Sources: len(sources), Results: scanResults(writer), Failures: failures}
 	if err := service.ensureOutputSize(result); err != nil {
 		return nil, automateOutput{}, err
 	}
 	return nil, result, nil
+}
+
+type automateOperationIdentity struct {
+	Method  string
+	URL     string
+	Headers string
+	Body    string
+}
+
+func uniqueAutomatePlans(plans []scanner.RequestPlan, seen map[automateOperationIdentity]struct{}) []scanner.RequestPlan {
+	unique := make([]scanner.RequestPlan, 0, len(plans))
+	for _, plan := range plans {
+		identity := automateOperationIdentity{
+			Method:  strings.ToUpper(plan.Method),
+			URL:     plan.URL,
+			Headers: strings.Join(plan.Headers, "\x00"),
+			Body:    string(plan.Body),
+		}
+		if _, exists := seen[identity]; exists {
+			continue
+		}
+		seen[identity] = struct{}{}
+		unique = append(unique, plan)
+	}
+	return unique
 }
 
 func (service *service) automateSources(input automateInput) ([]sourceInput, error) {
@@ -337,17 +378,17 @@ func mcpInputSourceLabel(source sourceInput, index int) string {
 	return fmt.Sprintf("inline specification %d", index+1)
 }
 
-func scanResults(writer *output.Writer, verbose bool) []scanResult {
-	if verbose {
+func scanResults(writer *output.Writer) []scanResult {
+	if writer.Cfg.Verbose {
 		results := make([]scanResult, 0, len(writer.VerboseResults))
 		for _, item := range writer.VerboseResults {
-			results = append(results, scanResult{Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target, Preview: item.Preview})
+			results = append(results, scanResultFromVerboseResult(item))
 		}
 		return results
 	}
 	results := make([]scanResult, 0, len(writer.Results))
 	for _, item := range writer.Results {
-		results = append(results, scanResult{Source: item.Source, Method: item.Method, Status: item.Status, Target: item.Target})
+		results = append(results, scanResultFromResult(item))
 	}
 	return results
 }

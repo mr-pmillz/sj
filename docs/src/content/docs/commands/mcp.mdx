@@ -40,8 +40,12 @@ Point an MCP client at the absolute path to the `sj` binary:
 | `convert_openapi` | Converts Swagger 2 to bounded OpenAPI 3 JSON or YAML. |
 | `scan_openapi` | Sends documented API requests when active access is enabled. |
 | `discover_openapi` | Probes common definition paths when active access is enabled. |
+| `brute_openapi` | Probes a target batch with bounded target-level workers and returns structured discovery reports. |
+| `automate_openapi` | Consumes explicit sources or brute reports, deduplicates identical operation plans, and sends a policy-checked batch. |
 
 Each document tool accepts exactly one source: inline `document`, allowlisted `url`, or an enabled `local_file`.
+
+`automate_openapi` supports case-insensitive `exclude_methods`, complete `store_responses` capture up to the server emergency ceiling, `full_urls` progress output, and `color` values of `auto`, `always`, or `never`. State-changing plans additionally require `accept_risk=true` and the server-side destructive gate.
 
 ## Security Policy
 
@@ -52,7 +56,7 @@ The default server permits only passive operations on inline documents. Enable a
 | `--allow-host HOST` | none | Permit remote specification or target access. Repeat for exact hosts, `host:port`, `*.example.com`, IP addresses, or use `'*'` explicitly. |
 | `--allow-local-files` | false | Permit local files and references confined beneath the source directory. |
 | `--allow-active` | false | Permit bounded scanning and definition discovery. |
-| `--allow-destructive` | false | Permit `scan_openapi` calls with `accept_risk=true`; requires active access. |
+| `--allow-destructive` | false | Permit `scan_openapi` and `automate_openapi` calls with `accept_risk=true`; requires active access. |
 | `--max-results N` | `1000` | Bound findings, operations, and returned discovery rows per call; discovery reports indicate truncation. |
 | `--max-output-bytes N` | `1048576` | Bound encoded structured output per call. |
 | `--max-input-bytes N` | `16777216` | Reject oversized protocol messages before the SDK decodes tool arguments. |

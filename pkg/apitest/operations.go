@@ -14,15 +14,28 @@ import (
 )
 
 const (
-	ScopeAll             = "all"
-	ScopeInteresting     = "interesting"
-	MaximumPayloadBytes  = 4 * 1024
-	maximumMutationCases = 64
+	ScopeAll               = "all"
+	ScopeInteresting       = "interesting"
+	ScopeIDOR              = "idor"
+	MaximumPayloadBytes    = 4 * 1024
+	MaximumIDORRangeValues = 1_000
+	maximumMutationCases   = 4_096
 )
 
 var (
-	identifierPath  = regexp.MustCompile(`(?i)(?:^|/)(?:\d+|testvalue|[0-9a-f]{8}-[0-9a-f-]{27,})(?:/|$)`)
-	interestingPath = regexp.MustCompile(`(?i)(?:^|[/_-])(user|account|admin|auth|login|token|search|export|report|order|payment|transfer|invite|register|profile|member|organization|tenant)(?:s|$|[/_-])`)
+	identifierPath       = regexp.MustCompile(`(?i)(?:^|/)(?:\d+|testvalue|[0-9a-f]{8}-[0-9a-f-]{27,})(?:/|$)`)
+	interestingPath      = regexp.MustCompile(`(?i)(?:^|[/_-])(user|account|admin|auth|login|token|search|export|report|order|payment|transfer|invite|register|profile|member|organization|tenant)(?:s|$|[/_-])`)
+	badCharacterPayloads = []struct {
+		name  string
+		value string
+	}{
+		{name: "quotes", value: `sj-probe'"\`},
+		{name: "traversal", value: "../sj-probe"},
+		{name: "markup", value: "<sj-probe>"},
+		{name: "template", value: "${7*7}"},
+		{name: "format", value: "%s%s%s"},
+		{name: "sql_meta", value: "' OR '1'='1"},
+	}
 )
 
 type SelectOptions struct {
@@ -34,6 +47,12 @@ type SelectOptions struct {
 type MutationOptions struct {
 	KnownUsername string
 	MaxCases      int
+	IDORRange     *NumericRange
+}
+
+type NumericRange struct {
+	Start int
+	End   int
 }
 
 type Mutation struct {
@@ -94,8 +113,8 @@ func SelectOperations(operations []pentestreport.Operation, options SelectOption
 	if scope == "" {
 		scope = ScopeInteresting
 	}
-	if scope != ScopeAll && scope != ScopeInteresting {
-		return nil, fmt.Errorf("scope must be %q or %q", ScopeAll, ScopeInteresting)
+	if scope != ScopeAll && scope != ScopeInteresting && scope != ScopeIDOR {
+		return nil, fmt.Errorf("scope must be %q, %q, or %q", ScopeAll, ScopeInteresting, ScopeIDOR)
 	}
 	selectors, err := parseSelectors(options.Endpoints)
 	if err != nil {
@@ -116,8 +135,17 @@ func SelectOperations(operations []pentestreport.Operation, options SelectOption
 		if len(selectors) > 0 && !matchesSelector(operation, selectors) {
 			continue
 		}
-		if len(selectors) == 0 && scope == ScopeInteresting && !IsInteresting(operation) {
-			continue
+		if len(selectors) == 0 {
+			switch scope {
+			case ScopeInteresting:
+				if !IsInteresting(operation) {
+					continue
+				}
+			case ScopeIDOR:
+				if !IsIDORCandidate(operation) {
+					continue
+				}
+			}
 		}
 		key := operation.Method + "\x00" + operation.URL
 		if _, exists := seen[key]; exists {
@@ -151,6 +179,65 @@ func IsInteresting(operation pentestreport.Operation) bool {
 	default:
 		return false
 	}
+}
+
+func IsIDORCandidate(operation pentestreport.Operation) bool {
+	if operation.Status < httpStatusOK || operation.Status >= httpStatusMultipleChoices {
+		return false
+	}
+	if identifierPath.MatchString(operation.Target) || identifierPath.MatchString(operation.URL) {
+		return true
+	}
+	parsed, err := url.Parse(operation.URL)
+	if err == nil {
+		for key := range parsed.Query() {
+			if isIdentifierField(key) {
+				return true
+			}
+		}
+	}
+	return bodyHasIdentifier(operation.RequestBody)
+}
+
+const (
+	httpStatusOK              = 200
+	httpStatusMultipleChoices = 300
+)
+
+func bodyHasIdentifier(raw string) bool {
+	if raw == "" || len(raw) > MaximumPayloadBytes {
+		return false
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(raw), &body) != nil {
+		return false
+	}
+	for key := range body {
+		if isIdentifierField(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func ParseNumericRange(value string) (NumericRange, error) {
+	value = strings.TrimSpace(value)
+	if strings.Count(value, "-") != 1 {
+		return NumericRange{}, fmt.Errorf("numeric IDOR range must use START-END")
+	}
+	startValue, endValue, _ := strings.Cut(value, "-")
+	start, startErr := strconv.Atoi(strings.TrimSpace(startValue))
+	end, endErr := strconv.Atoi(strings.TrimSpace(endValue))
+	if startErr != nil || endErr != nil || start < 0 || end < 0 {
+		return NumericRange{}, fmt.Errorf("numeric IDOR range endpoints must be non-negative integers")
+	}
+	if end < start {
+		return NumericRange{}, fmt.Errorf("numeric IDOR range end must be greater than or equal to start")
+	}
+	if end-start >= MaximumIDORRangeValues {
+		return NumericRange{}, fmt.Errorf("numeric IDOR range may contain at most %d values", MaximumIDORRangeValues)
+	}
+	return NumericRange{Start: start, End: end}, nil
 }
 
 type endpointSelector struct {
@@ -191,10 +278,7 @@ func matchesSelector(operation pentestreport.Operation, selectors []endpointSele
 }
 
 func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mutation, error) {
-	maxCases := options.MaxCases
-	if maxCases == 0 {
-		maxCases = 8
-	}
+	maxCases := mutationLimit(options.MaxCases)
 	if maxCases < 1 || maxCases > maximumMutationCases {
 		return nil, fmt.Errorf("mutation cases must be between 1 and %d", maximumMutationCases)
 	}
@@ -202,19 +286,174 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
 		return nil, errors.New("operation URL must be an absolute http(s) URL")
 	}
-	mutations := make([]Mutation, 0, maxCases)
-	add := func(mutation Mutation) {
-		if len(mutations) >= maxCases || len(mutation.Body) > MaximumPayloadBytes {
+	collector := mutationCollector{values: make([]Mutation, 0, maxCases), limit: maxCases}
+	if options.IDORRange != nil {
+		if err := validateNumericRange(*options.IDORRange); err != nil {
+			return nil, err
+		}
+		required := numericRangeMutationCount(operation, parsed, *options.IDORRange)
+		if required > maxCases {
+			return nil, fmt.Errorf("complete numeric IDOR range requires %d mutation cases for this operation; increase --max-cases from %d", required, maxCases)
+		}
+		addNumericRangeMutations(operation, parsed, *options.IDORRange, collector.add)
+	}
+	addPathMutations(parsed, operation.RequestBody, collector.add)
+	addQueryMutations(parsed, operation.RequestBody, options.KnownUsername, collector.add)
+	addBodyMutations(operation, options.KnownUsername, collector.add)
+	addBadCharacterMutations(operation, parsed, collector.add)
+	collector.ensureVerboseProbe(parsed, operation.RequestBody)
+	return collector.values, nil
+}
+
+func validateNumericRange(idRange NumericRange) error {
+	_, err := ParseNumericRange(strconv.Itoa(idRange.Start) + "-" + strconv.Itoa(idRange.End))
+	return err
+}
+
+func mutationLimit(configured int) int {
+	if configured == 0 {
+		return 8
+	}
+	return configured
+}
+
+type mutationCollector struct {
+	values []Mutation
+	limit  int
+}
+
+func (collector *mutationCollector) add(mutation Mutation) {
+	if len(collector.values) >= collector.limit || len(mutation.Body) > MaximumPayloadBytes {
+		return
+	}
+	for _, existing := range collector.values {
+		if existing.URL == mutation.URL && string(existing.Body) == string(mutation.Body) {
 			return
 		}
-		for _, existing := range mutations {
-			if existing.URL == mutation.URL && string(existing.Body) == string(mutation.Body) {
-				return
+	}
+	collector.values = append(collector.values, mutation)
+}
+
+func (collector *mutationCollector) ensureVerboseProbe(parsed *url.URL, body string) {
+	for _, mutation := range collector.values {
+		if mutation.Category == "verbose_error" {
+			return
+		}
+	}
+	clone := *parsed
+	changed := clone.Query()
+	changed.Set("sj_probe", "invalid'\"")
+	clone.RawQuery = changed.Encode()
+	probe := Mutation{Name: "invalid_type", Category: "verbose_error", URL: clone.String(), Body: []byte(body)}
+	if len(collector.values) >= collector.limit {
+		return
+	}
+	collector.add(probe)
+}
+
+func addNumericRangeMutations(operation pentestreport.Operation, parsed *url.URL, idRange NumericRange, add func(Mutation)) {
+	addNumericPathRange(parsed, operation.RequestBody, idRange, add)
+	addNumericQueryRanges(parsed, operation.RequestBody, idRange, add)
+	addNumericBodyRanges(operation, idRange, add)
+}
+
+func addNumericPathRange(parsed *url.URL, body string, idRange NumericRange, add func(Mutation)) {
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for _, index := range numericPathIndexes(segments) {
+		for candidate := idRange.Start; candidate <= idRange.End; candidate++ {
+			clone := *parsed
+			changed := append([]string(nil), segments...)
+			changed[index] = strconv.Itoa(candidate)
+			clone.Path = "/" + strings.Join(changed, "/")
+			clone.RawPath = ""
+			add(Mutation{
+				Name: fmt.Sprintf("idor_range:path:%d:%d", index, candidate), Category: "idor_range",
+				URL: clone.String(), Body: []byte(body),
+			})
+		}
+	}
+}
+
+func addNumericQueryRanges(parsed *url.URL, body string, idRange NumericRange, add func(Mutation)) {
+	query := parsed.Query()
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		if isIdentifierField(key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		for candidate := idRange.Start; candidate <= idRange.End; candidate++ {
+			clone := *parsed
+			changed := clone.Query()
+			changed.Set(key, strconv.Itoa(candidate))
+			clone.RawQuery = changed.Encode()
+			add(Mutation{
+				Name: fmt.Sprintf("idor_range:query:%s:%d", key, candidate), Category: "idor_range",
+				URL: clone.String(), Body: []byte(body),
+			})
+		}
+	}
+}
+
+func addNumericBodyRanges(operation pentestreport.Operation, idRange NumericRange, add func(Mutation)) {
+	if operation.RequestBody == "" || len(operation.RequestBody) > MaximumPayloadBytes {
+		return
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(operation.RequestBody), &body) != nil {
+		return
+	}
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		if isIdentifierField(key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		for candidate := idRange.Start; candidate <= idRange.End; candidate++ {
+			clone := cloneObject(body)
+			clone[key] = candidate
+			addJSONMutation(add, fmt.Sprintf("idor_range:body:%s:%d", key, candidate), "idor_range", operation.URL, clone)
+		}
+	}
+}
+
+func numericRangeMutationCount(operation pentestreport.Operation, parsed *url.URL, idRange NumericRange) int {
+	width := idRange.End - idRange.Start + 1
+	dimensions := len(numericPathIndexes(strings.Split(strings.Trim(parsed.Path, "/"), "/")))
+	for key := range parsed.Query() {
+		if isIdentifierField(key) {
+			dimensions++
+		}
+	}
+	if operation.RequestBody != "" && len(operation.RequestBody) <= MaximumPayloadBytes {
+		var body map[string]any
+		if json.Unmarshal([]byte(operation.RequestBody), &body) == nil {
+			for key := range body {
+				if isIdentifierField(key) {
+					dimensions++
+				}
 			}
 		}
-		mutations = append(mutations, mutation)
 	}
+	return width * dimensions
+}
 
+func numericPathIndexes(segments []string) []int {
+	indexes := make([]int, 0, len(segments))
+	for index, segment := range segments {
+		_, numericErr := strconv.Atoi(segment)
+		if numericErr == nil || strings.EqualFold(segment, "testvalue") || looksLikeUUID(segment) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func addPathMutations(parsed *url.URL, body string, add func(Mutation)) {
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	for index, segment := range segments {
 		if number, parseErr := strconv.Atoi(segment); parseErr == nil {
@@ -223,7 +462,7 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 				changed := append([]string(nil), segments...)
 				changed[index] = strconv.Itoa(candidate)
 				clone.Path = "/" + strings.Join(changed, "/")
-				add(Mutation{Name: "idor_path_" + strconv.Itoa(candidate), Category: "idor", URL: clone.String(), Body: []byte(operation.RequestBody)})
+				add(Mutation{Name: "idor_path_" + strconv.Itoa(candidate), Category: "idor", URL: clone.String(), Body: []byte(body)})
 			}
 			break
 		}
@@ -232,11 +471,13 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 			changed := append([]string(nil), segments...)
 			changed[index] = "00000000-0000-0000-0000-000000000000"
 			clone.Path = "/" + strings.Join(changed, "/")
-			add(Mutation{Name: "idor_uuid_zero", Category: "idor", URL: clone.String(), Body: []byte(operation.RequestBody)})
+			add(Mutation{Name: "idor_uuid_zero", Category: "idor", URL: clone.String(), Body: []byte(body)})
 			break
 		}
 	}
+}
 
+func addQueryMutations(parsed *url.URL, body, knownUsername string, add func(Mutation)) {
 	query := parsed.Query()
 	queryKeys := make([]string, 0, len(query))
 	for key := range query {
@@ -250,67 +491,96 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 			changed := clone.Query()
 			changed.Set(key, strconv.Itoa(number+1))
 			clone.RawQuery = changed.Encode()
-			add(Mutation{Name: "idor_query_" + key, Category: "idor", URL: clone.String(), Body: []byte(operation.RequestBody)})
+			add(Mutation{Name: "idor_query_" + key, Category: "idor", URL: clone.String(), Body: []byte(body)})
 		}
 		if isUsernameField(key) {
-			addUsernameQueryMutations(add, parsed, key, options.KnownUsername, operation.RequestBody)
+			addUsernameQueryMutations(add, parsed, key, knownUsername, body)
 		}
 	}
+}
 
-	if len(operation.RequestBody) > 0 && len(operation.RequestBody) <= MaximumPayloadBytes {
-		var body map[string]any
-		if json.Unmarshal([]byte(operation.RequestBody), &body) == nil {
-			bodyKeys := make([]string, 0, len(body))
-			for key := range body {
-				bodyKeys = append(bodyKeys, key)
-			}
-			sort.Strings(bodyKeys)
-			for _, key := range bodyKeys {
-				if isIdentifierField(key) {
-					clone := cloneObject(body)
-					clone[key] = adjacentValue(body[key])
-					addJSONMutation(add, "idor_body_"+key, "idor", operation.URL, clone)
-				}
-				if isUsernameField(key) {
-					known := options.KnownUsername
-					if known == "" {
-						known = fmt.Sprint(body[key])
-					}
-					knownBody := cloneObject(body)
-					knownBody[key] = known
-					addJSONMutation(add, "username_known", "username_enumeration", operation.URL, knownBody)
-					unknownBody := cloneObject(body)
-					unknownBody[key] = "sj-nonexistent-7f3a1d"
-					addJSONMutation(add, "username_unknown", "username_enumeration", operation.URL, unknownBody)
-				}
-			}
-			if len(bodyKeys) > 0 {
-				invalid := cloneObject(body)
-				invalid[bodyKeys[0]] = map[string]any{"sj_invalid_type": true}
-				addJSONMutation(add, "invalid_type", "verbose_error", operation.URL, invalid)
-			}
+func addBadCharacterMutations(operation pentestreport.Operation, parsed *url.URL, add func(Mutation)) {
+	query := parsed.Query()
+	queryKeys := make([]string, 0, len(query))
+	for key := range query {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
+	if len(queryKeys) > 0 {
+		key := queryKeys[0]
+		for _, payload := range badCharacterPayloads {
+			clone := *parsed
+			changed := clone.Query()
+			changed.Set(key, payload.value)
+			clone.RawQuery = changed.Encode()
+			add(Mutation{Name: "bad_character:query:" + key + ":" + payload.name, Category: "bad_character", URL: clone.String(), Body: []byte(operation.RequestBody)})
 		}
 	}
-	hasVerboseProbe := false
-	for _, mutation := range mutations {
-		if mutation.Category == "verbose_error" {
-			hasVerboseProbe = true
-			break
+	if len(operation.RequestBody) == 0 || len(operation.RequestBody) > MaximumPayloadBytes {
+		return
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(operation.RequestBody), &body) != nil {
+		return
+	}
+	keys := make([]string, 0, len(body))
+	for key, value := range body {
+		if _, ok := value.(string); ok {
+			keys = append(keys, key)
 		}
 	}
-	if !hasVerboseProbe {
-		clone := *parsed
-		changed := clone.Query()
-		changed.Set("sj_probe", "invalid'\"")
-		clone.RawQuery = changed.Encode()
-		probe := Mutation{Name: "invalid_type", Category: "verbose_error", URL: clone.String(), Body: []byte(operation.RequestBody)}
-		if len(mutations) >= maxCases {
-			mutations[len(mutations)-1] = probe
-		} else {
-			add(probe)
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return
+	}
+	key := keys[0]
+	for _, payload := range badCharacterPayloads {
+		clone := cloneObject(body)
+		clone[key] = payload.value
+		addJSONMutation(add, "bad_character:body:"+key+":"+payload.name, "bad_character", operation.URL, clone)
+	}
+}
+
+func addBodyMutations(operation pentestreport.Operation, knownUsername string, add func(Mutation)) {
+	if len(operation.RequestBody) == 0 || len(operation.RequestBody) > MaximumPayloadBytes {
+		return
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(operation.RequestBody), &body) != nil {
+		return
+	}
+	bodyKeys := make([]string, 0, len(body))
+	for key := range body {
+		bodyKeys = append(bodyKeys, key)
+	}
+	sort.Strings(bodyKeys)
+	for _, key := range bodyKeys {
+		if isIdentifierField(key) {
+			clone := cloneObject(body)
+			clone[key] = adjacentValue(body[key])
+			addJSONMutation(add, "idor_body_"+key, "idor", operation.URL, clone)
+		}
+		if isUsernameField(key) {
+			addUsernameBodyMutations(add, operation.URL, body, key, knownUsername)
 		}
 	}
-	return mutations, nil
+	if len(bodyKeys) > 0 {
+		invalid := cloneObject(body)
+		invalid[bodyKeys[0]] = map[string]any{"sj_invalid_type": true}
+		addJSONMutation(add, "invalid_type", "verbose_error", operation.URL, invalid)
+	}
+}
+
+func addUsernameBodyMutations(add func(Mutation), targetURL string, body map[string]any, key, known string) {
+	if known == "" {
+		known = fmt.Sprint(body[key])
+	}
+	knownBody := cloneObject(body)
+	knownBody[key] = known
+	addJSONMutation(add, "username_known", "username_enumeration", targetURL, knownBody)
+	unknownBody := cloneObject(body)
+	unknownBody[key] = "sj-nonexistent-7f3a1d"
+	addJSONMutation(add, "username_unknown", "username_enumeration", targetURL, unknownBody)
 }
 
 func addUsernameQueryMutations(add func(Mutation), parsed *url.URL, key, known, body string) {
@@ -362,7 +632,16 @@ func looksLikeUUID(value string) bool {
 
 func isIdentifierField(value string) bool {
 	lower := strings.ToLower(value)
-	return lower == "id" || strings.HasSuffix(lower, "_id") || strings.HasSuffix(lower, "-id") || strings.HasSuffix(value, "Id") || strings.HasSuffix(value, "ID")
+	return lower == "id" || strings.HasSuffix(lower, "_id") || strings.HasSuffix(lower, "-id") ||
+		strings.HasSuffix(value, "Id") || strings.HasSuffix(value, "ID") || identifierFieldPrefix(value)
+}
+
+func identifierFieldPrefix(value string) bool {
+	if len(value) < 3 || value[:2] != "id" && value[:2] != "Id" && value[:2] != "ID" {
+		return false
+	}
+	next := value[2]
+	return next == '_' || next == '-' || next >= 'A' && next <= 'Z'
 }
 
 func isUsernameField(value string) bool {

@@ -223,7 +223,7 @@ func (run *resultRun) addFuzzReport(ctx context.Context, report fuzz.Report) err
 			Kind: "fuzz_probe", Method: probe.Method, URL: probe.URL, Status: probe.Status,
 			ContentType: probe.ContentType, RequestBody: []byte(probe.RequestBody), ResponseBody: []byte(probe.ResponseBody),
 			ResponseTruncated: probe.ResponseTruncated,
-			Metadata:          map[string]any{"case": probe.Case, "category": probe.Category, "identity": probe.Identity, "response_bytes": probe.ResponseBytes, "response_hash": probe.ResponseHash, "rate_limit_remaining": probe.RateLimitRemaining, "pii_types": probe.PIITypes, "verbose_error": probe.VerboseError, "error": probe.Error, "duration_ms": probe.DurationMillis},
+			Metadata:          map[string]any{"baseline_url": probe.BaselineURL, "case": probe.Case, "category": probe.Category, "identity": probe.Identity, "response_bytes": probe.ResponseBytes, "response_hash": probe.ResponseHash, "rate_limit_remaining": probe.RateLimitRemaining, "pii_types": probe.PIITypes, "verbose_error": probe.VerboseError, "guidance": probe.Guidance, "error": probe.Error, "duration_ms": probe.DurationMillis},
 		})
 	}
 	if err := run.store.AddObservations(ctx, run.run.ID, observations); err != nil {

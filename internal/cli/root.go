@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"time"
@@ -64,7 +65,11 @@ SQLite result storage is enabled by default; use --no-database for an ephemeral 
 }
 
 func Execute() error {
-	return rootCmd.Execute()
+	return ExecuteContext(context.Background())
+}
+
+func ExecuteContext(ctx context.Context) error {
+	return rootCmd.ExecuteContext(ctx)
 }
 
 var timeoutSeconds int64
@@ -81,6 +86,7 @@ func init() {
 	rootCmd.AddCommand(runsCmd)
 	rootCmd.AddCommand(collectionCmd)
 	rootCmd.AddCommand(fuzzCmd)
+	rootCmd.AddCommand(fullWorkflowCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&cfg.UserAgent, "agent", "A", "", "Set the User-Agent string. Random by default.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.BasePath, "base-path", "b", "", "Set the API base path if not defined in the definition file (i.e. /V2/).")

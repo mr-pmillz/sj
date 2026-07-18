@@ -1,0 +1,18 @@
+---
+title: report
+description: Generate API penetration-test reports from sj result artifacts or SQLite runs.
+---
+
+The `report` command consolidates brute, automate, and fuzz evidence into terminal, Markdown, or self-contained HTML reports with HTTP statistics, host and method distributions, weighted severity, OWASP API Security Top 10 mappings, and API-focused testing guidance.
+
+```bash
+sj --database authorized-qa.db -o api-pentest-report \
+  report --run BRUTE_RUN_ID --run AUTOMATE_RUN_ID --run FUZZ_RUN_ID \
+  --output-all-formats --max-evidence 100 --color always
+```
+
+HTML findings include native toggleable request/response proof blocks when response capture was enabled. Response text is HTML-escaped, the report uses a restrictive Content Security Policy, and every proof block identifies incomplete response data as truncated. Reports are written with private file permissions.
+
+Baseline API operations and active fuzz probes are reported separately. Per-payload probes remain available as evidence but do not inflate endpoint inventory, passive candidate findings, host statistics, or OWASP candidate counts.
+
+Heuristic IDOR, business-logic, SSRF, and resource-consumption signals are testing candidates, not confirmed vulnerabilities. Imported fuzz findings describe actively observed differences, but broken authorization still requires identity and ownership validation.

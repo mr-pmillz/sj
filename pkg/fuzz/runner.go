@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,24 +18,21 @@ import (
 	"time"
 
 	"github.com/mr-pmillz/sj/pkg/apitest"
+	scanevidence "github.com/mr-pmillz/sj/pkg/evidence"
 	pentestreport "github.com/mr-pmillz/sj/pkg/report"
 )
 
 const (
-	maximumRequests       = 10_000
-	maximumResponseBytes  = 16 * 1024 * 1024
-	defaultResponseBytes  = 1024 * 1024
-	defaultStoredBodySize = 64 * 1024
-	minimumRequestDelay   = 100 * time.Millisecond
+	maximumRequests             = 50_000
+	maximumResponseBytes        = 1 << 30
+	maximumBaselineRequestBytes = 1 * 1024 * 1024
+	defaultResponseBytes        = 1024 * 1024
+	defaultStoredBodySize       = 64 * 1024
+	minimumRequestDelay         = 100 * time.Millisecond
 )
 
 var (
-	emailPattern   = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	ssnPattern     = regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
-	cardPattern    = regexp.MustCompile(`\b(?:\d[ -]*?){13,19}\b`)
-	jwtPattern     = regexp.MustCompile(`\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b`)
-	apiKeyPattern  = regexp.MustCompile(`(?i)\b(?:api[_-]?key|access[_-]?token|client[_-]?secret)\b\s*[:=]\s*["']?[a-z0-9_\-]{12,}`)
-	verbosePattern = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|ORA-\d+|syntax error at or near|\/home\/[^\s]+|C:\\Users\\[^\s]+|\.go:\d+|\.java:\d+)`)
+	verbosePattern = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|ORA-\d+|syntax error at or near|nonetype|json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\/home\/[^\s]+|C:\\Users\\[^\s]+|\.go:\d+|\.java:\d+)`)
 )
 
 type Identity struct {
@@ -49,29 +47,48 @@ type Options struct {
 	KnownUsername          string
 	Identities             []Identity
 	MaxCasesPerOperation   int
+	IDORRange              *apitest.NumericRange
 	MaxResponseBytes       int64
 	StoreResponses         bool
 	MaxStoredResponseBytes int64
 	Workflows              []Workflow
+	ResponseGuided         bool
+	MaxGuidedRetries       int
+	Progress               *ProgressTracker
 }
 
 type Summary struct {
-	Operations          int  `json:"operations"`
-	Requests            int  `json:"requests"`
-	Responses2xx        int  `json:"responses_2xx"`
-	Responses3xx        int  `json:"responses_3xx"`
-	Responses4xx        int  `json:"responses_4xx"`
-	Responses5xx        int  `json:"responses_5xx"`
-	TransportErrors     int  `json:"transport_errors"`
-	SkippedUnsafe       int  `json:"skipped_unsafe"`
-	RateLimited         bool `json:"rate_limited"`
-	RequestBudgetHit    bool `json:"request_budget_hit"`
-	SideEffectsVerified int  `json:"side_effects_verified"`
+	Operations             int  `json:"operations"`
+	Requests               int  `json:"requests"`
+	Responses2xx           int  `json:"responses_2xx"`
+	Responses3xx           int  `json:"responses_3xx"`
+	Responses4xx           int  `json:"responses_4xx"`
+	Responses5xx           int  `json:"responses_5xx"`
+	TransportErrors        int  `json:"transport_errors"`
+	SkippedUnsafe          int  `json:"skipped_unsafe"`
+	RateLimited            bool `json:"rate_limited"`
+	RequestBudgetHit       bool `json:"request_budget_hit"`
+	SideEffectsVerified    int  `json:"side_effects_verified"`
+	GuidedRetries          int  `json:"guided_retries"`
+	GuidedSuccesses        int  `json:"guided_successes"`
+	UnresolvedHints        int  `json:"unresolved_hints"`
+	QualifiedIDORBaselines int  `json:"qualified_idor_baselines"`
+	RejectedIDORBaselines  int  `json:"rejected_idor_baselines"`
+	SkippedInvalidIDOR     int  `json:"skipped_invalid_idor"`
+}
+
+type PlanSummary struct {
+	DeterministicRequests  int  `json:"deterministic_requests"`
+	ReservedGuidedRequests int  `json:"reserved_guided_requests"`
+	RequiredRequests       int  `json:"required_requests"`
+	SkippedUnsafe          int  `json:"skipped_unsafe"`
+	ExceedsBudget          bool `json:"exceeds_budget"`
 }
 
 type ProbeResult struct {
 	Method             string   `json:"method"`
 	URL                string   `json:"url"`
+	BaselineURL        string   `json:"baseline_url,omitempty"`
 	Case               string   `json:"case"`
 	Category           string   `json:"category"`
 	Identity           string   `json:"identity"`
@@ -87,6 +104,8 @@ type ProbeResult struct {
 	VerboseError       bool     `json:"verbose_error,omitempty"`
 	Error              string   `json:"error,omitempty"`
 	DurationMillis     int64    `json:"duration_ms"`
+	Guidance           string   `json:"guidance,omitempty"`
+	analysisBody       []byte
 }
 
 type Finding struct {
@@ -110,17 +129,75 @@ type Report struct {
 type waitFunc func(context.Context, time.Duration) error
 
 type plannedProbe struct {
-	method      string
-	targetURL   string
-	body        []byte
-	contentType string
-	caseName    string
-	category    string
-	identity    Identity
+	method                    string
+	targetURL                 string
+	baselineURL               string
+	body                      []byte
+	contentType               string
+	caseName                  string
+	category                  string
+	identity                  Identity
+	guidedDepth               int
+	guidedCause               string
+	guidedRoot                string
+	guidedFromFailure         bool
+	idorBaselineKey           string
+	qualifiesIDORBaseline     bool
+	requiresValidIDORBaseline bool
 }
 
 func Run(ctx context.Context, client *http.Client, operations []pentestreport.Operation, options Options) (Report, error) {
 	return run(ctx, client, operations, options, waitContext)
+}
+
+func Plan(operations []pentestreport.Operation, options Options) (PlanSummary, error) {
+	if err := normalizeOptions(&options); err != nil {
+		return PlanSummary{}, err
+	}
+	identities, err := normalizeIdentities(options.Identities)
+	if err != nil {
+		return PlanSummary{}, err
+	}
+	if err := validateWorkflows(options.Workflows, identities); err != nil {
+		return PlanSummary{}, err
+	}
+	plan := PlanSummary{}
+	operationRequests := 0
+	for _, operation := range operations {
+		if stateChanging(operation.Method) && !options.AcceptRisk {
+			plan.SkippedUnsafe++
+			continue
+		}
+		if len(operation.RequestBody) > maximumBaselineRequestBytes {
+			return PlanSummary{}, fmt.Errorf("baseline body for %s %s exceeds the %d-byte safe replay ceiling", operation.Method, operation.URL, maximumBaselineRequestBytes)
+		}
+		if len(operation.URL) > 8*1024 {
+			return PlanSummary{}, fmt.Errorf("operation URL for %s exceeds the 8192-byte request limit", operation.Method)
+		}
+		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{
+			KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
+		})
+		if mutationErr != nil {
+			return PlanSummary{}, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, mutationErr)
+		}
+		operationRequestCount := (len(mutations) + 1) * len(identities)
+		operationRequests += operationRequestCount
+		plan.DeterministicRequests += operationRequestCount
+	}
+	for _, workflow := range options.Workflows {
+		unsafeSteps := workflowUnsafeSteps(workflow)
+		if unsafeSteps > 0 && !options.AcceptRisk {
+			plan.SkippedUnsafe += unsafeSteps
+			continue
+		}
+		plan.DeterministicRequests += len(workflow.Steps)
+	}
+	if options.ResponseGuided {
+		plan.ReservedGuidedRequests = operationRequests * options.MaxGuidedRetries
+	}
+	plan.RequiredRequests = plan.DeterministicRequests + plan.ReservedGuidedRequests
+	plan.ExceedsBudget = plan.RequiredRequests > options.MaxRequests
+	return plan, nil
 }
 
 func run(ctx context.Context, client *http.Client, operations []pentestreport.Operation, options Options, wait waitFunc) (Report, error) {
@@ -141,20 +218,29 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 	report.Summary.Operations = len(operations)
 	plans := make([]plannedProbe, 0, min(options.MaxRequests, len(operations)*4))
 	for _, operation := range operations {
-		if len(operation.RequestBody) > apitest.MaximumPayloadBytes {
-			return Report{}, fmt.Errorf("baseline body for %s %s exceeds the %d-byte non-DoS payload limit", operation.Method, operation.URL, apitest.MaximumPayloadBytes)
-		}
-		if len(operation.URL) > 8*1024 {
-			return Report{}, fmt.Errorf("operation URL for %s exceeds the 8192-byte request limit", operation.Method)
-		}
 		if stateChanging(operation.Method) && !options.AcceptRisk {
 			report.Summary.SkippedUnsafe++
 			continue
 		}
+		if len(operation.RequestBody) > maximumBaselineRequestBytes {
+			return Report{}, fmt.Errorf("baseline body for %s %s exceeds the %d-byte safe replay ceiling", operation.Method, operation.URL, maximumBaselineRequestBytes)
+		}
+		if len(operation.URL) > 8*1024 {
+			return Report{}, fmt.Errorf("operation URL for %s exceeds the 8192-byte request limit", operation.Method)
+		}
 		cases := []apitest.Mutation{{Name: "baseline", Category: "baseline", URL: operation.URL, Body: []byte(operation.RequestBody)}}
-		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation})
+		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{
+			KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
+		})
 		if mutationErr != nil {
 			return Report{}, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, mutationErr)
+		}
+		hasIDORMutations := false
+		for _, mutation := range mutations {
+			if isIDORMutationCategory(mutation.Category) {
+				hasIDORMutations = true
+				break
+			}
 		}
 		cases = append(cases, mutations...)
 		for _, testCase := range cases {
@@ -163,10 +249,16 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 					report.Summary.RequestBudgetHit = true
 					break
 				}
-				plans = append(plans, plannedProbe{
-					method: strings.ToUpper(operation.Method), targetURL: testCase.URL, body: append([]byte(nil), testCase.Body...),
+				planned := plannedProbe{
+					method: strings.ToUpper(operation.Method), targetURL: testCase.URL, baselineURL: operation.URL,
+					body:        append([]byte(nil), testCase.Body...),
 					contentType: operation.ContentType, caseName: testCase.Name, category: testCase.Category, identity: identity,
-				})
+				}
+				planned.idorBaselineKey = idorBaselineKey(planned)
+				planned.qualifiesIDORBaseline = testCase.Category == "baseline" && hasIDORMutations
+				planned.requiresValidIDORBaseline = isIDORMutationCategory(testCase.Category)
+				planned.guidedRoot = plannedProbeFingerprint(planned)
+				plans = append(plans, planned)
 			}
 			if report.Summary.RequestBudgetHit {
 				break
@@ -176,28 +268,95 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 			break
 		}
 	}
-	for index, plan := range plans {
-		if index > 0 {
+	seenPlans := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		seenPlans[plannedProbeFingerprint(plan)] = struct{}{}
+	}
+	unresolvedRoots := make(map[string]struct{})
+	idorBaselineStates := make(map[string]bool)
+	publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, false)
+	for index := 0; index < len(plans); index++ {
+		plan := plans[index]
+		if plan.requiresValidIDORBaseline && !idorBaselineStates[plan.idorBaselineKey] {
+			report.Summary.SkippedInvalidIDOR++
+			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
+			continue
+		}
+		if report.Summary.Requests > 0 {
 			if err := wait(ctx, options.Delay); err != nil {
+				publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, true)
 				return report, fmt.Errorf("fuzz request pacing canceled: %w", err)
 			}
 		}
-		probe, _ := executeProbe(ctx, client, plan, options)
+		probe, responseBody := executeProbe(ctx, client, plan, options)
 		report.Probes = append(report.Probes, probe)
 		updateSummary(&report.Summary, probe)
+		if plan.qualifiesIDORBaseline {
+			qualified := qualifiesAsIDORBaseline(probe)
+			idorBaselineStates[plan.idorBaselineKey] = qualified
+			if qualified {
+				report.Summary.QualifiedIDORBaselines++
+			} else {
+				report.Summary.RejectedIDORBaselines++
+			}
+		}
+		if plan.guidedDepth > 0 {
+			report.Summary.GuidedRetries++
+			if plan.guidedFromFailure && responseIsSuccessfulData(probe, responseBody) {
+				report.Summary.GuidedSuccesses++
+				report.Findings = append(report.Findings, Finding{
+					Severity: "informational", Category: "response_guided_success", Title: "Response-guided repair produced a successful data response",
+					Method: probe.Method, URL: probe.URL,
+					Evidence: fmt.Sprintf("case=%s identity=%s status=%d repair=%s; response values omitted", probe.Case, probe.Identity, probe.Status, plan.guidedCause),
+					OWASP:    []string{"API8:2023"},
+				})
+			}
+		}
 		if shouldStopForRateLimit(probe) {
 			report.Summary.RateLimited = true
+			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
 			break
 		}
+		if options.ResponseGuided && plan.guidedDepth < options.MaxGuidedRetries {
+			retry, decision := guidedRetry(plan, probe, responseBody)
+			if decision.Hinted {
+				if report.Probes[len(report.Probes)-1].Guidance == "" {
+					report.Probes[len(report.Probes)-1].Guidance = decision.Reason
+				} else {
+					report.Probes[len(report.Probes)-1].Guidance += "; response analysis: " + decision.Reason
+				}
+			}
+			if decision.RepairAvailable {
+				retry.guidedRoot = plan.guidedRoot
+				retry.guidedFromFailure = responseIsApplicationFailure(probe, responseBody)
+				retry.qualifiesIDORBaseline = false
+				fingerprint := plannedProbeFingerprint(retry)
+				_, duplicate := seenPlans[fingerprint]
+				if !duplicate && len(plans) < options.MaxRequests {
+					seenPlans[fingerprint] = struct{}{}
+					plans = append(plans, retry)
+				} else if !duplicate {
+					report.Summary.RequestBudgetHit = true
+				}
+			} else if decision.Unresolved {
+				if _, exists := unresolvedRoots[plan.guidedRoot]; !exists {
+					unresolvedRoots[plan.guidedRoot] = struct{}{}
+					report.Summary.UnresolvedHints++
+				}
+			}
+		}
+		publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
 	}
 	if !report.Summary.RateLimited && len(options.Workflows) > 0 {
 		if err := executeWorkflows(ctx, client, &report, identities, options, wait); err != nil {
+			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, true)
 			return report, err
 		}
 	}
 	workflowFindings := append([]Finding(nil), report.Findings...)
 	report.Findings = append(analyzeProbeFindings(report.Probes), workflowFindings...)
 	report.CompletedAt = time.Now().UTC()
+	publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, true)
 	return report, nil
 }
 
@@ -229,6 +388,12 @@ func normalizeOptions(options *Options) error {
 	if options.MaxStoredResponseBytes < 1 || options.MaxStoredResponseBytes > options.MaxResponseBytes {
 		return errors.New("maximum stored fuzz response size must be positive and no larger than the response read limit")
 	}
+	if options.ResponseGuided && options.MaxGuidedRetries == 0 {
+		options.MaxGuidedRetries = 2
+	}
+	if options.MaxGuidedRetries < 0 || options.MaxGuidedRetries > 4 {
+		return errors.New("maximum response-guided retries must be between 0 and 4")
+	}
 	return nil
 }
 
@@ -258,7 +423,10 @@ func normalizeIdentities(identities []Identity) ([]Identity, error) {
 }
 
 func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, options Options) (ProbeResult, []byte) {
-	result := ProbeResult{Method: plan.method, URL: plan.targetURL, Case: plan.caseName, Category: plan.category, Identity: plan.identity.Name, ContentType: plan.contentType, RequestBody: string(plan.body), PIITypes: []string{}}
+	result := ProbeResult{Method: plan.method, URL: plan.targetURL, BaselineURL: plan.baselineURL, Case: plan.caseName, Category: plan.category, Identity: plan.identity.Name, ContentType: plan.contentType, RequestBody: string(plan.body), PIITypes: []string{}}
+	if plan.guidedCause != "" {
+		result.Guidance = "applied bounded repair for " + plan.guidedCause
+	}
 	request, err := http.NewRequestWithContext(ctx, plan.method, plan.targetURL, bytes.NewReader(plan.body))
 	if err != nil {
 		result.Error = "invalid request"
@@ -296,6 +464,7 @@ func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, o
 		result.ResponseTruncated = true
 	}
 	result.ResponseBytes = len(body)
+	result.analysisBody = append([]byte(nil), body...)
 	digest := sha256.Sum256(body)
 	result.ResponseHash = hex.EncodeToString(digest[:])
 	result.PIITypes = detectPIITypes(body)
@@ -306,6 +475,71 @@ func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, o
 		result.ResponseTruncated = result.ResponseTruncated || int64(len(body)) > storedSize
 	}
 	return result, body
+}
+
+func plannedProbeFingerprint(plan plannedProbe) string {
+	digest := sha256.New()
+	_, _ = io.WriteString(digest, plan.method)
+	_, _ = io.WriteString(digest, "\x00"+plan.targetURL+"\x00"+plan.identity.Name+"\x00")
+	_, _ = digest.Write(plan.body)
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func idorBaselineKey(plan plannedProbe) string {
+	return plan.method + "\x00" + plan.baselineURL + "\x00" + plan.identity.Name
+}
+
+func publishRunProgress(tracker *ProgressTracker, summary Summary, planned, budget int, current *plannedProbe, done bool) {
+	if tracker == nil {
+		return
+	}
+	snapshot := ProgressSnapshot{
+		PlannedRequests: max(planned, summary.Requests), RequestBudget: budget, SentRequests: summary.Requests,
+		SkippedInvalidIDOR:     summary.SkippedInvalidIDOR,
+		QualifiedIDORBaselines: summary.QualifiedIDORBaselines, RejectedIDORBaselines: summary.RejectedIDORBaselines,
+		GuidedRetries: summary.GuidedRetries, GuidedSuccesses: summary.GuidedSuccesses, UnresolvedHints: summary.UnresolvedHints,
+		RateLimited: summary.RateLimited, RequestBudgetHit: summary.RequestBudgetHit, Done: done,
+	}
+	if current != nil {
+		snapshot.CurrentMethod = current.method
+		snapshot.CurrentCase = current.caseName
+		snapshot.CurrentIdentity = current.identity.Name
+	}
+	tracker.publish(snapshot)
+}
+
+func isIDORMutationCategory(category string) bool {
+	return category == "idor" || category == "idor_range"
+}
+
+func qualifiesAsIDORBaseline(probe ProbeResult) bool {
+	return probe.Error == "" && probe.Status >= http.StatusOK && probe.Status < http.StatusMultipleChoices && responseLooksLikeObjectData(probe)
+}
+
+func responseIsApplicationFailure(probe ProbeResult, body []byte) bool {
+	if probe.Error != "" || probe.Status >= http.StatusBadRequest {
+		return true
+	}
+	decoded, ok := decodeJSON(body)
+	if !ok {
+		return false
+	}
+	object, ok := decoded.(map[string]any)
+	return ok && explicitFailureEnvelope(object)
+}
+
+func responseIsSuccessfulData(probe ProbeResult, body []byte) bool {
+	if probe.Error != "" || probe.Status < http.StatusOK || probe.Status >= http.StatusMultipleChoices {
+		return false
+	}
+	decoded, ok := decodeJSON(body)
+	if !ok {
+		return len(bytes.TrimSpace(body)) > 0
+	}
+	if object, ok := decoded.(map[string]any); ok && explicitFailureEnvelope(object) {
+		return false
+	}
+	return substantiveLeafCount(decoded, 1) >= 1
 }
 
 func responseRateLimitRemaining(headers http.Header) *int {
@@ -373,9 +607,13 @@ func analyzeProbeFindings(probes []ProbeResult) []Finding {
 		if probe.Status >= 500 {
 			add(Finding{Severity: "medium", Category: "server_error", Title: "Fuzz case triggered a server error", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("case=%s identity=%s status=%d", probe.Case, probe.Identity, probe.Status), OWASP: []string{"API8:2023"}})
 		}
+		if probe.Category == "bad_character" && responseReflectsProbeMarker(probe) {
+			add(Finding{Severity: "informational", Category: "input_reflection", Title: "Fuzz marker was reflected in the API response", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("case=%s identity=%s status=%d; marker value omitted", probe.Case, probe.Identity, probe.Status), OWASP: []string{"API8:2023"}})
+		}
 	}
 	analyzeIdentityDifferences(probes, add)
 	analyzeUsernameEnumeration(probes, add)
+	analyzeIDOREnumeration(probes, add)
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Severity != findings[j].Severity {
 			return severityRank(findings[i].Severity) > severityRank(findings[j].Severity)
@@ -386,6 +624,166 @@ func analyzeProbeFindings(probes []ProbeResult) []Finding {
 		return findings[i].Category < findings[j].Category
 	})
 	return findings
+}
+
+func responseReflectsProbeMarker(probe ProbeResult) bool {
+	body := probe.analysisBody
+	if len(body) == 0 && probe.ResponseBody != "" {
+		body = []byte(probe.ResponseBody)
+	}
+	if len(body) == 0 {
+		return false
+	}
+	requestMaterial := probe.URL + "\n" + probe.RequestBody
+	for _, marker := range []string{"sj-probe", "${7*7}", "%s%s%s"} {
+		if strings.Contains(requestMaterial, marker) && bytes.Contains(body, []byte(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func AnalyzeProbes(probes []ProbeResult) []Finding {
+	return analyzeProbeFindings(probes)
+}
+
+func analyzeIDOREnumeration(probes []ProbeResult, add func(Finding)) {
+	type rangeGroup struct {
+		method      string
+		baselineURL string
+		identity    string
+		series      string
+		probes      []ProbeResult
+	}
+	groups := make(map[string]*rangeGroup)
+	for _, probe := range probes {
+		if probe.Category != "idor_range" || probe.Error != "" || probe.Status < 200 || probe.Status >= 300 || !responseLooksLikeObjectData(probe) {
+			continue
+		}
+		lastSeparator := strings.LastIndex(probe.Case, ":")
+		if !strings.HasPrefix(probe.Case, "idor_range:") || lastSeparator < 0 {
+			continue
+		}
+		series := probe.Case[:lastSeparator]
+		baselineURL := probe.BaselineURL
+		if baselineURL == "" {
+			baselineURL = probe.URL
+		}
+		key := probe.Method + "\x00" + baselineURL + "\x00" + probe.Identity + "\x00" + series
+		group := groups[key]
+		if group == nil {
+			group = &rangeGroup{method: probe.Method, baselineURL: baselineURL, identity: probe.Identity, series: series}
+			groups[key] = group
+		}
+		group.probes = append(group.probes, probe)
+	}
+	for _, group := range groups {
+		if len(group.probes) < 2 {
+			continue
+		}
+		hashes := make(map[string]struct{})
+		for _, probe := range group.probes {
+			hashes[probe.ResponseHash] = struct{}{}
+		}
+		if len(hashes) < 2 {
+			continue
+		}
+		add(Finding{
+			Severity: "high", Category: "idor_enumeration", Title: "Numeric identifiers returned distinguishable successful objects",
+			Method: group.method, URL: group.baselineURL,
+			Evidence: fmt.Sprintf("identity=%s series=%s successful_object_responses=%d distinct_response_hashes=%d; response values omitted", group.identity, group.series, len(group.probes), len(hashes)),
+			OWASP:    []string{"API1:2023"},
+		})
+	}
+}
+
+func responseLooksLikeObjectData(probe ProbeResult) bool {
+	body := probe.analysisBody
+	if len(body) == 0 && probe.ResponseBody != "" {
+		body = []byte(probe.ResponseBody)
+	}
+	if len(body) == 0 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return false
+	}
+	if object, ok := value.(map[string]any); ok && explicitFailureEnvelope(object) {
+		return false
+	}
+	return substantiveLeafCount(value, 2) >= 2
+}
+
+func explicitFailureEnvelope(object map[string]any) bool {
+	for key, value := range object {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "ok", "success", "valid":
+			if boolean, ok := value.(bool); ok && !boolean {
+				return true
+			}
+		case "error", "errors", "exception":
+			if substantiveLeafCount(value, 1) > 0 {
+				return true
+			}
+		case "status":
+			if text, ok := value.(string); ok && (strings.EqualFold(text, "error") || strings.EqualFold(text, "failed") || strings.EqualFold(text, "failure")) {
+				return true
+			}
+			if numericFailureStatus(value) {
+				return true
+			}
+		case "code", "statuscode", "status_code":
+			if numericFailureStatus(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func numericFailureStatus(value any) bool {
+	number, ok := value.(json.Number)
+	if !ok {
+		return false
+	}
+	parsed, err := number.Int64()
+	return err == nil && parsed >= 400 && parsed <= 599
+}
+
+func substantiveLeafCount(value any, limit int) int {
+	if limit < 1 {
+		return 0
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		count := 0
+		for _, nested := range typed {
+			count += substantiveLeafCount(nested, limit-count)
+			if count >= limit {
+				return count
+			}
+		}
+		return count
+	case []any:
+		count := 0
+		for _, nested := range typed {
+			count += substantiveLeafCount(nested, limit-count)
+			if count >= limit {
+				return count
+			}
+		}
+		return count
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			return 1
+		}
+	case json.Number, bool:
+		return 1
+	}
+	return 0
 }
 
 func analyzeIdentityDifferences(probes []ProbeResult, add func(Finding)) {
@@ -466,17 +864,7 @@ func isUsernameParameter(value string) bool {
 }
 
 func detectPIITypes(body []byte) []string {
-	detectors := []struct {
-		name    string
-		pattern *regexp.Regexp
-	}{{"email", emailPattern}, {"US SSN", ssnPattern}, {"payment card candidate", cardPattern}, {"JWT", jwtPattern}, {"API credential candidate", apiKeyPattern}}
-	result := make([]string, 0)
-	for _, detector := range detectors {
-		if detector.pattern.Match(body) {
-			result = append(result, detector.name)
-		}
-	}
-	return result
+	return scanevidence.DetectPIITypes(body)
 }
 
 func accessClass(status int) string {

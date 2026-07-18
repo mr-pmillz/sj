@@ -275,6 +275,21 @@ func TestBuildRequestPlansOperationParameterOverridesPathParameter(t *testing.T)
 	}
 }
 
+func TestBuildRequestPlansSupportsCommonCatchAllPathTemplateModifiers(t *testing.T) {
+	spec := map[string]any{"paths": map[string]any{
+		"/packages/{file*}": map[string]any{"get": map[string]any{"parameters": []any{
+			map[string]any{"name": "file", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+		}}},
+		"/schemas/{schema_name+}": map[string]any{"get": map[string]any{"parameters": []any{
+			map[string]any{"name": "schema_name", "in": "path", "required": true, "schema": map[string]any{"type": "string"}},
+		}}},
+	}}
+	plans := buildPlans(t, spec, nil)
+	if len(plans) != 2 || plans[0].URL != "https://api.example/packages/testvalue" || plans[1].URL != "https://api.example/schemas/testvalue" {
+		t.Fatalf("plans = %#v", plans)
+	}
+}
+
 func TestBuildRequestPlansSerializesDeepObjectArraysAndCookies(t *testing.T) {
 	spec := map[string]any{"paths": map[string]any{
 		"/items": map[string]any{"get": map[string]any{"parameters": []any{
