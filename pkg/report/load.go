@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -35,6 +36,7 @@ type loader struct {
 	interesting map[string]BruteObservation
 	operations  map[string]Operation
 	failures    map[string]Failure
+	findings    map[string]ImportedFinding
 	summaries   map[string]brute.Summary
 	currentFile int
 	currentKind string
@@ -56,7 +58,7 @@ func Load(inputs []string, options LoadOptions) (Dataset, error) {
 		dataset: Dataset{IgnoredFiles: ignored},
 		targets: make(map[string]struct{}), discoveries: make(map[string]Discovery),
 		interesting: make(map[string]BruteObservation), operations: make(map[string]Operation),
-		failures: make(map[string]Failure), summaries: make(map[string]brute.Summary),
+		failures: make(map[string]Failure), findings: make(map[string]ImportedFinding), summaries: make(map[string]brute.Summary),
 	}
 	for _, path := range paths {
 		data, err := readBounded(path, options.MaxFileBytes)
@@ -225,6 +227,45 @@ func (state *loader) parseJSON(data []byte) error {
 		}
 		return nil
 	}
+	if raw, exists := object["probes"]; exists {
+		var probes []struct {
+			Method            string `json:"method"`
+			URL               string `json:"url"`
+			Status            int    `json:"status"`
+			ContentType       string `json:"content_type"`
+			RequestBody       string `json:"request_body"`
+			ResponseBody      string `json:"response_body"`
+			ResponseTruncated bool   `json:"response_truncated"`
+		}
+		if err := json.Unmarshal(raw, &probes); err != nil {
+			return fmt.Errorf("decode fuzz probes: %w", err)
+		}
+		state.currentKind = "fuzz-json"
+		for _, probe := range probes {
+			parsed, _ := url.Parse(probe.URL)
+			source := ""
+			target := probe.URL
+			if parsed != nil {
+				source = parsed.Scheme + "://" + parsed.Host
+				target = parsed.EscapedPath()
+			}
+			if err := state.addOperation(Operation{Source: source, Method: probe.Method, Status: probe.Status, Target: target, URL: probe.URL, ContentType: probe.ContentType, RequestBody: probe.RequestBody, ResponseBody: probe.ResponseBody, ResponseTruncated: probe.ResponseTruncated}); err != nil {
+				return err
+			}
+		}
+		if findingsRaw, found := object["findings"]; found {
+			var findings []ImportedFinding
+			if err := json.Unmarshal(findingsRaw, &findings); err != nil {
+				return fmt.Errorf("decode fuzz findings: %w", err)
+			}
+			for _, finding := range findings {
+				if err := state.addImportedFinding(finding); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	if raw, exists := object["reports"]; exists {
 		var reports []brute.Report
 		if err := json.Unmarshal(raw, &reports); err != nil {
@@ -266,6 +307,41 @@ func (state *loader) parseJSONRecord(raw json.RawMessage) error {
 }
 
 func (state *loader) parseJSONMap(object map[string]json.RawMessage) error {
+	if rawType, exists := object["type"]; exists {
+		var recordType string
+		if err := json.Unmarshal(rawType, &recordType); err != nil {
+			return err
+		}
+		switch recordType {
+		case "probe":
+			var encoded struct {
+				Method            string `json:"method"`
+				URL               string `json:"url"`
+				ContentType       string `json:"content_type"`
+				RequestBody       string `json:"request_body"`
+				ResponseBody      string `json:"response_body"`
+				Status            int    `json:"status"`
+				ResponseTruncated bool   `json:"response_truncated"`
+			}
+			if err := json.Unmarshal(object["probe"], &encoded); err != nil {
+				return fmt.Errorf("decode fuzz probe: %w", err)
+			}
+			parsed, _ := url.Parse(encoded.URL)
+			source, target := "", encoded.URL
+			if parsed != nil {
+				source, target = parsed.Scheme+"://"+parsed.Host, parsed.EscapedPath()
+			}
+			state.currentKind = "fuzz-jsonl"
+			return state.addOperation(Operation{Source: source, Method: encoded.Method, Status: encoded.Status, Target: target, URL: encoded.URL, ContentType: encoded.ContentType, RequestBody: encoded.RequestBody, ResponseBody: encoded.ResponseBody, ResponseTruncated: encoded.ResponseTruncated})
+		case "finding":
+			var finding ImportedFinding
+			if err := json.Unmarshal(object["finding"], &finding); err != nil {
+				return fmt.Errorf("decode fuzz finding: %w", err)
+			}
+			state.currentKind = "fuzz-jsonl"
+			return state.addImportedFinding(finding)
+		}
+	}
 	if _, exists := object["specs_found"]; exists {
 		var report brute.Report
 		data, _ := json.Marshal(object)
@@ -335,7 +411,12 @@ func (state *loader) parseCSV(data []byte) error {
 			if err != nil {
 				return fmt.Errorf("row %d: invalid status: %w", rowIndex+2, err)
 			}
-			if err := state.addOperation(Operation{Source: csvValue(row, header, "source"), Method: csvValue(row, header, "method"), Status: status, Target: csvValue(row, header, "target")}); err != nil {
+			truncated, _ := strconv.ParseBool(csvValue(row, header, "response_truncated"))
+			if err := state.addOperation(Operation{
+				Source: csvValue(row, header, "source"), Method: csvValue(row, header, "method"), Status: status,
+				Target: csvValue(row, header, "target"), URL: csvValue(row, header, "url"), ContentType: csvValue(row, header, "content_type"),
+				RequestBody: csvValue(row, header, "request_body"), ResponseBody: csvValue(row, header, "response_body"), ResponseTruncated: truncated,
+			}); err != nil {
 				return err
 			}
 		}
@@ -444,6 +525,13 @@ func (state *loader) addInteresting(item BruteObservation) error {
 }
 
 func (state *loader) addOperation(operation Operation) error {
+	if operation.Origin == "" {
+		if strings.HasPrefix(state.currentKind, "fuzz-") {
+			operation.Origin = "fuzz"
+		} else {
+			operation.Origin = "automate"
+		}
+	}
 	operation.Method = strings.ToUpper(strings.TrimSpace(operation.Method))
 	if operation.Method == "" || operation.Target == "" || operation.Status < 0 || operation.Status > 999 {
 		return fmt.Errorf("invalid automate result for %q %q", operation.Method, operation.Target)
@@ -451,7 +539,7 @@ func (state *loader) addOperation(operation Operation) error {
 	if err := state.countRecord(); err != nil {
 		return err
 	}
-	key := strings.Join([]string{operation.Source, operation.Method, strconv.Itoa(operation.Status), operation.Target}, "\x00")
+	key := strings.Join([]string{operation.Source, operation.Method, strconv.Itoa(operation.Status), operation.Target, operation.URL}, "\x00")
 	state.operations[key] = operation
 	return nil
 }
@@ -464,6 +552,17 @@ func (state *loader) addFailure(failure Failure) error {
 		return err
 	}
 	state.failures[failure.Source+"\x00"+failure.Error] = failure
+	return nil
+}
+
+func (state *loader) addImportedFinding(finding ImportedFinding) error {
+	if strings.TrimSpace(finding.Severity) == "" || strings.TrimSpace(finding.Title) == "" {
+		return errors.New("invalid imported fuzz finding")
+	}
+	if err := state.countRecord(); err != nil {
+		return err
+	}
+	state.findings[importedFindingKey(finding)] = finding
 	return nil
 }
 
@@ -481,17 +580,19 @@ func (state *loader) finalize() {
 	state.dataset.Discoveries = sortedValues(state.discoveries, func(item Discovery) string { return item.URL })
 	state.dataset.BruteObservations = sortedValues(state.interesting, func(item BruteObservation) string { return item.URL + fmt.Sprint(item.Status) })
 	state.dataset.Operations = sortedValues(state.operations, func(item Operation) string {
-		return strings.Join([]string{item.Source, item.Method, fmt.Sprint(item.Status), item.Target}, "\x00")
+		return strings.Join([]string{item.Source, item.Method, fmt.Sprint(item.Status), item.Target, item.URL}, "\x00")
 	})
 	state.dataset.Failures = sortedValues(state.failures, func(item Failure) string { return item.Source + item.Error })
+	state.dataset.ImportedFindings = sortedValues(state.findings, importedFindingKey)
 	for _, summary := range state.summaries {
 		state.dataset.BruteURLsTested += summary.URLsTested
 		state.dataset.BruteRequestErrors += summary.Errors
+		state.dataset.BruteFalsePositivesFiltered += summary.FalsePositivesFiltered
 		if summary.TransportErrorLimitReached {
 			state.dataset.TransportLimitedTargets++
 		}
 	}
-	unique := len(state.dataset.Targets) + len(state.dataset.Discoveries) + len(state.dataset.BruteObservations) + len(state.dataset.Operations) + len(state.dataset.Failures)
+	unique := len(state.dataset.Targets) + len(state.dataset.Discoveries) + len(state.dataset.BruteObservations) + len(state.dataset.Operations) + len(state.dataset.Failures) + len(state.dataset.ImportedFindings)
 	state.dataset.DuplicateRecords = max(0, state.dataset.RawRecords-unique)
 }
 

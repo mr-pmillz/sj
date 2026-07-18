@@ -3,12 +3,14 @@ package brute
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -27,6 +29,11 @@ type Scanner struct {
 }
 
 const maxConsecutiveTransportErrors = 3
+
+const (
+	minimumExactWildcardResponses = 5
+	minimumSizeWildcardResponses  = 8
+)
 
 func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
 	return &Scanner{Client: client, Cfg: cfg}
@@ -255,8 +262,8 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 			output.PrintInfo("  [%d] %s (%s)\n", interesting.StatusCode, output.TerminalSafe(interesting.URL), output.TerminalSafe(interesting.ContentType))
 		}
 	}
-	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d errors\n",
-		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.Errors)
+	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d wildcard false positives filtered, %d errors\n",
+		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.FalsePositivesFiltered, report.Summary.Errors)
 	return nil
 }
 
@@ -297,6 +304,13 @@ type scanState struct {
 	found                      map[string]bool
 	variationQueue             []string
 	consecutiveTransportErrors int
+	responseFingerprints       []responseFingerprint
+}
+
+type responseFingerprint struct {
+	url      string
+	exactKey string
+	sizeKey  string
 }
 
 func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []string) ([]match, []Interesting, Summary, error) {
@@ -337,6 +351,7 @@ candidateLoop:
 	if s.Cfg.BruteWorkers <= 1 {
 		fmt.Fprint(os.Stderr, "\033[2K\r")
 	}
+	filterWildcardResponses(state)
 	return state.matches, state.interesting, state.summary, nil
 }
 
@@ -374,7 +389,46 @@ func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanS
 	}
 	if len(state.interesting) < s.Cfg.MaxCandidates {
 		state.interesting = append(state.interesting, Interesting{URL: targetURL, StatusCode: status, ContentType: contentType})
+		state.responseFingerprints = append(state.responseFingerprints, newResponseFingerprint(targetURL, status, contentType, body))
 	}
+}
+
+func newResponseFingerprint(targetURL string, status int, contentType string, body []byte) responseFingerprint {
+	baseType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	digest := sha256.Sum256(body)
+	sizeKey := fmt.Sprintf("%d\x00%s\x00%d", status, baseType, len(body))
+	return responseFingerprint{
+		url:      targetURL,
+		sizeKey:  sizeKey,
+		exactKey: fmt.Sprintf("%s\x00%x", sizeKey, digest),
+	}
+}
+
+func filterWildcardResponses(state *scanState) {
+	if len(state.responseFingerprints) < minimumExactWildcardResponses {
+		return
+	}
+	exactCounts := make(map[string]int)
+	sizeCounts := make(map[string]int)
+	for _, fingerprint := range state.responseFingerprints {
+		exactCounts[fingerprint.exactKey]++
+		sizeCounts[fingerprint.sizeKey]++
+	}
+	filteredURLs := make(map[string]struct{})
+	for _, fingerprint := range state.responseFingerprints {
+		if exactCounts[fingerprint.exactKey] >= minimumExactWildcardResponses || sizeCounts[fingerprint.sizeKey] >= minimumSizeWildcardResponses {
+			filteredURLs[fingerprint.url] = struct{}{}
+		}
+	}
+	if len(filteredURLs) == 0 {
+		return
+	}
+	state.interesting = slices.DeleteFunc(state.interesting, func(item Interesting) bool {
+		_, filtered := filteredURLs[item.URL]
+		return filtered
+	})
+	state.summary.WildcardResponseDetected = true
+	state.summary.FalsePositivesFiltered = len(filteredURLs)
 }
 
 func (state *scanState) transportErrorLimitReached() bool {

@@ -28,7 +28,7 @@ responds in an abnormal way, manual testing should be conducted (prepare manual 
 
 var newAutomateHTTPClient = newHTTPClient
 
-func runAutomate(ctx context.Context, cfg *config.Config) error {
+func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 	cfg.Mode = config.ModeAutomate
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid automate configuration: %w", err)
@@ -55,10 +55,15 @@ func runAutomate(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
 	}
 
-	sources, err := resolveAutomateSources(cfg)
+	sources, err := resolveAutomateSources(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	resultRun, err := beginResultRun(ctx, cfg, "automate", map[string]any{"source_count": len(sources), "store_responses": cfg.StoreResponses})
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = resultRun.finish(resultErr) }()
 	w := output.NewWriter(cfg)
 
 	if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
@@ -113,18 +118,23 @@ func runAutomate(ctx context.Context, cfg *config.Config) error {
 		w.SpecTitle = ""
 		w.SpecDescription = ""
 	}
+	storageErr := resultRun.addAutomateResults(ctx, w, failures)
 	outputErr := w.FinalizeOutput()
 	if len(failures) == 0 {
-		if outputErr != nil {
-			return fmt.Errorf("write output: %w", outputErr)
+		if outputErr != nil || storageErr != nil {
+			return errors.Join(wrapError("write output", outputErr), wrapError("store automate results", storageErr))
 		}
 		return nil
 	}
 	batchErr := fmt.Errorf("%d of %d specification sources failed: %w", len(failures), len(sources), errors.Join(failures...))
-	if outputErr != nil {
-		return errors.Join(batchErr, fmt.Errorf("write output: %w", outputErr))
+	return errors.Join(batchErr, wrapError("write output", outputErr), wrapError("store automate results", storageErr))
+}
+
+func wrapError(operation string, err error) error {
+	if err == nil {
+		return nil
 	}
-	return batchErr
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func cloneAutomateConfig(base *config.Config, source automateSource) *config.Config {
@@ -132,6 +142,7 @@ func cloneAutomateConfig(base *config.Config, source automateSource) *config.Con
 	cloned.SwaggerURL = source.url
 	cloned.LocalFile = source.localFile
 	cloned.AutomateURLFile = ""
+	cloned.AutomateRunIDs = nil
 	cloned.SpecBaseDir = ""
 	cloned.Headers = append([]string(nil), base.Headers...)
 	cloned.SafeWords = append([]string(nil), base.SafeWords...)
@@ -157,8 +168,11 @@ func init() {
 	automateCmd.PersistentFlags().BoolVar(&cfg.RetryOnHint, "retry-on-hint", false, "Retry requests that return 401 with hints about missing parameters.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.RequiredOnly, "required-only", false, "Populate only required operation parameters.")
 	automateCmd.PersistentFlags().StringVarP(&cfg.AutomateURLFile, "url-file", "U", "", "Load specification URLs from a text, brute JSON, or brute JSONL file.")
+	automateCmd.PersistentFlags().StringSliceVar(&cfg.AutomateRunIDs, "brute-run", nil, "Load discovered specification URLs from one or more stored brute run IDs.")
 	automateCmd.PersistentFlags().IntVar(&cfg.MaxAutomateTargets, "max-targets", 10_000, "Maximum specification URLs to process from --url-file.")
 	automateCmd.PersistentFlags().StringVar(&cfg.TestString, "test-string", "testvalue", "The string to use when testing endpoints with string values.")
 	automateCmd.PersistentFlags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose mode, which shows a preview of each response.")
 	automateCmd.PersistentFlags().IntVar(&cfg.ResponsePreview, "response-preview-length", 50, "Sets the response preview length when using verbose output.")
+	automateCmd.PersistentFlags().BoolVar(&cfg.StoreResponses, "store-responses", false, "Store bounded response bodies in structured output and the result database.")
+	automateCmd.PersistentFlags().Int64Var(&cfg.MaxStoredResponseBytes, "max-stored-response-bytes", 64*1024, "Maximum response bytes retained per automate result when --store-responses is set.")
 }

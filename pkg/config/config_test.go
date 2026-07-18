@@ -14,6 +14,9 @@ func TestNewUsesBoundedProductionDefaults(t *testing.T) {
 	if cfg.MaxResponseBytes != 10*1024*1024 || cfg.MaxSpecBytes != 10*1024*1024 {
 		t.Fatalf("size limits = response:%d spec:%d", cfg.MaxResponseBytes, cfg.MaxSpecBytes)
 	}
+	if cfg.MaxStoredResponseBytes != 64*1024 || cfg.StoreResponses {
+		t.Fatalf("response storage defaults = enabled:%t bytes:%d", cfg.StoreResponses, cfg.MaxStoredResponseBytes)
+	}
 	if cfg.MaxCandidates != 10_000 || cfg.MaxAutomateTargets != 10_000 || cfg.BruteWorkers != 1 {
 		t.Fatalf("resource defaults = brute:%d automate:%d workers:%d", cfg.MaxCandidates, cfg.MaxAutomateTargets, cfg.BruteWorkers)
 	}
@@ -27,6 +30,7 @@ func TestValidateRejectsNonPositiveResourceLimits(t *testing.T) {
 		"timeout":            func(cfg *Config) { cfg.Timeout = 0 },
 		"response":           func(cfg *Config) { cfg.MaxResponseBytes = 0 },
 		"spec":               func(cfg *Config) { cfg.MaxSpecBytes = 0 },
+		"stored response":    func(cfg *Config) { cfg.MaxStoredResponseBytes = 0 },
 		"candidates":         func(cfg *Config) { cfg.MaxCandidates = 0 },
 		"automate targets":   func(cfg *Config) { cfg.MaxAutomateTargets = 0 },
 		"workers":            func(cfg *Config) { cfg.BruteWorkers = 0 },

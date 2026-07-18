@@ -51,20 +51,20 @@ func (w *Writer) writeJSONL(out io.Writer) error {
 func (w *Writer) writeCSV(out io.Writer) error {
 	writer := csv.NewWriter(out)
 	if w.Cfg.Verbose {
-		if err := writer.Write([]string{"source", "method", "status", "target", "preview", "curl"}); err != nil {
+		if err := writer.Write([]string{"source", "method", "status", "target", "url", "content_type", "request_body", "response_body", "response_truncated", "preview", "curl"}); err != nil {
 			return err
 		}
 		for _, result := range w.VerboseResults {
-			if err := writer.Write([]string{safeCSVField(result.Source), safeCSVField(result.Method), fmt.Sprint(result.Status), safeCSVField(result.Target), safeCSVField(result.Preview), safeCSVField(result.Curl)}); err != nil {
+			if err := writer.Write([]string{safeCSVField(result.Source), safeCSVField(result.Method), fmt.Sprint(result.Status), safeCSVField(result.Target), safeCSVField(result.URL), safeCSVField(result.ContentType), safeCSVField(result.RequestBody), safeCSVField(result.ResponseBody), fmt.Sprint(result.ResponseTruncated), safeCSVField(result.Preview), safeCSVField(result.Curl)}); err != nil {
 				return err
 			}
 		}
 	} else {
-		if err := writer.Write([]string{"source", "method", "status", "target"}); err != nil {
+		if err := writer.Write([]string{"source", "method", "status", "target", "url", "content_type", "request_body", "response_body", "response_truncated"}); err != nil {
 			return err
 		}
 		for _, result := range w.Results {
-			if err := writer.Write([]string{safeCSVField(result.Source), safeCSVField(result.Method), fmt.Sprint(result.Status), safeCSVField(result.Target)}); err != nil {
+			if err := writer.Write([]string{safeCSVField(result.Source), safeCSVField(result.Method), fmt.Sprint(result.Status), safeCSVField(result.Target), safeCSVField(result.URL), safeCSVField(result.ContentType), safeCSVField(result.RequestBody), safeCSVField(result.ResponseBody), fmt.Sprint(result.ResponseTruncated)}); err != nil {
 				return err
 			}
 		}

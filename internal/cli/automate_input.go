@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mr-pmillz/sj/pkg/brute"
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/store"
 )
 
 type automateSource struct {
@@ -32,15 +34,18 @@ func (source automateSource) display() string {
 	return parsed.String()
 }
 
-func resolveAutomateSources(cfg *config.Config) ([]automateSource, error) {
+func resolveAutomateSources(ctx context.Context, cfg *config.Config) ([]automateSource, error) {
 	configured := 0
-	for _, present := range []bool{cfg.SwaggerURL != "", cfg.LocalFile != "", cfg.AutomateURLFile != ""} {
+	for _, present := range []bool{cfg.SwaggerURL != "", cfg.LocalFile != "", cfg.AutomateURLFile != "", len(cfg.AutomateRunIDs) > 0} {
 		if present {
 			configured++
 		}
 	}
 	if configured != 1 {
-		return nil, fmt.Errorf("specify exactly one of --url, --local-file, or --url-file")
+		return nil, fmt.Errorf("specify exactly one of --url, --local-file, --url-file, or --brute-run")
+	}
+	if len(cfg.AutomateRunIDs) > 0 {
+		return automateSourcesFromRuns(ctx, cfg)
 	}
 	if cfg.AutomateURLFile == "" {
 		return []automateSource{{url: cfg.SwaggerURL, localFile: cfg.LocalFile}}, nil
@@ -51,6 +56,35 @@ func resolveAutomateSources(cfg *config.Config) ([]automateSource, error) {
 	}
 	sources := make([]automateSource, 0, len(urls))
 	for _, specURL := range urls {
+		sources = append(sources, automateSource{url: specURL})
+	}
+	return sources, nil
+}
+
+func automateSourcesFromRuns(ctx context.Context, cfg *config.Config) ([]automateSource, error) {
+	if cfg.NoDatabase || strings.TrimSpace(cfg.DatabasePath) == "" {
+		return nil, fmt.Errorf("--brute-run requires result database storage")
+	}
+	resultStore, err := store.Open(ctx, cfg.DatabasePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resultStore.Close() }()
+	observations, err := resultStore.Observations(ctx, store.Query{RunIDs: cfg.AutomateRunIDs, Kinds: []string{"brute_spec"}, Limit: cfg.MaxAutomateTargets})
+	if err != nil {
+		return nil, fmt.Errorf("load stored brute results: %w", err)
+	}
+	collector := newAutomateURLCollector(cfg.MaxAutomateTargets)
+	for index, observation := range observations {
+		if err := collector.add(observation.URL, fmt.Sprintf("stored brute result %d", index+1)); err != nil {
+			return nil, err
+		}
+	}
+	if len(collector.urls) == 0 {
+		return nil, fmt.Errorf("stored brute runs contain no discovered specifications")
+	}
+	sources := make([]automateSource, 0, len(collector.urls))
+	for _, specURL := range collector.urls {
 		sources = append(sources, automateSource{url: specURL})
 	}
 	return sources, nil

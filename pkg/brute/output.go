@@ -188,11 +188,13 @@ func PrintBatchSummary(reports []Report) {
 	totalSpecs := 0
 	totalTested := 0
 	totalErrors := 0
+	totalFiltered := 0
 	targetsWithSpecs := 0
 	for _, r := range reports {
 		totalSpecs += r.Summary.SpecsFoundCount
 		totalTested += r.Summary.URLsTested
 		totalErrors += r.Summary.Errors
+		totalFiltered += r.Summary.FalsePositivesFiltered
 		if r.Summary.SpecsFoundCount > 0 {
 			targetsWithSpecs++
 		}
@@ -202,5 +204,6 @@ func PrintBatchSummary(reports []Report) {
 	output.PrintInfo("Targets with specs: %d\n", targetsWithSpecs)
 	output.PrintInfo("Total URLs tested:  %d\n", totalTested)
 	output.PrintInfo("Total specs found:  %d\n", totalSpecs)
+	output.PrintInfo("False positives:    %d filtered\n", totalFiltered)
 	output.PrintInfo("Total errors:       %d\n", totalErrors)
 }

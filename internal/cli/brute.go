@@ -74,6 +74,10 @@ var bruteCmd = &cobra.Command{
 		} else {
 			return fmt.Errorf("no target specified; use --url or --url-file")
 		}
+		resultRun, err := beginResultRun(cmd.Context(), cfg, "brute", map[string]any{"target_count": len(targets), "workers": cfg.BruteWorkers})
+		if err != nil {
+			return err
+		}
 
 		var allReports []brute.Report
 		isBatch := len(targets) > 1
@@ -81,24 +85,28 @@ var bruteCmd = &cobra.Command{
 			output.PrintInfo("Brute-forcing %d targets with %d workers.\n", len(targets), min(cfg.BruteWorkers, len(targets)))
 			allReports, err = scanner.RunTargetsContext(cmd.Context(), targets, cfg.BruteWorkers)
 			if err != nil {
-				return err
+				return resultRun.finish(err)
 			}
 		} else {
 			report, err := scanner.RunTargetContext(cmd.Context(), targets[0], true)
 			if err != nil {
-				return err
+				return resultRun.finish(err)
 			}
 			allReports = append(allReports, report)
 		}
+		if err := resultRun.addBruteReports(cmd.Context(), allReports); err != nil {
+			return resultRun.finish(err)
+		}
 
+		var outputErr error
 		if cfg.BruteAllFormats {
-			return brute.OutputAllFormats(allReports, cfg.Outfile)
+			outputErr = brute.OutputAllFormats(allReports, cfg.Outfile)
 		} else if ofmt != "console" && ofmt != "" {
-			return brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
+			outputErr = brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
 		} else if isBatch {
 			brute.PrintBatchSummary(allReports)
 		}
-		return nil
+		return resultRun.finish(outputErr)
 	},
 }
 

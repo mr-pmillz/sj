@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -22,44 +23,56 @@ var auditCmd = &cobra.Command{
 	Short: "Performs a passive security and contract audit of an OpenAPI document.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg.Mode = config.ModeAudit
-		format := strings.ToLower(auditOutputFormat)
-		if format != "console" && format != "json" && format != "sarif" {
-			return fmt.Errorf("unsupported audit output format %q; supported formats: console, json, sarif", auditOutputFormat)
-		}
-		threshold, err := auditThreshold(auditFailOn)
-		if err != nil {
-			return err
-		}
-		client, err := newHTTPClient(cfg)
-		if err != nil {
-			return err
-		}
-		body, err := loadSpec(cmd.Context(), cfg, client)
-		if err != nil {
-			return err
-		}
-		if openapi.LooksLikeJSSpec(body, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
-			if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
-				body = extracted
-			}
-		}
-		spec, err := openapi.SafelyUnmarshalSpec(body)
-		if err != nil {
-			return err
-		}
-		if err := openapi.ValidateReferencePolicy(spec, openapi.NewResolver(cfg.SpecBaseDir)); err != nil {
-			return err
-		}
-		report := audit.Analyze(spec)
-		if err := writeAuditReport(report, format, cfg.Outfile); err != nil {
-			return err
-		}
-		if audit.FailsThreshold(report, threshold) {
-			return fmt.Errorf("audit findings meet or exceed %s severity", threshold)
-		}
-		return nil
+		return runAudit(cmd.Context(), cfg, auditOutputFormat, auditFailOn)
 	},
+}
+
+func runAudit(ctx context.Context, cfg *config.Config, outputFormat, failOn string) (resultErr error) {
+	cfg.Mode = config.ModeAudit
+	format := strings.ToLower(outputFormat)
+	if format != "console" && format != "json" && format != "sarif" {
+		return fmt.Errorf("unsupported audit output format %q; supported formats: console, json, sarif", outputFormat)
+	}
+	threshold, err := auditThreshold(failOn)
+	if err != nil {
+		return err
+	}
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return err
+	}
+	resultRun, err := beginResultRun(ctx, cfg, "audit", map[string]any{"source": specificationSource(cfg)})
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = resultRun.finish(resultErr) }()
+	body, err := loadSpec(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	if openapi.LooksLikeJSSpec(body, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
+		if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
+			body = extracted
+		}
+	}
+	spec, err := openapi.SafelyUnmarshalSpec(body)
+	if err != nil {
+		return err
+	}
+	if err := openapi.ValidateReferencePolicy(spec, openapi.NewResolver(cfg.SpecBaseDir)); err != nil {
+		return err
+	}
+	report := audit.Analyze(spec)
+	if err := resultRun.addAuditReport(ctx, cfg, report); err != nil {
+		return fmt.Errorf("store audit report: %w", err)
+	}
+	if err := writeAuditReport(report, format, cfg.Outfile); err != nil {
+		return err
+	}
+	if audit.FailsThreshold(report, threshold) {
+		return fmt.Errorf("audit findings meet or exceed %s severity", threshold)
+	}
+	return nil
 }
 
 func init() {

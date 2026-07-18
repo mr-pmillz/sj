@@ -43,12 +43,24 @@ type Writer struct {
 	Results             []Result
 	VerboseResults      []VerboseResult
 	AccessibleEndpoints []string
+	EndpointPaths       []string
+	PreparedRequests    []PreparedRequest
 	SpecTitle           string
 	SpecDescription     string
 }
 
 func NewWriter(cfg *config.Config) *Writer {
-	return &Writer{Cfg: cfg, Results: []Result{}, VerboseResults: []VerboseResult{}, AccessibleEndpoints: []string{}}
+	return &Writer{
+		Cfg: cfg, Results: []Result{}, VerboseResults: []VerboseResult{}, AccessibleEndpoints: []string{},
+		EndpointPaths: []string{}, PreparedRequests: []PreparedRequest{},
+	}
+}
+
+type PreparedRequest struct {
+	Method string
+	URL    string
+	Path   string
+	Body   []byte
 }
 
 // TerminalSafe escapes control characters from untrusted specification and

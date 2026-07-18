@@ -583,6 +583,57 @@ func TestExecutePlanReplaysOperationSpecificHeadersAndRestoresConfig(t *testing.
 	}
 }
 
+func TestExecutePlanOptionallyStoresBoundedResponseAndRequestEvidence(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.AcceptRisk = true
+	cfg.OutputFormat = "json"
+	cfg.StoreResponses = true
+	cfg.MaxStoredResponseBytes = 5
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"secret":"long"}`)),
+			Request:    request,
+		}, nil
+	})
+	plan := RequestPlan{Method: http.MethodPost, URL: "https://api.example/items", Path: "/items", Headers: []string{"Content-Type: application/json"}, Body: []byte(`{"name":"sample"}`)}
+	writer := output.NewWriter(cfg)
+	if err := executePlan(plan, client, cfg, writer); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.Results) != 1 {
+		t.Fatalf("results = %#v", writer.Results)
+	}
+	result := writer.Results[0]
+	if result.URL != plan.URL || result.RequestBody != string(plan.Body) || result.ContentType != "application/json" {
+		t.Fatalf("request evidence = %#v", result)
+	}
+	if result.ResponseBody != `{"sec` || !result.ResponseTruncated {
+		t.Fatalf("response evidence = %#v", result)
+	}
+}
+
+func TestExecutePlanDoesNotStoreResponseWithoutOptIn(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("sensitive")), Request: request}, nil
+	})
+	writer := output.NewWriter(cfg)
+	plan := RequestPlan{Method: http.MethodGet, URL: "https://api.example/items", Path: "/items"}
+	if err := executePlan(plan, client, cfg, writer); err != nil {
+		t.Fatal(err)
+	}
+	if writer.Results[0].ResponseBody != "" || writer.Results[0].ResponseTruncated {
+		t.Fatalf("response was persisted without opt-in: %#v", writer.Results[0])
+	}
+}
+
 func TestBuildRequestPlansDoesNotGenerateAuthorizationParameter(t *testing.T) {
 	spec := map[string]any{"paths": map[string]any{
 		"/items": map[string]any{"get": map[string]any{"parameters": []any{
@@ -594,6 +645,23 @@ func TestBuildRequestPlansDoesNotGenerateAuthorizationParameter(t *testing.T) {
 		if strings.HasPrefix(strings.ToLower(header), "authorization:") {
 			t.Fatalf("dummy authorization header generated: %v", plan.Headers)
 		}
+	}
+}
+
+func TestRedactedCurlCommandDoesNotPersistCredentialHeaders(t *testing.T) {
+	plan := RequestPlan{
+		Method: "GET", URL: "https://api.example/users", Headers: []string{
+			"Authorization: Bearer super-secret", "Cookie: session=private", "X-API-Key: private-key", "Accept: application/json",
+		},
+	}
+	command := redactedCurlCommand(plan)
+	for _, secret := range []string{"super-secret", "session=private", "private-key"} {
+		if strings.Contains(command, secret) {
+			t.Fatalf("credential %q leaked in %q", secret, command)
+		}
+	}
+	if !strings.Contains(command, "Accept: application/json") || !strings.Contains(command, "REDACTED") {
+		t.Fatalf("redacted curl = %q", command)
 	}
 }
 

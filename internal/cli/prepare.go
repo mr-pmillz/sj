@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -18,31 +19,42 @@ var prepareCmd = &cobra.Command{
 	Long: `The prepare command prepares a set of commands for manual testing of each endpoint.
 This enables you to test specific API functions for common vulnerabilities or misconfigurations.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg.Mode = config.ModePrepare
-
-		if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
-			return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
-		}
-		if cfg.PrepareFor != "curl" && cfg.PrepareFor != "sqlmap" {
-			return fmt.Errorf("unsupported external tool %q; supported tools: curl, sqlmap", cfg.PrepareFor)
-		}
-
-		client, err := newHTTPClient(cfg)
-		if err != nil {
-			return err
-		}
-		w := output.NewWriter(cfg)
-
-		fmt.Printf("\n")
-		output.PrintInfo("Gathering API details.\n\n")
-
-		bodyBytes, err := loadSpec(cmd.Context(), cfg, client)
-		if err != nil {
-			return err
-		}
-		resolver := openapi.NewResolver(cfg.SpecBaseDir)
-		return scanner.GenerateRequestsE(bodyBytes, client, cfg, w, resolver)
+		return runPrepare(cmd.Context(), cfg)
 	},
+}
+
+func runPrepare(ctx context.Context, cfg *config.Config) (resultErr error) {
+	cfg.Mode = config.ModePrepare
+	if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
+		return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
+	}
+	if cfg.PrepareFor != "curl" && cfg.PrepareFor != "sqlmap" {
+		return fmt.Errorf("unsupported external tool %q; supported tools: curl, sqlmap", cfg.PrepareFor)
+	}
+
+	client, err := newHTTPClient(cfg)
+	if err != nil {
+		return err
+	}
+	resultRun, err := beginResultRun(ctx, cfg, "prepare", map[string]any{"source": specificationSource(cfg), "external_tool": cfg.PrepareFor})
+	if err != nil {
+		return err
+	}
+	defer func() { resultErr = resultRun.finish(resultErr) }()
+	w := output.NewWriter(cfg)
+
+	fmt.Printf("\n")
+	output.PrintInfo("Gathering API details.\n\n")
+
+	bodyBytes, err := loadSpec(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	resolver := openapi.NewResolver(cfg.SpecBaseDir)
+	if err := scanner.GenerateRequestsE(bodyBytes, client, cfg, w, resolver); err != nil {
+		return err
+	}
+	return resultRun.addPreparedRequests(ctx, cfg, w)
 }
 
 func init() {

@@ -10,7 +10,7 @@ import (
 )
 
 func TestReportCommandFlagsAreAvailable(t *testing.T) {
-	for _, name := range []string{"input", "output-format", "output-all-formats", "title", "color", "max-input-bytes", "max-files", "max-records"} {
+	for _, name := range []string{"input", "run", "output-format", "output-all-formats", "title", "color", "max-input-bytes", "max-files", "max-records"} {
 		if reportCmd.Flags().Lookup(name) == nil {
 			t.Errorf("report command is missing --%s", name)
 		}
@@ -27,7 +27,7 @@ func TestRunReportWritesPrivateHTMLAndMarkdown(t *testing.T) {
 	cfg := config.New()
 	cfg.Outfile = base
 	options := reportCLIOptions{Inputs: []string{input}, Format: "terminal", AllFormats: true, Title: "Authorized QA", MaxInputBytes: 1024, MaxFiles: 10, MaxRecords: 100}
-	if err := runReport(cfg, options); err != nil {
+	if err := runReport(t.Context(), cfg, options); err != nil {
 		t.Fatal(err)
 	}
 	for _, extension := range []string{".html", ".md"} {
@@ -51,7 +51,7 @@ func TestRunReportWritesPrivateHTMLAndMarkdown(t *testing.T) {
 
 func TestRunReportRequiresOutputBaseForAllFormats(t *testing.T) {
 	cfg := config.New()
-	err := runReport(cfg, reportCLIOptions{Inputs: []string{t.TempDir()}, AllFormats: true, MaxInputBytes: 1024, MaxFiles: 10, MaxRecords: 100})
+	err := runReport(t.Context(), cfg, reportCLIOptions{Inputs: []string{t.TempDir()}, AllFormats: true, MaxInputBytes: 1024, MaxFiles: 10, MaxRecords: 100})
 	if err == nil || !strings.Contains(err.Error(), "--outfile") {
 		t.Fatalf("error = %v", err)
 	}

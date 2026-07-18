@@ -36,6 +36,8 @@ type Summary struct {
 	Responses5xx               int  `json:"responses_5xx"`
 	Errors                     int  `json:"errors"`
 	TransportErrorLimitReached bool `json:"transport_error_limit_reached,omitempty"`
+	WildcardResponseDetected   bool `json:"wildcard_response_detected,omitempty"`
+	FalsePositivesFiltered     int  `json:"false_positives_filtered,omitempty"`
 }
 
 // match is an internal type used while scanning for spec files.

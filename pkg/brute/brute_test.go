@@ -243,6 +243,68 @@ func TestBruteDetectsMislabeledOpenAPISpec(t *testing.T) {
 	}
 }
 
+func TestFindAllDefinitionFilesFiltersWildcard200Responses(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader("<html><body>application shell</body></html>")),
+			Request:    request,
+		}, nil
+	})
+	candidates := []string{
+		"https://api.example/a", "https://api.example/b", "https://api.example/c",
+		"https://api.example/d", "https://api.example/e", "https://api.example/f",
+	}
+	_, interesting, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interesting) != 0 {
+		t.Fatalf("wildcard responses were retained: %#v", interesting)
+	}
+	if !summary.WildcardResponseDetected || summary.FalsePositivesFiltered != len(candidates) {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestFindAllDefinitionFilesKeepsValidSpecDespiteWildcardResponses(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := "<html><body>application shell</body></html>"
+		contentType := "text/html"
+		if strings.HasSuffix(request.URL.Path, "/openapi.json") {
+			body = `{"openapi":"3.1.0","info":{"title":"Found","version":"1"},"paths":{}}`
+			contentType = "application/json"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})
+	candidates := []string{
+		"https://api.example/a", "https://api.example/b", "https://api.example/c",
+		"https://api.example/d", "https://api.example/e", "https://api.example/openapi.json",
+	}
+	matches, interesting, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].url != candidates[len(candidates)-1] {
+		t.Fatalf("matches = %#v", matches)
+	}
+	if len(interesting) != 0 || summary.FalsePositivesFiltered != summary.URLsTested-1 {
+		t.Fatalf("interesting=%#v summary=%#v", interesting, summary)
+	}
+}
+
 func TestTryParseAsSpecRecognizesSwagger2YAMLSchemaTypes(t *testing.T) {
 	body, err := os.ReadFile("../../tests/test_spec_v2.yaml")
 	if err != nil {

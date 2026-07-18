@@ -16,7 +16,7 @@ var (
 	resourcePath      = regexp.MustCompile(`(?i)(?:^|[/_-])(bulk|batch|export|search|report|upload|download|import|query|list|all)(?:$|[/_-])`)
 )
 
-const reportMethodology = "This report prioritizes observed HTTP outcomes and heuristic penetration-test candidates. A candidate is not confirmed as a vulnerability: sj did not compare multiple authenticated identities, verify persisted side effects, exhaust rate limits, or execute complete business workflows. Weighted points are triage weights, not CVSS scores or business-risk acceptance decisions."
+const reportMethodology = "This report prioritizes observed HTTP outcomes and heuristic penetration-test candidates. Automate-only candidates are not confirmed vulnerabilities. Imported fuzz findings identify the identity comparisons or explicit workflow read-backs that were actually executed; absence of such evidence must not be treated as proof of authorization or business-logic correctness. sj does not exhaust rate limits or perform denial-of-service testing. Weighted points are triage weights, not CVSS scores or business-risk acceptance decisions."
 
 func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 	if options.Title == "" {
@@ -31,9 +31,41 @@ func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 	report := Report{Title: options.Title, GeneratedAt: options.GeneratedAt, Methodology: reportMethodology}
 	report.Metrics, report.Hosts = analyzeMetrics(dataset)
 	report.Findings = analyzeFindings(dataset, options.MaxEvidence)
+	report.Findings = append(report.Findings, importedFindings(dataset.ImportedFindings)...)
+	sort.SliceStable(report.Findings, func(i, j int) bool {
+		left, right := severityWeight(report.Findings[i].Severity), severityWeight(report.Findings[j].Severity)
+		if left != right {
+			return left > right
+		}
+		return report.Findings[i].ID < report.Findings[j].ID
+	})
 	report.Severity = summarizeSeverity(report.Findings)
 	report.OWASP = analyzeOWASP(dataset)
 	return report
+}
+
+func importedFindings(values []ImportedFinding) []Finding {
+	result := make([]Finding, 0, len(values))
+	for _, value := range values {
+		severity := Severity(strings.ToLower(value.Severity))
+		switch severity {
+		case SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow, SeverityInformational:
+		default:
+			severity = SeverityInformational
+		}
+		id := value.Category
+		if id == "" {
+			id = "FUZZ"
+		}
+		result = append(result, Finding{
+			ID: id, Severity: severity, Title: value.Title, Count: 1, Confidence: "observed active-test candidate",
+			OWASP: value.OWASP, Description: "Imported from a stored sj active fuzzing run.",
+			Recommendation: "Reproduce with the generated collection, compare authorized identities, and validate the business impact.",
+			Evidence:       []Evidence{{Method: value.Method, Target: value.URL, Note: value.Evidence}},
+			WeightedPoints: severityWeight(severity),
+		})
+	}
+	return result
 }
 
 func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
@@ -41,9 +73,10 @@ func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 		InputFiles: len(dataset.Files), IgnoredFiles: len(dataset.IgnoredFiles), RawRecords: dataset.RawRecords,
 		DuplicateRecords: dataset.DuplicateRecords, Targets: len(dataset.Targets), DiscoveredSpecifications: len(dataset.Discoveries),
 		Operations: len(dataset.Operations), Failures: len(dataset.Failures), BruteURLsTested: dataset.BruteURLsTested,
-		BruteRequestErrors: dataset.BruteRequestErrors, TransportLimitedTargets: dataset.TransportLimitedTargets,
+		BruteRequestErrors: dataset.BruteRequestErrors, BruteFalsePositivesFiltered: dataset.BruteFalsePositivesFiltered,
+		TransportLimitedTargets: dataset.TransportLimitedTargets,
 	}
-	metrics.UniqueRecords = len(dataset.Targets) + len(dataset.Discoveries) + len(dataset.BruteObservations) + len(dataset.Operations) + len(dataset.Failures)
+	metrics.UniqueRecords = len(dataset.Targets) + len(dataset.Discoveries) + len(dataset.BruteObservations) + len(dataset.Operations) + len(dataset.Failures) + len(dataset.ImportedFindings)
 	sources := make(map[string]struct{})
 	statusCounts := map[string]int{"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0, "unknown": 0}
 	methodCounts := make(map[string]int)

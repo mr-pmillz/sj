@@ -9,7 +9,7 @@
 
 sj is a command line tool designed to assist with auditing exposed Swagger/OpenAPI definition files by checking the associated API endpoints for weak authentication. It also provides command templates for manual vulnerability testing.
 
-It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Use one of seven subcommands:
+It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Core subcommands include:
 
 | Command | Description |
 |---------|-------------|
@@ -19,6 +19,10 @@ It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON S
 | `endpoints` | Lists raw API routes (no parameter substitution) |
 | `brute` | Discovers hidden definition files via common file paths |
 | `convert` | Converts Swagger v2 definitions to OpenAPI v3 |
+| `collection` | Generates populated Bruno API penetration-testing collections from automate results |
+| `fuzz` | Runs rate-safe active API mutation, identity-comparison, PII, enumeration, and error checks |
+| `report` | Builds terminal, Markdown, and HTML API penetration-test reports |
+| `runs` | Lists runs in the default-on SQLite result database |
 | `mcp` | Starts an optional, policy-constrained MCP server for AI agents |
 
 ## Installation
@@ -106,6 +110,15 @@ Enable verbose output to see response previews:
 sj automate -u https://petstore.swagger.io/v2/swagger.json -qi -v
 ```
 
+Structured output always records the resolved operation URL and populated sample request body. Response bodies are opt-in, private, and bounded:
+
+```bash
+sj automate -U discovered.json -F json -o results.json \
+  --store-responses --max-stored-response-bytes 65536
+```
+
+Credential-like request headers and JSON fields are redacted from stored curl/request evidence.
+
 Scan specification URLs from a text file, or feed `brute` output directly into `automate`:
 
 ```bash
@@ -113,6 +126,9 @@ sj automate -U specification-urls.txt -F json -o results.json
 
 sj brute -U targets.txt -F json -o discovered.json
 sj automate -U discovered.json -F json -o results.json
+
+# Consume the database run ID printed by brute without an intermediate file.
+sj automate --brute-run BRUTE_RUN_ID -F json -o results.json
 ```
 
 `automate -U` accepts one specification URL per line plus the JSON and JSONL formats emitted by `brute`. Duplicate URLs are scanned once and batch results include their source specification.
@@ -155,6 +171,45 @@ Scan multiple targets from a file:
 sj brute -U targets.txt --workers 8 -qi -F json -o results.json
 ```
 
+`brute` detects repeated wildcard HTTP 200 response fingerprints, including conservative same-size matching, and removes them from interesting results while reporting how many false positives were filtered. Valid OpenAPI documents are never removed by this filter.
+
+### Bruno penetration-test collections
+
+Generate a full baseline collection plus bounded IDOR/object enumeration, username enumeration, verbose-error, PII review, identity-comparison, and workflow support:
+
+```bash
+sj collection --input targets/results --scope all \
+  --known-username authorized-test-user \
+  -o api-pentest-bruno
+
+sj collection --run AUTOMATE_RUN_ID -o api-pentest-bruno
+```
+
+State-changing Bruno requests contain a pre-request guard. The generated environment uses credential placeholders, provides Identity A/B variables, and keeps bounded payload dictionaries under `payloads/`.
+
+### Bounded API fuzzing
+
+Fuzz interesting operations (the default), all operations, or explicit endpoints:
+
+```bash
+sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
+  --identity-header 'admin=Authorization: Bearer ADMIN_TOKEN' \
+  --identity-header 'user=Authorization: Bearer USER_TOKEN' \
+  --known-username authorized-test-user \
+  --max-requests 200 --delay 500ms --color always
+
+sj fuzz -I automate.json --scope all -F json -o fuzz.json
+sj fuzz -I automate.json --endpoint 'GET https://api.example/users/1'
+```
+
+`fuzz` is sequential, enforces a hard request budget and bounded payload/response sizes, and stops immediately on HTTP 429. It does not generate oversized, recursive, sleep, resource-exhaustion, or denial-of-service payloads. State-changing operations require `--accept-risk`.
+
+Complete business workflows and persisted side-effect verification are explicit rather than guessed. Supply a generated or hand-reviewed workflow file whose steps can capture JSON values, substitute them into later requests, compare named identities, assert status/JSON values, and mark read-back steps with `verify_side_effect`:
+
+```bash
+sj fuzz --workflow workflow.json --accept-risk --max-requests 50 --delay 1s
+```
+
 ### Convert
 
 Convert a Swagger v2 file to OpenAPI v3:
@@ -169,9 +224,23 @@ Generate Markdown and self-contained HTML reports from a directory containing `s
 
 ```bash
 sj report --input targets/results -O -o targets/results/api-pentest-report --color always
+sj report --run BRUTE_RUN_ID --run AUTOMATE_RUN_ID --run FUZZ_RUN_ID -O -o api-pentest-report
 ```
 
-The report deduplicates equivalent output formats and includes HTTP, method, and specification-host distributions; coverage metrics; weighted critical/high/medium/low/informational findings; and OWASP API Security Top 10 (2023) review guidance. IDOR, business-logic, SSRF, and resource-consumption entries are explicitly labeled as testing candidates unless the available evidence confirms only the underlying HTTP outcome.
+The report deduplicates equivalent output formats and includes HTTP, method, and specification-host distributions; wildcard-response filtering and coverage metrics; weighted critical/high/medium/low/informational findings; stored fuzz evidence; and OWASP API Security Top 10 (2023) review guidance. IDOR, business-logic, SSRF, and resource-consumption entries are explicitly labeled as testing candidates unless active evidence supports a stronger conclusion.
+
+### SQLite result database
+
+Result storage is enabled by default for `audit`, `automate`, `brute`, `collection`, `convert`, `endpoints`, `fuzz`, `prepare`, and `report`. Each invocation creates an immutable run ID and stores typed observations/findings in a private, versioned SQLite database. The default lives under the user configuration directory, or `$XDG_DATA_HOME/sj/results.db` when that variable is set.
+
+```bash
+sj runs
+sj runs --json --limit 20
+sj brute -u https://target.example --database ./authorized-qa.db
+sj automate --brute-run RUN_ID --database ./authorized-qa.db
+```
+
+Use `--database PATH` to select another database or `--no-database` for an intentionally ephemeral invocation. Response bodies remain opt-in with `--store-responses`; result metadata and redacted request evidence are stored by default.
 
 ### MCP Server
 
@@ -201,6 +270,10 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
 - **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
+- **Default SQLite History** — Query immutable run IDs and reuse stored brute/automate/fuzz results without intermediate files.
+- **Bruno Collections** — Generate populated API penetration-test requests, bounded payload dictionaries, identity comparisons, and workflow templates.
+- **Rate-Safe API Fuzzing** — Run bounded object/username enumeration, identity comparisons, PII checks, verbose-error checks, and explicit read-back workflows.
+- **Wildcard-200 Detection** — Suppress repeated web-server fallback responses from brute discovery results.
 - **API Penetration-Test Reports** — Consolidate prior scan results into terminal, Markdown, and self-contained HTML reports with weighted triage and OWASP API mappings.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).
 - **MCP Server** — Lets AI agents use typed, structured audit tools over stdio with host allowlists, local-file isolation, active/destructive gates, cancellation, and bounded results.
@@ -214,6 +287,8 @@ The server provides passive audit, request-planning, and conversion tools plus o
   -d, --custom-date string      A custom date for discovered date parameters. (default "1990-01-01")
       --custom-email string     A custom email for discovered email parameters. (default "noreply@localhost.localdomain")
       --force                   Bypass method and dangerous-keyword safety checks.
+      --database string         SQLite result database path. Enabled by default.
+      --no-database             Disable SQLite result storage for this command.
   -f, --format string           Definition file format: json/yaml/yml/js. (default "json")
   -H, --headers stringArray     Custom headers ("Name: Value"). Multiple flags accepted.
   -i, --insecure                Ignore server certificate validation.
@@ -241,11 +316,16 @@ sj/
 ├── internal/cli/             # Cobra command wiring
 ├── pkg/
 │   ├── config/               # Central configuration
+│   ├── apitest/              # Shared operation selection and bounded payload generation
 │   ├── audit/                # Passive security and contract checks
+│   ├── bruno/                # Native Bruno penetration-test collection generation
+│   ├── fuzz/                 # Bounded active API testing and workflow verification
 │   ├── httpclient/           # HTTP client with random UA
 │   ├── openapi/              # Spec parsing, schema resolution
 │   ├── mcpserver/             # Typed MCP tools and policy enforcement
 │   ├── output/               # Multi-format result output
+│   ├── report/               # Result ingestion, metrics, severity analysis, and rendering
+│   ├── store/                # Versioned SQLite run/result persistence
 │   ├── specsource/            # Bounded URL/local specification loading
 │   ├── scanner/              # Request building & scanning
 │   └── brute/                # Brute-force URL discovery

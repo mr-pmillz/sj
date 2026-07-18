@@ -130,7 +130,7 @@ func TestCSVIncludesSpecificationSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantHeader := []string{"source", "method", "status", "target"}
+	wantHeader := []string{"source", "method", "status", "target", "url", "content_type", "request_body", "response_body", "response_truncated"}
 	if !slices.Equal(records[0], wantHeader) {
 		t.Fatalf("CSV header = %#v, want %#v", records[0], wantHeader)
 	}

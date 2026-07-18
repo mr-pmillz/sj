@@ -20,10 +20,16 @@ type Discovery struct {
 }
 
 type Operation struct {
-	Source string `json:"source"`
-	Method string `json:"method"`
-	Status int    `json:"status"`
-	Target string `json:"target"`
+	Origin            string `json:"-"`
+	Source            string `json:"source"`
+	Method            string `json:"method"`
+	Status            int    `json:"status"`
+	Target            string `json:"target"`
+	URL               string `json:"url,omitempty"`
+	ContentType       string `json:"content_type,omitempty"`
+	RequestBody       string `json:"request_body,omitempty"`
+	ResponseBody      string `json:"response_body,omitempty"`
+	ResponseTruncated bool   `json:"response_truncated,omitempty"`
 }
 
 type Failure struct {
@@ -45,18 +51,30 @@ type InputFile struct {
 }
 
 type Dataset struct {
-	Files                   []InputFile
-	IgnoredFiles            []string
-	RawRecords              int
-	DuplicateRecords        int
-	Targets                 []string
-	Discoveries             []Discovery
-	BruteObservations       []BruteObservation
-	Operations              []Operation
-	Failures                []Failure
-	BruteURLsTested         int
-	BruteRequestErrors      int
-	TransportLimitedTargets int
+	Files                       []InputFile
+	IgnoredFiles                []string
+	RawRecords                  int
+	DuplicateRecords            int
+	Targets                     []string
+	Discoveries                 []Discovery
+	BruteObservations           []BruteObservation
+	Operations                  []Operation
+	Failures                    []Failure
+	ImportedFindings            []ImportedFinding
+	BruteURLsTested             int
+	BruteRequestErrors          int
+	BruteFalsePositivesFiltered int
+	TransportLimitedTargets     int
+}
+
+type ImportedFinding struct {
+	Severity string   `json:"severity"`
+	Category string   `json:"category"`
+	Title    string   `json:"title"`
+	Method   string   `json:"method"`
+	URL      string   `json:"url"`
+	Evidence string   `json:"evidence"`
+	OWASP    []string `json:"owasp"`
 }
 
 type AnalyzeOptions struct {
@@ -94,6 +112,7 @@ type Metrics struct {
 	Failures                    int
 	BruteURLsTested             int
 	BruteRequestErrors          int
+	BruteFalsePositivesFiltered int
 	TransportLimitedTargets     int
 	Successes                   int
 	Redirects                   int

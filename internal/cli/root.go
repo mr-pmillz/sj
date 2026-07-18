@@ -7,6 +7,7 @@ import (
 
 	sj "github.com/mr-pmillz/sj"
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/store"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +15,7 @@ var cfg = config.New()
 
 var rootCmd = &cobra.Command{
 	Use:   "sj",
-	Short: "A tool for auditing documented (swagger/openapi) API endpoints.",
+	Short: "Audits, exercises, and reports on Swagger/OpenAPI endpoints.",
 	Long: `The process of reviewing and testing exposed API definition files is often tedious and requires a large investment of time for a thorough review.
 
 sj (swaggerjacker) is a CLI tool that can be used to perform an initial check of API endpoints identified through exposed Swagger/OpenAPI definition files.
@@ -43,8 +44,16 @@ $ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 Passively audit an API contract and fail CI on high-severity findings:
 $ sj audit -l openapi.yaml -f yaml --fail-on high
 
-Generate API penetration-test reports from prior brute and automate results:
-$ sj report -I targets/results -O -o api-pentest-report`,
+Generate API penetration-test reports from prior brute, automate, and fuzz results:
+$ sj report -I targets/results -O -o api-pentest-report
+
+Generate a populated Bruno collection from automate results:
+$ sj collection -I targets/results -o bruno-api-pentest
+
+Run bounded, paced active testing against interesting endpoints:
+$ sj fuzz -I targets/results --scope interesting
+
+SQLite result storage is enabled by default; use --no-database for an ephemeral run.`,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command not specified; see --help for usage")
@@ -69,6 +78,9 @@ func init() {
 	rootCmd.AddCommand(convertCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(reportCmd)
+	rootCmd.AddCommand(runsCmd)
+	rootCmd.AddCommand(collectionCmd)
+	rootCmd.AddCommand(fuzzCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&cfg.UserAgent, "agent", "A", "", "Set the User-Agent string. Random by default.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.BasePath, "base-path", "b", "", "Set the API base path if not defined in the definition file (i.e. /V2/).")
@@ -92,6 +104,8 @@ func init() {
 	rootCmd.PersistentFlags().Int64VarP(&timeoutSeconds, "timeout", "t", 30, "Set the request timeout period.")
 	rootCmd.PersistentFlags().Int64Var(&cfg.MaxResponseBytes, "max-response-bytes", 10*1024*1024, "Maximum response body size to read per request.")
 	rootCmd.PersistentFlags().Int64Var(&cfg.MaxSpecBytes, "max-spec-bytes", 10*1024*1024, "Maximum specification file size to load.")
+	rootCmd.PersistentFlags().StringVar(&cfg.DatabasePath, "database", store.DefaultPath(), "SQLite result database path. Enabled by default.")
+	rootCmd.PersistentFlags().BoolVar(&cfg.NoDatabase, "no-database", false, "Disable SQLite result storage for this command.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.SwaggerURL, "url", "u", "", "Loads the documentation file from a URL")
 
 	rootCmd.CompletionOptions.DisableDefaultCmd = true

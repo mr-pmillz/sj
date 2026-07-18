@@ -30,19 +30,23 @@ const (
 )
 
 type Config struct {
-	SwaggerURL       string
-	LocalFile        string
-	APITarget        string
-	BasePath         string
-	Proxy            string
-	ReplayProxy      string
-	SOCKS5Proxy      string
-	SOCKS5Username   string
-	SOCKS5Password   string
-	Insecure         bool
-	Timeout          time.Duration
-	MaxResponseBytes int64
-	MaxSpecBytes     int64
+	SwaggerURL             string
+	LocalFile              string
+	APITarget              string
+	BasePath               string
+	Proxy                  string
+	ReplayProxy            string
+	SOCKS5Proxy            string
+	SOCKS5Username         string
+	SOCKS5Password         string
+	Insecure               bool
+	Timeout                time.Duration
+	MaxResponseBytes       int64
+	MaxSpecBytes           int64
+	StoreResponses         bool
+	MaxStoredResponseBytes int64
+	DatabasePath           string
+	NoDatabase             bool
 
 	UserAgent       string
 	RandomUserAgent bool
@@ -73,6 +77,7 @@ type Config struct {
 	RequiredOnly           bool
 	ExcludeMethods         []string
 	AutomateURLFile        string
+	AutomateRunIDs         []string
 	MaxAutomateTargets     int
 
 	EndpointOnly      bool
@@ -95,24 +100,25 @@ type Option func(*Config)
 
 func New(opts ...Option) *Config {
 	cfg := &Config{
-		CustomDate:         "1990-01-01",
-		CustomEmail:        "noreply@localhost.localdomain",
-		CustomURL:          "https://example.com",
-		TestString:         "testvalue",
-		Proxy:              "NOPROXY",
-		Format:             "json",
-		OutputFormat:       "console",
-		BruteOutputFormat:  "console",
-		PrepareFor:         "curl",
-		Timeout:            30 * time.Second,
-		MaxResponseBytes:   10 * 1024 * 1024,
-		MaxSpecBytes:       10 * 1024 * 1024,
-		MaxCandidates:      10_000,
-		MaxAutomateTargets: 10_000,
-		BruteWorkers:       1,
-		ResponsePreview:    50,
-		ColorMode:          ColorAuto,
-		RandomUserAgent:    true,
+		CustomDate:             "1990-01-01",
+		CustomEmail:            "noreply@localhost.localdomain",
+		CustomURL:              "https://example.com",
+		TestString:             "testvalue",
+		Proxy:                  "NOPROXY",
+		Format:                 "json",
+		OutputFormat:           "console",
+		BruteOutputFormat:      "console",
+		PrepareFor:             "curl",
+		Timeout:                30 * time.Second,
+		MaxResponseBytes:       10 * 1024 * 1024,
+		MaxSpecBytes:           10 * 1024 * 1024,
+		MaxStoredResponseBytes: 64 * 1024,
+		MaxCandidates:          10_000,
+		MaxAutomateTargets:     10_000,
+		BruteWorkers:           1,
+		ResponsePreview:        50,
+		ColorMode:              ColorAuto,
+		RandomUserAgent:        true,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -129,6 +135,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxSpecBytes <= 0 || c.MaxSpecBytes > maxConfiguredBodyBytes {
 		return fmt.Errorf("maximum specification size must be between 1 and %d bytes", maxConfiguredBodyBytes)
+	}
+	if c.MaxStoredResponseBytes <= 0 || c.MaxStoredResponseBytes > maxConfiguredBodyBytes {
+		return fmt.Errorf("maximum stored response size must be between 1 and %d bytes", maxConfiguredBodyBytes)
 	}
 	if c.MaxCandidates <= 0 || c.MaxCandidates > maxConfiguredCandidates {
 		return fmt.Errorf("maximum brute-force candidates must be between 1 and %d", maxConfiguredCandidates)

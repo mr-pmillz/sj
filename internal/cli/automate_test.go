@@ -14,6 +14,7 @@ import (
 
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/httpclient"
+	"github.com/mr-pmillz/sj/pkg/store"
 )
 
 func TestRunAutomateScansURLFileIntoOneAttributedOutput(t *testing.T) {
@@ -75,6 +76,58 @@ func TestRunAutomatePreservesSingleURLBehavior(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"source":"`+serverURL+`/spec-one"`) || !strings.Contains(string(data), `"target":"/one"`) {
 		t.Fatalf("single-source output = %s", data)
+	}
+}
+
+func TestRunAutomateConsumesStoredBruteRunAndStoresNewRun(t *testing.T) {
+	serverURL := useAutomateTestTransport(t)
+	databasePath := filepath.Join(t.TempDir(), "results.db")
+	resultStore, err := store.Open(t.Context(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bruteRun, err := resultStore.BeginRun(t.Context(), "brute", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resultStore.AddObservations(t.Context(), bruteRun.ID, []store.Observation{{Kind: "brute_spec", URL: serverURL + "/spec-one", Status: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resultStore.FinishRun(t.Context(), bruteRun.ID, store.RunSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := resultStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "automate.json")
+	cfg := config.New()
+	cfg.DatabasePath = databasePath
+	cfg.AutomateRunIDs = []string{bruteRun.ID}
+	cfg.OutputFormat = "json"
+	cfg.Outfile = outputPath
+	if err := runAutomate(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"target":"/one"`) {
+		t.Fatalf("stored-run output = %s", data)
+	}
+
+	resultStore, err = store.Open(t.Context(), databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resultStore.Close() }()
+	runs, err := resultStore.ListRuns(t.Context(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 || runs[0].Command != "automate" || runs[0].Status != store.RunSucceeded {
+		t.Fatalf("runs = %#v", runs)
 	}
 }
 
@@ -146,6 +199,20 @@ func TestAutomateFilteringAndTerminalFlagsAreAvailable(t *testing.T) {
 		if flag.DefValue != wantDefault {
 			t.Errorf("--%s default = %q, want %q", name, flag.DefValue, wantDefault)
 		}
+	}
+}
+
+func TestAutomateDatabaseAndResponseFlagsAreAvailable(t *testing.T) {
+	for _, name := range []string{"brute-run", "store-responses", "max-stored-response-bytes"} {
+		if automateCmd.PersistentFlags().Lookup(name) == nil {
+			t.Errorf("automate command is missing --%s", name)
+		}
+	}
+	if rootCmd.PersistentFlags().Lookup("database") == nil || rootCmd.PersistentFlags().Lookup("no-database") == nil {
+		t.Fatal("root command is missing default database controls")
+	}
+	if rootCmd.PersistentFlags().Lookup("no-database").DefValue != "false" || rootCmd.PersistentFlags().Lookup("database").DefValue == "" {
+		t.Fatal("database storage is not enabled by default")
 	}
 }
 

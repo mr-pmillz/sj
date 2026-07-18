@@ -55,6 +55,7 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 			return err
 		}
 		for _, path := range paths {
+			writer.EndpointPaths = append(writer.EndpointPaths, path)
 			if _, err := fmt.Fprintln(os.Stdout, path); err != nil {
 				return fmt.Errorf("write endpoint: %w", err)
 			}
@@ -78,6 +79,7 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 				return fmt.Errorf("request generation canceled: %w", err)
 			}
 			command := plan.Curl
+			writer.PreparedRequests = append(writer.PreparedRequests, output.PreparedRequest{Method: plan.Method, URL: plan.URL, Path: plan.Path, Body: append([]byte(nil), plan.Body...)})
 			if strings.EqualFold(cfg.PrepareFor, "sqlmap") {
 				command = sqlmapCommand(plan)
 			}
@@ -990,10 +992,21 @@ func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclien
 	cfg.Headers = userHeaders
 	preview := response[:min(len(response), max(cfg.ResponsePreview, 0))]
 	source := specificationResultSource(cfg)
+	contentType := configuredContentType(plan.Headers)
+	storedResponse, responseTruncated := storedResponseEvidence(response, cfg)
+	storedRequestBody := redactedRequestBody(plan.Body, contentType)
 	if cfg.Verbose {
-		writer.AddVerboseResult(output.VerboseResult{Source: source, Method: plan.Method, Preview: preview, Status: status, Target: plan.Path, Curl: plan.Curl})
+		writer.AddVerboseResult(output.VerboseResult{
+			Source: source, Method: plan.Method, Preview: preview, Status: status, Target: plan.Path,
+			URL: plan.URL, ContentType: contentType, RequestBody: storedRequestBody,
+			ResponseBody: storedResponse, ResponseTruncated: responseTruncated, Curl: redactedCurlCommand(plan),
+		})
 	} else {
-		writer.AddResult(output.Result{Source: source, Method: plan.Method, Status: status, Target: plan.Path})
+		writer.AddResult(output.Result{
+			Source: source, Method: plan.Method, Status: status, Target: plan.Path,
+			URL: plan.URL, ContentType: contentType, RequestBody: storedRequestBody,
+			ResponseBody: storedResponse, ResponseTruncated: responseTruncated,
+		})
 	}
 
 	accessible := status >= 200 && status < 300
@@ -1011,6 +1024,14 @@ func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclien
 		output.LogProgressWithColor(status, operationDisplayTarget(plan, cfg), plan.Method, preview, cfg.ColorMode)
 	}
 	return nil
+}
+
+func storedResponseEvidence(response string, cfg *config.Config) (string, bool) {
+	if !cfg.StoreResponses {
+		return "", false
+	}
+	limit := min(int64(len(response)), cfg.MaxStoredResponseBytes)
+	return response[:limit], int64(len(response)) > limit
 }
 
 func operationDisplayTarget(plan RequestPlan, cfg *config.Config) string {
@@ -1044,6 +1065,67 @@ func curlCommand(plan RequestPlan) string {
 		parts = append(parts, "--data-binary", shellQuote(string(plan.Body)))
 	}
 	return strings.Join(parts, " ")
+}
+
+func redactedCurlCommand(plan RequestPlan) string {
+	redacted := plan
+	redacted.Headers = append([]string(nil), plan.Headers...)
+	for index, header := range redacted.Headers {
+		name, _, ok := strings.Cut(header, ":")
+		if ok && sensitiveFieldName(name) {
+			redacted.Headers[index] = strings.TrimSpace(name) + ": REDACTED"
+		}
+	}
+	redacted.Body = []byte(redactedRequestBody(plan.Body, configuredContentType(plan.Headers)))
+	return curlCommand(redacted)
+}
+
+func redactedRequestBody(body []byte, contentType string) string {
+	if len(body) == 0 {
+		return ""
+	}
+	baseType := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if baseType != "application/json" && !strings.HasSuffix(baseType, "+json") {
+		return string(body)
+	}
+	var decoded any
+	if json.Unmarshal(body, &decoded) != nil {
+		return string(body)
+	}
+	redactSensitiveJSON(decoded)
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return string(body)
+	}
+	return string(encoded)
+}
+
+func redactSensitiveJSON(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if sensitiveFieldName(key) {
+				typed[key] = "REDACTED"
+				continue
+			}
+			redactSensitiveJSON(item)
+		}
+	case []any:
+		for _, item := range typed {
+			redactSensitiveJSON(item)
+		}
+	}
+}
+
+func sensitiveFieldName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	switch normalized {
+	case "authorization", "proxyauthorization", "cookie", "setcookie", "password", "passwd", "passphrase", "clientsecret", "apikey", "accesstoken", "refreshtoken", "idtoken", "authtoken":
+		return true
+	default:
+		return strings.HasSuffix(normalized, "password") || strings.HasSuffix(normalized, "secret") || strings.HasSuffix(normalized, "token") || strings.HasSuffix(normalized, "apikey")
+	}
 }
 
 func sqlmapCommand(plan RequestPlan) string {
