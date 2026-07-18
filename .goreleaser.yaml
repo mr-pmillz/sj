@@ -100,9 +100,3 @@ dockers_v2:
       "org.opencontainers.image.revision": "{{.FullCommit}}"
       "org.opencontainers.image.version": "{{.Version}}"
       "org.opencontainers.image.source": "{{.GitURL}}"
-
-announce:
-  teams:
-    enabled: true
-    title_template: '{{ .ProjectName }} {{ .Tag }} is out!'
-    message_template: '{{ .ReleaseNotes }}'
