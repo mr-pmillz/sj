@@ -146,6 +146,11 @@ func BuildRequestPlans(spec map[string]any, cfg *config.Config, resolver *openap
 	sort.Strings(pathNames)
 
 	var plans []RequestPlan
+	supportedOperations := 0
+	excludedMethods := make(map[string]struct{}, len(cfg.ExcludeMethods))
+	for _, method := range cfg.ExcludeMethods {
+		excludedMethods[strings.ToUpper(strings.TrimSpace(method))] = struct{}{}
+	}
 	for _, pathName := range pathNames {
 		if err := validatePathName(pathName); err != nil {
 			return nil, err
@@ -164,6 +169,10 @@ func BuildRequestPlans(spec map[string]any, cfg *config.Config, resolver *openap
 		}
 		operations := pathOperations(pathItem)
 		for _, operation := range operations {
+			supportedOperations++
+			if _, excluded := excludedMethods[strings.ToUpper(operation.method)]; excluded {
+				continue
+			}
 			plan, planErr := buildOperationPlan(spec, pathName, pathItem, operation.method, operation.value, baseURL, cfg, resolver)
 			if planErr != nil {
 				return nil, fmt.Errorf("%s %s: %w", strings.ToUpper(operation.method), pathName, planErr)
@@ -172,6 +181,9 @@ func BuildRequestPlans(spec map[string]any, cfg *config.Config, resolver *openap
 		}
 	}
 	if len(plans) == 0 {
+		if supportedOperations > 0 {
+			return []RequestPlan{}, nil
+		}
 		return nil, errors.New("no supported HTTP operations are defined in the specification")
 	}
 	return plans, nil
@@ -992,13 +1004,20 @@ func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclien
 		writer.AccessibleEndpoints = append(writer.AccessibleEndpoints, plan.Path)
 	}
 	if strings.EqualFold(cfg.OutputFormat, "console") {
-		if err := writer.WriteLogE(status, plan.Path, plan.Method, preview); err != nil {
+		if err := writer.WriteLogE(status, operationDisplayTarget(plan, cfg), plan.Method, preview); err != nil {
 			return fmt.Errorf("write result for %s %s: %w", plan.Method, plan.Path, err)
 		}
 	} else if cfg.ProgressDisplay {
-		output.LogProgress(status, plan.Path, plan.Method, preview)
+		output.LogProgressWithColor(status, operationDisplayTarget(plan, cfg), plan.Method, preview, cfg.ColorMode)
 	}
 	return nil
+}
+
+func operationDisplayTarget(plan RequestPlan, cfg *config.Config) string {
+	if cfg.FullURLs {
+		return plan.URL
+	}
+	return plan.Path
 }
 
 func specificationResultSource(cfg *config.Config) string {

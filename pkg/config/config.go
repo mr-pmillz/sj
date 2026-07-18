@@ -12,6 +12,11 @@ const (
 	maxConfiguredBodyBytes  int64 = 1 << 30
 	maxConfiguredCandidates       = 1_000_000
 	maxConfiguredTimeout          = 24 * time.Hour
+	// MaxBruteWorkers bounds target-level brute concurrency.
+	MaxBruteWorkers = 256
+	ColorAuto       = "auto"
+	ColorAlways     = "always"
+	ColorNever      = "never"
 )
 
 const (
@@ -59,11 +64,14 @@ type Config struct {
 	Verbose          bool
 	ProgressDisplay  bool
 	ResponsePreview  int
+	FullURLs         bool
+	ColorMode        string
 
 	AcceptRisk             bool
 	GetAccessibleEndpoints bool
 	RetryOnHint            bool
 	RequiredOnly           bool
+	ExcludeMethods         []string
 	AutomateURLFile        string
 	MaxAutomateTargets     int
 
@@ -73,6 +81,7 @@ type Config struct {
 	BruteAllFormats   bool
 	BruteURLFile      string
 	MaxCandidates     int
+	BruteWorkers      int
 
 	PrepareFor string
 
@@ -100,7 +109,9 @@ func New(opts ...Option) *Config {
 		MaxSpecBytes:       10 * 1024 * 1024,
 		MaxCandidates:      10_000,
 		MaxAutomateTargets: 10_000,
+		BruteWorkers:       1,
 		ResponsePreview:    50,
+		ColorMode:          ColorAuto,
 		RandomUserAgent:    true,
 	}
 	for _, opt := range opts {
@@ -125,8 +136,21 @@ func (c *Config) Validate() error {
 	if c.MaxAutomateTargets <= 0 || c.MaxAutomateTargets > maxConfiguredCandidates {
 		return fmt.Errorf("maximum automate targets must be between 1 and %d", maxConfiguredCandidates)
 	}
+	if c.BruteWorkers <= 0 || c.BruteWorkers > MaxBruteWorkers {
+		return fmt.Errorf("brute workers must be between 1 and %d", MaxBruteWorkers)
+	}
 	if c.ResponsePreview < 0 {
 		return fmt.Errorf("response preview length cannot be negative")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.ColorMode)) {
+	case ColorAuto, ColorAlways, ColorNever:
+	default:
+		return fmt.Errorf("color mode must be auto, always, or never")
+	}
+	for _, method := range c.ExcludeMethods {
+		if !validHTTPMethodToken(strings.TrimSpace(method)) {
+			return fmt.Errorf("invalid excluded HTTP method %q", method)
+		}
 	}
 	if err := c.validateSOCKS5(); err != nil {
 		return err
@@ -139,6 +163,21 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validHTTPMethodToken(method string) bool {
+	if method == "" {
+		return false
+	}
+	for _, char := range method {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		if !strings.ContainsRune("!#$%&'*+-.^_`|~", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Config) validateSOCKS5() error {

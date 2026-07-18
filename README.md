@@ -117,6 +117,14 @@ sj automate -U discovered.json -F json -o results.json
 
 `automate -U` accepts one specification URL per line plus the JSON and JSONL formats emitted by `brute`. Duplicate URLs are scanned once and batch results include their source specification.
 
+Exclude methods before request planning and improve interactive output:
+
+```bash
+sj automate -U discovered.json --exclude DELETE,PUT --full-urls --color always
+```
+
+`--exclude` is case-insensitive and may be repeated. `--color` accepts `auto`, `always`, or `never`; color and full URLs affect terminal/progress presentation without changing structured result targets.
+
 ### Prepare
 
 Generate commands for manual testing (supports `curl` and `sqlmap`):
@@ -144,7 +152,7 @@ sj brute -u https://petstore.swagger.io -qi -e
 Scan multiple targets from a file:
 
 ```bash
-sj brute -U targets.txt -qi -F json -o results.json
+sj brute -U targets.txt --workers 8 -qi -F json -o results.json
 ```
 
 ### Convert
@@ -154,6 +162,16 @@ Convert a Swagger v2 file to OpenAPI v3:
 ```bash
 sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 ```
+
+### API penetration-test reports
+
+Generate Markdown and self-contained HTML reports from a directory containing `sj brute` and `sj automate` JSON, JSONL, CSV, and brute TXT results:
+
+```bash
+sj report --input targets/results -O -o targets/results/api-pentest-report --color always
+```
+
+The report deduplicates equivalent output formats and includes HTTP, method, and specification-host distributions; coverage metrics; weighted critical/high/medium/low/informational findings; and OWASP API Security Top 10 (2023) review guidance. IDOR, business-logic, SSRF, and resource-consumption entries are explicitly labeled as testing candidates unless the available evidence confirms only the underlying HTTP outcome.
 
 ### MCP Server
 
@@ -170,7 +188,7 @@ Expose typed `sj` tools to an MCP client over standard input/output:
 }
 ```
 
-The server provides passive audit, request-planning, and conversion tools plus opt-in active scanning and definition discovery. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
+The server provides passive audit, request-planning, and conversion tools plus opt-in single-target and batch scanning and definition discovery. The `brute_openapi` tool supports bounded target-level workers, and `automate_openapi` accepts its structured reports directly. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, workers, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
 
 ## Key Features
 
@@ -183,6 +201,7 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
 - **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
+- **API Penetration-Test Reports** — Consolidate prior scan results into terminal, Markdown, and self-contained HTML reports with weighted triage and OWASP API mappings.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).
 - **MCP Server** — Lets AI agents use typed, structured audit tools over stdio with host allowlists, local-file isolation, active/destructive gates, cancellation, and bounded results.
 

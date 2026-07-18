@@ -30,6 +30,9 @@ var newAutomateHTTPClient = newHTTPClient
 
 func runAutomate(ctx context.Context, cfg *config.Config) error {
 	cfg.Mode = config.ModeAutomate
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid automate configuration: %w", err)
+	}
 
 	ofmt := strings.ToLower(cfg.OutputFormat)
 
@@ -132,6 +135,7 @@ func cloneAutomateConfig(base *config.Config, source automateSource) *config.Con
 	cloned.SpecBaseDir = ""
 	cloned.Headers = append([]string(nil), base.Headers...)
 	cloned.SafeWords = append([]string(nil), base.SafeWords...)
+	cloned.ExcludeMethods = append([]string(nil), base.ExcludeMethods...)
 	if !base.TargetExplicit {
 		cloned.APITarget = ""
 	}
@@ -147,6 +151,9 @@ func init() {
 	automateCmd.PersistentFlags().BoolVar(&cfg.GetAccessibleEndpoints, "get-accessible-endpoints", false, "Only output endpoints that return a 2xx status code.")
 	automateCmd.PersistentFlags().BoolVarP(&cfg.OutputAllFormats, "output-all-formats", "O", false, "Write results in all formats (json, jsonl, csv). Requires -o for base filename.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.ProgressDisplay, "progress", false, "Show console-style progress on stderr while using a structured output format (json/jsonl/csv).")
+	automateCmd.PersistentFlags().StringSliceVar(&cfg.ExcludeMethods, "exclude", nil, "Exclude one or more HTTP methods (repeat or use a comma-separated list).")
+	automateCmd.PersistentFlags().BoolVar(&cfg.FullURLs, "full-urls", false, "Show complete operation URLs in terminal and progress output instead of paths.")
+	automateCmd.PersistentFlags().StringVar(&cfg.ColorMode, "color", config.ColorAuto, "Terminal color mode: auto, always, or never.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.RetryOnHint, "retry-on-hint", false, "Retry requests that return 401 with hints about missing parameters.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.RequiredOnly, "required-only", false, "Populate only required operation parameters.")
 	automateCmd.PersistentFlags().StringVarP(&cfg.AutomateURLFile, "url-file", "U", "", "Load specification URLs from a text, brute JSON, or brute JSONL file.")

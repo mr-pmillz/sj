@@ -41,7 +41,10 @@ Convert a Swagger (v2) definition file to an OpenAPI (v3) definition file:
 $ sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
 
 Passively audit an API contract and fail CI on high-severity findings:
-$ sj audit -l openapi.yaml -f yaml --fail-on high`,
+$ sj audit -l openapi.yaml -f yaml --fail-on high
+
+Generate API penetration-test reports from prior brute and automate results:
+$ sj report -I targets/results -O -o api-pentest-report`,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command not specified; see --help for usage")
@@ -65,6 +68,7 @@ func init() {
 	rootCmd.AddCommand(bruteCmd)
 	rootCmd.AddCommand(convertCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(reportCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&cfg.UserAgent, "agent", "A", "", "Set the User-Agent string. Random by default.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.BasePath, "base-path", "b", "", "Set the API base path if not defined in the definition file (i.e. /V2/).")

@@ -64,7 +64,7 @@ func New(options Options) (*mcp.Server, error) {
 		Version:    options.Version,
 		WebsiteURL: "https://github.com/mr-pmillz/sj",
 	}, &mcp.ServerOptions{
-		Instructions: "Use sj to audit, convert, and plan Swagger/OpenAPI documents. Active scanning and discovery require server-side opt-in. Network and local-file access are constrained by the server operator.",
+		Instructions: "Use sj to audit, convert, plan, discover, brute-force, and automate Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Active scanning and discovery require server-side opt-in. Network and local-file access are constrained by the server operator.",
 		Logger:       logger,
 		Capabilities: &mcp.ServerCapabilities{},
 	})
@@ -176,6 +176,18 @@ func registerTools(server *mcp.Server, service *service) {
 		Description: "Actively probe bounded, common Swagger/OpenAPI locations on an allowlisted target. Requires server-side active authorization.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &openWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
 	}, service.discover)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "brute_openapi",
+		Title:       "Discover OpenAPI documents across targets",
+		Description: "Run bounded OpenAPI discovery across an allowlisted target batch and return structured brute reports. Requires server-side active authorization.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &openWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
+	}, service.brute)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "automate_openapi",
+		Title:       "Scan a batch of documented APIs",
+		Description: "Actively scan explicit OpenAPI sources or every specification in brute reports. Requires server-side active authorization; state-changing requests additionally require destructive authorization and accept_risk=true.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
+	}, service.automate)
 }
 
 type sourceInput struct {

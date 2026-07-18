@@ -77,12 +77,14 @@ var bruteCmd = &cobra.Command{
 
 		var allReports []brute.Report
 		isBatch := len(targets) > 1
-
-		for i, targetURL := range targets {
-			if isBatch {
-				output.PrintInfo("\n[%d/%d] Brute-forcing: %s\n", i+1, len(targets), targetURL)
+		if isBatch {
+			output.PrintInfo("Brute-forcing %d targets with %d workers.\n", len(targets), min(cfg.BruteWorkers, len(targets)))
+			allReports, err = scanner.RunTargetsContext(cmd.Context(), targets, cfg.BruteWorkers)
+			if err != nil {
+				return err
 			}
-			report, err := scanner.RunTargetContext(cmd.Context(), targetURL, !isBatch)
+		} else {
+			report, err := scanner.RunTargetContext(cmd.Context(), targets[0], true)
 			if err != nil {
 				return err
 			}
@@ -107,4 +109,5 @@ func init() {
 	bruteCmd.PersistentFlags().BoolVarP(&cfg.BruteAllFormats, "output-all-formats", "O", false, "Write results in all formats (json, jsonl, csv, txt). Requires -o.")
 	bruteCmd.PersistentFlags().StringVarP(&cfg.BruteURLFile, "url-file", "U", "", "File containing a list of URLs to brute force (one per line).")
 	bruteCmd.PersistentFlags().IntVar(&cfg.MaxCandidates, "max-candidates", 10_000, "Maximum generated URLs or batch targets to process.")
+	bruteCmd.PersistentFlags().IntVar(&cfg.BruteWorkers, "workers", 1, "Number of target URLs to brute force concurrently.")
 }

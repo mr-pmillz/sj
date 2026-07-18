@@ -14,17 +14,8 @@ func (service *service) loadSource(ctx context.Context, source sourceInput) ([]b
 	if err := checkContext(ctx, "load specification"); err != nil {
 		return nil, nil, err
 	}
-	if !validFormat(source.Format) {
-		return nil, nil, fmt.Errorf("unsupported input format %q; use json, yaml, yml, or js", source.Format)
-	}
-	configured := 0
-	for _, value := range []string{source.URL, source.Document, source.LocalFile} {
-		if value != "" {
-			configured++
-		}
-	}
-	if configured != 1 {
-		return nil, nil, fmt.Errorf("specify exactly one source: url, document, or local_file")
+	if err := service.validateSource(source); err != nil {
+		return nil, nil, err
 	}
 
 	cfg := service.config()
@@ -33,20 +24,11 @@ func (service *service) loadSource(ctx context.Context, source sourceInput) ([]b
 	}
 	switch {
 	case source.Document != "":
-		if int64(len(source.Document)) > cfg.MaxSpecBytes {
-			return nil, nil, fmt.Errorf("inline specification exceeds %d-byte limit", cfg.MaxSpecBytes)
-		}
 		cfg.SpecBaseDir = ""
 		return []byte(source.Document), cfg, nil
 	case source.URL != "":
-		if err := service.policy.checkURL("specification", source.URL); err != nil {
-			return nil, nil, err
-		}
 		cfg.SwaggerURL = source.URL
 	case source.LocalFile != "":
-		if !service.policy.allowLocalFiles {
-			return nil, nil, fmt.Errorf("local file access is disabled by the MCP server")
-		}
 		cfg.LocalFile = source.LocalFile
 	}
 	if err := cfg.Validate(); err != nil {
@@ -61,6 +43,36 @@ func (service *service) loadSource(ctx context.Context, source sourceInput) ([]b
 		return nil, nil, err
 	}
 	return body, cfg, nil
+}
+
+func (service *service) validateSource(source sourceInput) error {
+	if !validFormat(source.Format) {
+		return fmt.Errorf("unsupported input format %q; use json, yaml, yml, or js", source.Format)
+	}
+	configured := 0
+	for _, value := range []string{source.URL, source.Document, source.LocalFile} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured != 1 {
+		return fmt.Errorf("specify exactly one source: url, document, or local_file")
+	}
+	switch {
+	case source.Document != "":
+		if int64(len(source.Document)) > service.base.MaxSpecBytes {
+			return fmt.Errorf("inline specification exceeds %d-byte limit", service.base.MaxSpecBytes)
+		}
+	case source.URL != "":
+		if err := service.policy.checkURL("specification", source.URL); err != nil {
+			return err
+		}
+	case source.LocalFile != "":
+		if !service.policy.allowLocalFiles {
+			return fmt.Errorf("local file access is disabled by the MCP server")
+		}
+	}
+	return nil
 }
 
 func (service *service) parseSource(ctx context.Context, source sourceInput) (map[string]any, *config.Config, *openapi.Resolver, error) {

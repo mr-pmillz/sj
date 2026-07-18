@@ -31,6 +31,114 @@ func buildPlans(t *testing.T, spec map[string]any, mutate func(*config.Config)) 
 	return plans
 }
 
+func TestBuildRequestPlansExcludesMethodsCaseInsensitively(t *testing.T) {
+	spec := map[string]any{
+		"paths": map[string]any{
+			"/items": map[string]any{
+				"get":    map[string]any{"responses": map[string]any{}},
+				"delete": map[string]any{"responses": map[string]any{}},
+			},
+		},
+	}
+	plans := buildPlans(t, spec, func(cfg *config.Config) {
+		cfg.ExcludeMethods = []string{"delete"}
+	})
+	if len(plans) != 1 || plans[0].Method != http.MethodGet {
+		t.Fatalf("plans = %#v, want only GET", plans)
+	}
+}
+
+func TestBuildRequestPlansReturnsEmptyWhenExclusionsRemoveEveryOperation(t *testing.T) {
+	spec := map[string]any{
+		"paths": map[string]any{
+			"/items": map[string]any{
+				"delete": map[string]any{"responses": map[string]any{}},
+			},
+		},
+	}
+	cfg := config.New()
+	cfg.APITarget = "https://api.example"
+	cfg.ExcludeMethods = []string{"DELETE"}
+	plans, err := BuildRequestPlans(spec, cfg, openapi.NewResolver(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 0 {
+		t.Fatalf("plans = %#v, want an intentional empty scan", plans)
+	}
+}
+
+func TestExcludedMethodsNeverReachTheHTTPTransport(t *testing.T) {
+	spec := map[string]any{"paths": map[string]any{
+		"/items": map[string]any{
+			"get":    map[string]any{"responses": map[string]any{}},
+			"delete": map[string]any{"responses": map[string]any{}},
+		},
+	}}
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.APITarget = "https://api.example"
+	cfg.OutputFormat = "json"
+	cfg.AcceptRisk = true
+	cfg.ExcludeMethods = []string{"DELETE"}
+	plans, err := BuildRequestPlans(spec, cfg, openapi.NewResolver(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var methods []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		methods = append(methods, request.Method)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	})
+	if err := ExecuteRequestPlansContextE(t.Context(), plans, client, cfg, output.NewWriter(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(methods, []string{http.MethodGet}) {
+		t.Fatalf("transport methods = %v, want only GET", methods)
+	}
+}
+
+func TestOperationDisplayTargetDoesNotChangeStructuredTarget(t *testing.T) {
+	plan := RequestPlan{Method: http.MethodGet, URL: "https://api.example/v1/items?id=1", Path: "/v1/items"}
+	cfg := config.New()
+	if got := operationDisplayTarget(plan, cfg); got != plan.Path {
+		t.Fatalf("path display = %q, want %q", got, plan.Path)
+	}
+	cfg.FullURLs = true
+	if got := operationDisplayTarget(plan, cfg); got != plan.URL {
+		t.Fatalf("full URL display = %q, want %q", got, plan.URL)
+	}
+
+	writer := output.NewWriter(cfg)
+	writer.AddResult(output.Result{Method: plan.Method, Status: http.StatusOK, Target: plan.Path})
+	if writer.Results[0].Target != plan.Path {
+		t.Fatalf("structured target = %q, want path %q", writer.Results[0].Target, plan.Path)
+	}
+}
+
+func TestAutomateConsoleCanDisplayFullOperationURL(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.APITarget = "https://api.example/v1"
+	cfg.OutputFormat = "console"
+	cfg.FullURLs = true
+	cfg.ColorMode = config.ColorNever
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("redirect")), Request: request}, nil
+	})
+	spec := map[string]any{"paths": map[string]any{"/items": map[string]any{"get": map[string]any{"responses": map[string]any{}}}}}
+	got := captureStdout(t, func() {
+		if err := BuildRequestsFromPathsE(spec, client, cfg, output.NewWriter(cfg), openapi.NewResolver("")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(got, "https://api.example/v1/items") || strings.Contains(got, "  /items\n") {
+		t.Fatalf("console output = %q", got)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	read, write, err := os.Pipe()

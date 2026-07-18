@@ -28,13 +28,14 @@ type Report struct {
 
 // Summary counts high-level statistics for a brute-force run.
 type Summary struct {
-	URLsTested      int `json:"urls_tested"`
-	SpecsFoundCount int `json:"specs_found_count"`
-	Responses2xx    int `json:"responses_2xx"`
-	Responses3xx    int `json:"responses_3xx"`
-	Responses4xx    int `json:"responses_4xx"`
-	Responses5xx    int `json:"responses_5xx"`
-	Errors          int `json:"errors"`
+	URLsTested                 int  `json:"urls_tested"`
+	SpecsFoundCount            int  `json:"specs_found_count"`
+	Responses2xx               int  `json:"responses_2xx"`
+	Responses3xx               int  `json:"responses_3xx"`
+	Responses4xx               int  `json:"responses_4xx"`
+	Responses5xx               int  `json:"responses_5xx"`
+	Errors                     int  `json:"errors"`
+	TransportErrorLimitReached bool `json:"transport_error_limit_reached,omitempty"`
 }
 
 // match is an internal type used while scanning for spec files.

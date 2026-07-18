@@ -132,6 +132,23 @@ func TestRunAutomateStopsBatchWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestAutomateFilteringAndTerminalFlagsAreAvailable(t *testing.T) {
+	for name, wantDefault := range map[string]string{
+		"exclude":   "[]",
+		"full-urls": "false",
+		"color":     "auto",
+	} {
+		flag := automateCmd.PersistentFlags().Lookup(name)
+		if flag == nil {
+			t.Errorf("automate command is missing --%s", name)
+			continue
+		}
+		if flag.DefValue != wantDefault {
+			t.Errorf("--%s default = %q, want %q", name, flag.DefValue, wantDefault)
+		}
+	}
+}
+
 func useAutomateTestTransport(t *testing.T) string {
 	t.Helper()
 	const serverURL = "https://api.test"

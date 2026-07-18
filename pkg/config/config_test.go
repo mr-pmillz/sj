@@ -14,8 +14,8 @@ func TestNewUsesBoundedProductionDefaults(t *testing.T) {
 	if cfg.MaxResponseBytes != 10*1024*1024 || cfg.MaxSpecBytes != 10*1024*1024 {
 		t.Fatalf("size limits = response:%d spec:%d", cfg.MaxResponseBytes, cfg.MaxSpecBytes)
 	}
-	if cfg.MaxCandidates != 10_000 || cfg.MaxAutomateTargets != 10_000 {
-		t.Fatalf("target limits = brute:%d automate:%d", cfg.MaxCandidates, cfg.MaxAutomateTargets)
+	if cfg.MaxCandidates != 10_000 || cfg.MaxAutomateTargets != 10_000 || cfg.BruteWorkers != 1 {
+		t.Fatalf("resource defaults = brute:%d automate:%d workers:%d", cfg.MaxCandidates, cfg.MaxAutomateTargets, cfg.BruteWorkers)
 	}
 	if cfg.Mode != ModeUnknown {
 		t.Fatalf("default mode = %v, want unknown", cfg.Mode)
@@ -29,12 +29,14 @@ func TestValidateRejectsNonPositiveResourceLimits(t *testing.T) {
 		"spec":               func(cfg *Config) { cfg.MaxSpecBytes = 0 },
 		"candidates":         func(cfg *Config) { cfg.MaxCandidates = 0 },
 		"automate targets":   func(cfg *Config) { cfg.MaxAutomateTargets = 0 },
+		"workers":            func(cfg *Config) { cfg.BruteWorkers = 0 },
 		"preview":            func(cfg *Config) { cfg.ResponsePreview = -1 },
 		"timeout overflow":   func(cfg *Config) { cfg.Timeout = maxConfiguredTimeout + time.Second },
 		"response overflow":  func(cfg *Config) { cfg.MaxResponseBytes = maxConfiguredBodyBytes + 1 },
 		"spec overflow":      func(cfg *Config) { cfg.MaxSpecBytes = maxConfiguredBodyBytes + 1 },
 		"candidate overflow": func(cfg *Config) { cfg.MaxCandidates = maxConfiguredCandidates + 1 },
 		"automate overflow":  func(cfg *Config) { cfg.MaxAutomateTargets = maxConfiguredCandidates + 1 },
+		"worker overflow":    func(cfg *Config) { cfg.BruteWorkers = MaxBruteWorkers + 1 },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -59,6 +61,25 @@ func TestValidateRejectsMalformedOrInjectedHeaders(t *testing.T) {
 	cfg.Headers = []string{"Authorization: Bearer token", "X-Custom: value:with:colons"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("rejected valid headers: %v", err)
+	}
+}
+
+func TestValidateAutomatePresentationAndExcludedMethods(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"invalid color", func(cfg *Config) { cfg.ColorMode = "sometimes" }},
+		{"empty method", func(cfg *Config) { cfg.ExcludeMethods = []string{" "} }},
+		{"invalid method token", func(cfg *Config) { cfg.ExcludeMethods = []string{"GET\r\nX-Evil"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := New()
+			test.mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("invalid automate option was accepted")
+			}
+		})
 	}
 }
 

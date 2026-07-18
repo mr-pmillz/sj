@@ -7,10 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/fatih/color"
 	"github.com/mr-pmillz/sj/pkg/config"
 )
 
@@ -141,5 +143,42 @@ func TestTerminalSafeEscapesControlSequences(t *testing.T) {
 	got := TerminalSafe("safe\x1b[2J\nnext")
 	if strings.ContainsAny(got, "\x1b\n") || got != `safe\u001b[2J\u000anext` {
 		t.Fatalf("TerminalSafe = %q", got)
+	}
+}
+
+func TestLogResultStatusClassesUseDistinctColors(t *testing.T) {
+	previous := color.NoColor
+	color.NoColor = true
+	t.Cleanup(func() { color.NoColor = previous })
+
+	pattern := regexp.MustCompile(`\x1b\[[0-9;]+m`)
+	seen := map[string]int{}
+	for _, status := range []int{200, 302, 401, 500} {
+		var output bytes.Buffer
+		if err := LogResultWithColorE(status, "/resource", "GET", "", &output, config.ColorAlways); err != nil {
+			t.Fatal(err)
+		}
+		code := pattern.FindString(output.String())
+		if code == "" {
+			t.Fatalf("status %d output has no ANSI color: %q", status, output.String())
+		}
+		if previousStatus, duplicate := seen[code]; duplicate {
+			t.Errorf("statuses %d and %d use the same color code %q", previousStatus, status, code)
+		}
+		seen[code] = status
+	}
+}
+
+func TestLogResultNeverColorOverridesTerminalDetection(t *testing.T) {
+	previous := color.NoColor
+	color.NoColor = false
+	t.Cleanup(func() { color.NoColor = previous })
+
+	var output bytes.Buffer
+	if err := LogResultWithColorE(500, "/resource", "GET", "", &output, config.ColorNever); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "\x1b[") {
+		t.Fatalf("never-color output contains ANSI escapes: %q", output.String())
 	}
 }

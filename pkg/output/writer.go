@@ -12,10 +12,8 @@ import (
 	"github.com/mr-pmillz/sj/pkg/config"
 )
 
-var green = color.New(color.FgGreen, color.Bold).SprintFunc()
 var yellow = color.New(color.FgYellow, color.Bold).SprintFunc()
 var red = color.New(color.FgRed, color.Bold).SprintFunc()
-var faint = color.New(color.Faint).SprintFunc()
 
 // PrintInfo writes a formatted informational message to stderr.
 //
@@ -116,7 +114,7 @@ func (w *Writer) WriteLogE(sc int, target, method, response string) error {
 			}
 		}
 	default:
-		if err := LogResultE(sc, target, method, preview, out); err != nil {
+		if err := LogResultWithColorE(sc, target, method, preview, out, w.Cfg.ColorMode); err != nil {
 			return closeWithError(file, err)
 		}
 	}
@@ -128,19 +126,40 @@ func LogResult(sc int, target, method, preview string, out io.Writer) {
 }
 
 func LogResultE(sc int, target, method, preview string, out io.Writer) error {
-	var sym string
-	var painter func(a ...any) string
+	return LogResultWithColorE(sc, target, method, preview, out, config.ColorAuto)
+}
 
-	switch sc {
-	case 200:
-		sym, painter = "✓", green
-	case 301, 302, 0, 1:
-		sym, painter = "⚠", yellow
-	case 401, 403, 404:
-		sym, painter = "✗", red
+func LogResultWithColorE(sc int, target, method, preview string, out io.Writer, colorMode string) error {
+	var sym string
+	var attributes []color.Attribute
+
+	switch {
+	case sc >= 100 && sc < 200:
+		sym, attributes = "i", []color.Attribute{color.FgHiBlue, color.Bold}
+	case sc >= 200 && sc < 300:
+		sym, attributes = "✓", []color.Attribute{color.FgHiGreen, color.Bold}
+	case sc >= 300 && sc < 400:
+		sym, attributes = "↪", []color.Attribute{color.FgHiCyan, color.Bold}
+	case sc == 401 || sc == 403:
+		sym, attributes = "🔒", []color.Attribute{color.FgHiYellow, color.Bold}
+	case sc >= 400 && sc < 500:
+		sym, attributes = "✗", []color.Attribute{color.FgHiMagenta, color.Bold}
+	case sc >= 500 && sc < 600:
+		sym, attributes = "!", []color.Attribute{color.FgHiRed, color.Bold}
 	default:
-		sym, painter = "⚠", yellow
+		sym, attributes = "?", []color.Attribute{color.FgHiBlack, color.Bold}
 	}
+	paint := color.New(attributes...)
+	faintPaint := color.New(color.Faint)
+	switch strings.ToLower(strings.TrimSpace(colorMode)) {
+	case config.ColorAlways:
+		paint.EnableColor()
+		faintPaint.EnableColor()
+	case config.ColorNever:
+		paint.DisableColor()
+		faintPaint.DisableColor()
+	}
+	painter := paint.SprintFunc()
 
 	statusStr := fmt.Sprintf("%d", sc)
 	switch sc {
@@ -156,7 +175,7 @@ func LogResultE(sc int, target, method, preview string, out io.Writer) error {
 	}
 
 	if preview != "" {
-		if _, err := fmt.Fprintf(out, "   %s\n", faint(TerminalSafe(preview))); err != nil {
+		if _, err := fmt.Fprintf(out, "   %s\n", faintPaint.Sprint(TerminalSafe(preview))); err != nil {
 			return err
 		}
 	}
@@ -165,6 +184,10 @@ func LogResultE(sc int, target, method, preview string, out io.Writer) error {
 
 func LogProgress(sc int, target, method, preview string) {
 	LogResult(sc, target, method, preview, os.Stderr)
+}
+
+func LogProgressWithColor(sc int, target, method, preview, colorMode string) {
+	_ = LogResultWithColorE(sc, target, method, preview, os.Stderr, colorMode)
 }
 
 func closeWithError(file *os.File, result error) error {

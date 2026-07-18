@@ -38,7 +38,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantNames := []string{"audit_openapi", "convert_openapi", "discover_openapi", "plan_openapi_requests", "scan_openapi"}
+	wantNames := []string{"audit_openapi", "automate_openapi", "brute_openapi", "convert_openapi", "discover_openapi", "plan_openapi_requests", "scan_openapi"}
 	gotNames := make([]string, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		gotNames = append(gotNames, tool.Name)
@@ -60,11 +60,15 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 			t.Errorf("%s should be read-only", name)
 		}
 	}
-	if tools["scan_openapi"].Annotations.ReadOnlyHint || tools["scan_openapi"].Annotations.DestructiveHint == nil || !*tools["scan_openapi"].Annotations.DestructiveHint {
-		t.Error("scan_openapi should advertise potentially destructive behavior")
+	for _, name := range []string{"automate_openapi", "scan_openapi"} {
+		if tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || !*tools[name].Annotations.DestructiveHint {
+			t.Errorf("%s should advertise potentially destructive behavior", name)
+		}
 	}
-	if !tools["discover_openapi"].Annotations.ReadOnlyHint || tools["discover_openapi"].Annotations.DestructiveHint == nil || *tools["discover_openapi"].Annotations.DestructiveHint {
-		t.Error("discover_openapi should advertise read-only probing behavior")
+	for _, name := range []string{"brute_openapi", "discover_openapi"} {
+		if !tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || *tools[name].Annotations.DestructiveHint {
+			t.Errorf("%s should advertise read-only probing behavior", name)
+		}
 	}
 }
 
@@ -129,6 +133,60 @@ func TestAuditPlanAndConvertToolsReturnStructuredResults(t *testing.T) {
 			t.Fatalf("convert output = %#v", output)
 		}
 	})
+}
+
+func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
+	var getCalls atomic.Int64
+	var deleteCalls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.Method {
+			case http.MethodDelete:
+				deleteCalls.Add(1)
+			case http.MethodGet:
+				getCalls.Add(1)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request}, nil
+		})
+		return client, client.InitErr
+	}
+	spec := `{
+  "openapi":"3.1.0","info":{"title":"Methods","version":"1"},
+  "servers":[{"url":"https://api.example.com"}],
+  "paths":{"/widgets":{"get":{"responses":{"200":{"description":"ok"}}},"delete":{"responses":{"204":{"description":"deleted"}}}}}
+}`
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowDestructive: true,
+		AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "automate_openapi", map[string]any{
+		"sources":         []any{map[string]any{"document": spec}},
+		"accept_risk":     true,
+		"exclude_methods": []any{"delete"},
+	})
+	if result.IsError {
+		t.Fatalf("automate failed: %s", toolText(result))
+	}
+	var response automateOutput
+	decodeStructured(t, result, &response)
+	if getCalls.Load() != 1 || deleteCalls.Load() != 0 || len(response.Results) != 1 || response.Results[0].Method != http.MethodGet {
+		t.Fatalf("get=%d delete=%d results=%#v", getCalls.Load(), deleteCalls.Load(), response.Results)
+	}
+
+	allExcluded := callTool(t, session, "automate_openapi", map[string]any{
+		"sources":         []any{map[string]any{"document": spec}},
+		"accept_risk":     true,
+		"exclude_methods": []any{"GET", "DELETE"},
+	})
+	if allExcluded.IsError {
+		t.Fatalf("all-excluded automate failed: %s", toolText(allExcluded))
+	}
+	var empty automateOutput
+	decodeStructured(t, allExcluded, &empty)
+	if getCalls.Load() != 1 || deleteCalls.Load() != 0 || len(empty.Results) != 0 || len(empty.Failures) != 0 {
+		t.Fatalf("all-excluded get=%d delete=%d output=%#v", getCalls.Load(), deleteCalls.Load(), empty)
+	}
 }
 
 func TestServerEnforcesSourceAndNetworkPolicies(t *testing.T) {
@@ -212,6 +270,8 @@ func TestActiveToolsRequireExplicitAuthorizationAndPreflightBounds(t *testing.T)
 		}{
 			{"scan_openapi", map[string]any{"source": map[string]any{"document": testOpenAPI}}},
 			{"discover_openapi", map[string]any{"target": "https://api.example.com"}},
+			{"automate_openapi", map[string]any{"sources": []any{map[string]any{"document": testOpenAPI}}}},
+			{"brute_openapi", map[string]any{"targets": []string{"https://api.example.com"}}},
 		} {
 			result := callTool(t, session, call.name, call.args)
 			if !result.IsError || !strings.Contains(toolText(result), "active tools are disabled") {
@@ -222,12 +282,17 @@ func TestActiveToolsRequireExplicitAuthorizationAndPreflightBounds(t *testing.T)
 
 	t.Run("destructive risk needs server opt in", func(t *testing.T) {
 		session := connectTestClient(t, Options{Version: "test", AllowActive: true, AllowedHosts: []string{"api.example.com"}})
-		result := callTool(t, session, "scan_openapi", map[string]any{
-			"source":      map[string]any{"document": testOpenAPI},
-			"accept_risk": true,
-		})
-		if !result.IsError || !strings.Contains(toolText(result), "destructive requests are disabled") {
-			t.Fatalf("result = isError:%v text:%q", result.IsError, toolText(result))
+		for _, call := range []struct {
+			name string
+			args map[string]any
+		}{
+			{"scan_openapi", map[string]any{"source": map[string]any{"document": testOpenAPI}, "accept_risk": true}},
+			{"automate_openapi", map[string]any{"sources": []any{map[string]any{"document": testOpenAPI}}, "accept_risk": true}},
+		} {
+			result := callTool(t, session, call.name, call.args)
+			if !result.IsError || !strings.Contains(toolText(result), "destructive requests are disabled") {
+				t.Fatalf("%s result = isError:%v text:%q", call.name, result.IsError, toolText(result))
+			}
 		}
 	})
 
@@ -357,6 +422,308 @@ func TestDiscoverToolReturnsStructuredReport(t *testing.T) {
 	decodeStructured(t, result, &output)
 	if calls.Load() == 0 || len(output.Report.SpecsFound) == 0 || output.Report.SpecsFound[0].URL != "https://api.test/swagger.json" {
 		t.Fatalf("calls=%d output=%#v", calls.Load(), output)
+	}
+}
+
+func TestBruteToolRunsBatchAndPreflightsEveryTargetPolicy(t *testing.T) {
+	var calls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		if cfg.BruteWorkers != 2 {
+			t.Fatalf("brute workers = %d, want 2", cfg.BruteWorkers)
+		}
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			status := http.StatusNotFound
+			body := `{"error":"missing"}`
+			if request.URL.Path == "/swagger.json" {
+				status = http.StatusOK
+				body = testOpenAPI
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"*.test"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "brute_openapi", map[string]any{
+		"targets":        []string{"https://one.test", "https://two.test"},
+		"max_candidates": 3000,
+		"workers":        2,
+	})
+	if result.IsError {
+		t.Fatalf("brute failed: %s", toolText(result))
+	}
+	var output struct {
+		Reports []struct {
+			Target     string `json:"target"`
+			SpecsFound []struct {
+				URL string `json:"url"`
+			} `json:"specs_found"`
+		} `json:"reports"`
+	}
+	decodeStructured(t, result, &output)
+	if len(output.Reports) != 2 || len(output.Reports[0].SpecsFound) == 0 || len(output.Reports[1].SpecsFound) == 0 || calls.Load() == 0 {
+		t.Fatalf("calls=%d output=%#v", calls.Load(), output)
+	}
+
+	calls.Store(0)
+	denied := callTool(t, session, "brute_openapi", map[string]any{
+		"targets": []string{"https://one.test", "https://not-allowed.example"},
+	})
+	if !denied.IsError || !strings.Contains(toolText(denied), "not allowed") {
+		t.Fatalf("denied result = isError:%v text:%q", denied.IsError, toolText(denied))
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("brute sent %d requests before rejecting the complete target batch", calls.Load())
+	}
+}
+
+func TestAutomateToolConsumesBruteReportsAndPreflightsEveryOperation(t *testing.T) {
+	var operationCalls atomic.Int64
+	var denyAPITwo atomic.Bool
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body := `{"ok":true}`
+			if request.URL.Hostname() == "specs.test" {
+				host := "api-one.test"
+				if request.URL.Path == "/two.json" {
+					host = "api-two.test"
+				}
+				body = fmt.Sprintf(`{
+  "openapi":"3.1.0",
+  "info":{"title":"Batch","version":"1"},
+  "servers":[{"url":"https://%s"}],
+  "paths":{"/widgets":{"get":{"responses":{"200":{"description":"ok"}}}}}
+}`, host)
+			} else {
+				if denyAPITwo.Load() && request.URL.Hostname() == "api-two.test" {
+					t.Fatal("automate sent an operation request to the denied host")
+				}
+				operationCalls.Add(1)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	reports := []any{
+		map[string]any{
+			"target": "https://one.test", "specs_found": []any{map[string]any{
+				"url": "https://specs.test/one.json", "content_type": "application/json", "openapi_version": "3.1.0",
+			}}, "summary": map[string]any{
+				"urls_tested": 0, "specs_found_count": 1, "responses_2xx": 0, "responses_3xx": 0,
+				"responses_4xx": 0, "responses_5xx": 0, "errors": 0,
+			},
+		},
+		map[string]any{
+			"target": "https://two.test", "specs_found": []any{map[string]any{
+				"url": "https://specs.test/two.json", "content_type": "application/json", "openapi_version": "3.1.0",
+			}}, "summary": map[string]any{
+				"urls_tested": 0, "specs_found_count": 1, "responses_2xx": 0, "responses_3xx": 0,
+				"responses_4xx": 0, "responses_5xx": 0, "errors": 0,
+			},
+		},
+	}
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"*.test"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "automate_openapi", map[string]any{"brute_reports": reports})
+	if result.IsError {
+		t.Fatalf("automate failed: %s", toolText(result))
+	}
+	var output struct {
+		Results []struct {
+			Source string `json:"source"`
+			Method string `json:"method"`
+			Status int    `json:"status"`
+			Target string `json:"target"`
+		} `json:"results"`
+	}
+	decodeStructured(t, result, &output)
+	if len(output.Results) != 2 || operationCalls.Load() != 2 {
+		t.Fatalf("operationCalls=%d output=%#v", operationCalls.Load(), output)
+	}
+	if output.Results[0].Source == output.Results[1].Source || output.Results[0].Source == "" || output.Results[1].Source == "" {
+		t.Fatalf("batch sources were not preserved: %#v", output.Results)
+	}
+
+	operationCalls.Store(0)
+	denyAPITwo.Store(true)
+	deniedSession := connectTestClient(t, Options{
+		Version: "test", AllowActive: true,
+		AllowedHosts: []string{"specs.test", "api-one.test"}, clientFactory: factory,
+	})
+	denied := callTool(t, deniedSession, "automate_openapi", map[string]any{"brute_reports": reports})
+	if denied.IsError {
+		t.Fatalf("denied result = isError:%v text:%q", denied.IsError, toolText(denied))
+	}
+	var deniedOutput struct {
+		Results  []scanResult      `json:"results"`
+		Failures []automateFailure `json:"failures"`
+	}
+	decodeStructured(t, denied, &deniedOutput)
+	if operationCalls.Load() != 1 || len(deniedOutput.Results) != 1 {
+		t.Fatalf("allowed operation calls=%d results=%#v", operationCalls.Load(), deniedOutput.Results)
+	}
+	if len(deniedOutput.Failures) != 1 || !strings.Contains(deniedOutput.Failures[0].Error, "not allowed") {
+		t.Fatalf("denied failures=%#v", deniedOutput.Failures)
+	}
+}
+
+func TestAutomateToolReportsInvalidSourceAndContinuesPreparedBatch(t *testing.T) {
+	var operationCalls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			operationCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	invalid := `{
+  "openapi":"3.1.0",
+  "info":{"title":"Invalid template","version":"1"},
+  "servers":[{"url":"https://api.example.com"}],
+  "paths":{"/orgs/{oid}/schema/{schema_name+}":{"get":{
+    "parameters":[
+      {"name":"oid","in":"path","required":true,"schema":{"type":"string"}},
+      {"name":"schema_name","in":"path","required":true,"schema":{"type":"string"}}
+    ],
+    "responses":{"200":{"description":"ok"}}
+  }}}
+}`
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{
+			map[string]any{"document": invalid},
+			map[string]any{"document": testOpenAPI},
+		},
+	})
+	if result.IsError {
+		t.Fatalf("automate failed instead of preserving the source failure: %s", toolText(result))
+	}
+	var output struct {
+		Results  []scanResult      `json:"results"`
+		Failures []automateFailure `json:"failures"`
+	}
+	decodeStructured(t, result, &output)
+	if len(output.Results) != 1 || operationCalls.Load() != 1 {
+		t.Fatalf("operationCalls=%d output=%#v", operationCalls.Load(), output)
+	}
+	if len(output.Failures) != 1 || output.Failures[0].Source != "inline specification 1" || !strings.Contains(output.Failures[0].Error, "schema_name") {
+		t.Fatalf("failures = %#v", output.Failures)
+	}
+}
+
+func TestAutomateToolEnforcesBatchWideResultLimitBeforeOperations(t *testing.T) {
+	var operationCalls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			operationCalls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	document := strings.Replace(testOpenAPI, "\n  }\n}", `,
+    "/more": {"get": {"responses": {"200": {"description": "ok"}}}}
+  }
+}`, 1)
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"api.example.com"},
+		MaxResults: 1, clientFactory: factory,
+	})
+	result := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": document}},
+	})
+	if !result.IsError || !strings.Contains(toolText(result), "result limit") {
+		t.Fatalf("result = isError:%v text:%q", result.IsError, toolText(result))
+	}
+	if operationCalls.Load() != 0 {
+		t.Fatalf("automate sent %d operation requests before enforcing the batch result limit", operationCalls.Load())
+	}
+}
+
+func TestBatchToolsInheritSOCKS5BaseConfiguration(t *testing.T) {
+	base := config.New()
+	base.SOCKS5Proxy = "socks5://127.0.0.1:9000"
+	var factoryCalls atomic.Int64
+	var automateProgress atomic.Bool
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		if cfg.SOCKS5Proxy != base.SOCKS5Proxy {
+			t.Fatalf("SOCKS5 proxy = %q, want %q", cfg.SOCKS5Proxy, base.SOCKS5Proxy)
+		}
+		if cfg.Mode == config.ModeAutomate && cfg.ProgressDisplay {
+			automateProgress.Store(true)
+		}
+		factoryCalls.Add(1)
+		client := httpclient.NewClient(config.New())
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			status := http.StatusNotFound
+			body := `{"error":"missing"}`
+			switch request.URL.Path {
+			case "/swagger.json":
+				status = http.StatusOK
+				body = testOpenAPI
+			case "/widgets":
+				status = http.StatusOK
+				body = `{"ok":true}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	session := connectTestClient(t, Options{
+		Config: base, Version: "test", AllowActive: true,
+		AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+	bruteResult := callTool(t, session, "brute_openapi", map[string]any{
+		"targets": []string{"https://api.example.com"},
+	})
+	if bruteResult.IsError {
+		t.Fatalf("brute failed: %s", toolText(bruteResult))
+	}
+	automateResult := callTool(t, session, "automate_openapi", map[string]any{
+		"sources":  []any{map[string]any{"document": testOpenAPI}},
+		"progress": true,
+	})
+	if automateResult.IsError {
+		t.Fatalf("automate failed: %s", toolText(automateResult))
+	}
+	if factoryCalls.Load() < 2 {
+		t.Fatalf("HTTP client factory calls = %d, want at least 2", factoryCalls.Load())
+	}
+	if !automateProgress.Load() {
+		t.Fatal("automate progress setting did not reach the scanner configuration")
 	}
 }
 

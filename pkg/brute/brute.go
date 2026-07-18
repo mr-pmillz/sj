@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/getkin/kin-openapi/openapi2conv"
 	"github.com/getkin/kin-openapi/openapi3"
@@ -25,8 +26,76 @@ type Scanner struct {
 	Cfg    *config.Config
 }
 
+const maxConsecutiveTransportErrors = 3
+
 func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
 	return &Scanner{Client: client, Cfg: cfg}
+}
+
+// RunTargetsContext scans a target batch and returns reports in input order.
+func (s *Scanner) RunTargetsContext(ctx context.Context, targets []string, workers int) ([]Report, error) {
+	if workers < 1 || workers > config.MaxBruteWorkers {
+		return nil, fmt.Errorf("workers must be between 1 and %d", config.MaxBruteWorkers)
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("targets must not be empty")
+	}
+	for _, target := range targets {
+		if _, _, err := normalizeTarget(target, s.Cfg.BasePath); err != nil {
+			return nil, err
+		}
+	}
+	workers = min(workers, len(targets))
+	s.Cfg.BruteWorkers = workers
+	batchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type targetJob struct {
+		index int
+		url   string
+	}
+	jobs := make(chan targetJob)
+	reports := make([]Report, len(targets))
+	var firstErr error
+	var errOnce sync.Once
+	recordError := func(index int, err error) {
+		errOnce.Do(func() {
+			firstErr = fmt.Errorf("scan target %d: %w", index+1, err)
+			cancel()
+		})
+	}
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			for job := range jobs {
+				report, err := s.RunTargetContext(batchCtx, job.url, false)
+				if err != nil {
+					recordError(job.index, err)
+					return
+				}
+				reports[job.index] = report
+			}
+		}()
+	}
+
+dispatchLoop:
+	for index, target := range targets {
+		select {
+		case jobs <- targetJob{index: index, url: target}:
+		case <-batchCtx.Done():
+			break dispatchLoop
+		}
+	}
+	close(jobs)
+	wait.Wait()
+	if firstErr != nil {
+		return reports, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return reports, fmt.Errorf("scan target batch: %w", err)
+	}
+	return reports, nil
 }
 
 func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
@@ -52,7 +121,7 @@ func (s *Scanner) RunTargetContext(ctx context.Context, targetURL string, dumpSp
 	if err != nil {
 		return report, err
 	}
-	if structuredBruteOutput(s.Cfg.BruteOutputFormat) {
+	if structuredBruteOutput(s.Cfg.BruteOutputFormat) || s.Cfg.BruteAllFormats || s.Cfg.BruteWorkers > 1 {
 		return report, nil
 	}
 	if err := s.printConsoleReport(report, matches, dumpSpec); err != nil {
@@ -221,12 +290,13 @@ func writeBytesAtomically(path string, data []byte) error {
 }
 
 type scanState struct {
-	matches        []match
-	interesting    []Interesting
-	summary        Summary
-	tested         map[string]bool
-	found          map[string]bool
-	variationQueue []string
+	matches                    []match
+	interesting                []Interesting
+	summary                    Summary
+	tested                     map[string]bool
+	found                      map[string]bool
+	variationQueue             []string
+	consecutiveTransportErrors int
 }
 
 func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []string) ([]match, []Interesting, Summary, error) {
@@ -234,22 +304,39 @@ func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []strin
 	for _, candidate := range candidates {
 		state.tested[candidate] = true
 	}
+candidateLoop:
 	for index, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return state.matches, state.interesting, state.summary, err
 		}
-		fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", index+1, len(candidates))
+		if s.Cfg.BruteWorkers <= 1 {
+			fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", index+1, len(candidates))
+		}
 		s.processURL(ctx, candidate, state)
+		if err := ctx.Err(); err != nil {
+			return state.matches, state.interesting, state.summary, err
+		}
+		if state.transportErrorLimitReached() {
+			break
+		}
 		for len(state.variationQueue) > 0 {
 			variation := state.variationQueue[0]
 			state.variationQueue = state.variationQueue[1:]
 			s.processURL(ctx, variation, state)
+			if err := ctx.Err(); err != nil {
+				return state.matches, state.interesting, state.summary, err
+			}
+			if state.transportErrorLimitReached() {
+				break candidateLoop
+			}
 		}
 		if len(state.matches) > 0 && index >= len(PriorityURLs) {
 			break
 		}
 	}
-	fmt.Fprint(os.Stderr, "\033[2K\r")
+	if s.Cfg.BruteWorkers <= 1 {
+		fmt.Fprint(os.Stderr, "\033[2K\r")
+	}
 	return state.matches, state.interesting, state.summary, nil
 }
 
@@ -258,8 +345,10 @@ func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanS
 	body, contentType, status := s.Client.BruteFetchContext(ctx, targetURL)
 	if status == 0 {
 		state.summary.Errors++
+		state.consecutiveTransportErrors++
 		return
 	}
+	state.consecutiveTransportErrors = 0
 	countStatus(&state.summary, status)
 	if len(body) == 0 || status < 200 || status >= 300 {
 		return
@@ -286,6 +375,15 @@ func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanS
 	if len(state.interesting) < s.Cfg.MaxCandidates {
 		state.interesting = append(state.interesting, Interesting{URL: targetURL, StatusCode: status, ContentType: contentType})
 	}
+}
+
+func (state *scanState) transportErrorLimitReached() bool {
+	if state.consecutiveTransportErrors < maxConsecutiveTransportErrors {
+		return false
+	}
+	state.summary.TransportErrorLimitReached = true
+	state.variationQueue = nil
+	return true
 }
 
 func looksLikeHTML(body []byte) bool {

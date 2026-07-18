@@ -2,11 +2,14 @@ package brute
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/httpclient"
@@ -60,6 +63,150 @@ func TestRunTargetContextHonorsCancellationBeforeNetworkIO(t *testing.T) {
 	}
 	if report.Summary.URLsTested != 0 {
 		t.Fatalf("canceled scan tested %d URLs", report.Summary.URLsTested)
+	}
+}
+
+func TestRunTargetContextStopsAfterConsecutiveTransportFailures(t *testing.T) {
+	cfg := config.New()
+	client := httpclient.NewClient(cfg)
+	calls := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("target unreachable")
+	})
+	report, err := NewScanner(client, cfg).RunTargetContext(t.Context(), "https://api.example", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != maxConsecutiveTransportErrors {
+		t.Fatalf("transport calls = %d, want %d", calls, maxConsecutiveTransportErrors)
+	}
+	if report.Summary.Errors != maxConsecutiveTransportErrors || !report.Summary.TransportErrorLimitReached {
+		t.Fatalf("summary = %#v", report.Summary)
+	}
+}
+
+func TestRunTargetContextResetsTransportFailureLimitAfterResponse(t *testing.T) {
+	cfg := config.New()
+	client := httpclient.NewClient(cfg)
+	calls := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 3 {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"missing"}`)),
+				Request:    request,
+			}, nil
+		}
+		if calls == 6 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"openapi":"3.1.0","info":{"title":"Found","version":"1"},"paths":{}}`)),
+				Request:    request,
+			}, nil
+		}
+		if calls < 6 {
+			return nil, errors.New("temporary transport failure")
+		}
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"missing"}`)),
+			Request:    request,
+		}, nil
+	})
+	report, err := NewScanner(client, cfg).RunTargetContext(t.Context(), "https://api.example", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TransportErrorLimitReached {
+		t.Fatalf("transport failure limit was not reset: %#v", report.Summary)
+	}
+	if len(report.SpecsFound) != 1 || calls < 6 {
+		t.Fatalf("calls=%d specs=%#v", calls, report.SpecsFound)
+	}
+}
+
+func TestRunTargetsContextUsesWorkersAndPreservesInputOrder(t *testing.T) {
+	cfg := config.New()
+	client := httpclient.NewClient(cfg)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	seen := make(map[string]bool)
+	var seenMu sync.Mutex
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		seenMu.Lock()
+		first := !seen[request.URL.Host]
+		seen[request.URL.Host] = true
+		seenMu.Unlock()
+		status := http.StatusNotFound
+		body := `{"error":"missing"}`
+		if first {
+			started <- request.URL.Host
+			<-release
+			status = http.StatusOK
+			body = `{"openapi":"3.1.0","info":{"title":"Concurrent","version":"1"},"paths":{}}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})
+
+	targets := []string{"https://one.test", "https://two.test"}
+	type outcome struct {
+		reports []Report
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		reports, err := NewScanner(client, cfg).RunTargetsContext(t.Context(), targets, 2)
+		done <- outcome{reports: reports, err: err}
+	}()
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			result := <-done
+			t.Fatalf("two targets did not start concurrently: %v", result.err)
+		}
+	}
+	close(release)
+	result := <-done
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.reports) != len(targets) {
+		t.Fatalf("reports = %d, want %d", len(result.reports), len(targets))
+	}
+	for index, report := range result.reports {
+		if report.Target != targets[index] {
+			t.Fatalf("report %d target = %q, want %q", index, report.Target, targets[index])
+		}
+	}
+}
+
+func TestRunTargetsContextPreflightsCompleteBatchBeforeRequests(t *testing.T) {
+	cfg := config.New()
+	client := httpclient.NewClient(cfg)
+	calls := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected request")
+	})
+	_, err := NewScanner(client, cfg).RunTargetsContext(t.Context(), []string{"https://valid.test", "not-a-url"}, 2)
+	if err == nil {
+		t.Fatal("invalid target batch was accepted")
+	}
+	if calls != 0 {
+		t.Fatalf("sent %d requests before rejecting the complete target batch", calls)
 	}
 }
 
