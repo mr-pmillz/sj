@@ -216,148 +216,206 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 	}
 	report := Report{StartedAt: time.Now().UTC(), Probes: []ProbeResult{}, Findings: []Finding{}}
 	report.Summary.Operations = len(operations)
-	plans := make([]plannedProbe, 0, min(options.MaxRequests, len(operations)*4))
-	for _, operation := range operations {
-		if stateChanging(operation.Method) && !options.AcceptRisk {
-			report.Summary.SkippedUnsafe++
-			continue
-		}
-		if len(operation.RequestBody) > maximumBaselineRequestBytes {
-			return Report{}, fmt.Errorf("baseline body for %s %s exceeds the %d-byte safe replay ceiling", operation.Method, operation.URL, maximumBaselineRequestBytes)
-		}
-		if len(operation.URL) > 8*1024 {
-			return Report{}, fmt.Errorf("operation URL for %s exceeds the 8192-byte request limit", operation.Method)
-		}
-		cases := []apitest.Mutation{{Name: "baseline", Category: "baseline", URL: operation.URL, Body: []byte(operation.RequestBody)}}
-		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{
-			KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
-		})
-		if mutationErr != nil {
-			return Report{}, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, mutationErr)
-		}
-		hasIDORMutations := false
-		for _, mutation := range mutations {
-			if isIDORMutationCategory(mutation.Category) {
-				hasIDORMutations = true
-				break
-			}
-		}
-		cases = append(cases, mutations...)
-		for _, testCase := range cases {
-			for _, identity := range identities {
-				if len(plans) >= options.MaxRequests {
-					report.Summary.RequestBudgetHit = true
-					break
-				}
-				planned := plannedProbe{
-					method: strings.ToUpper(operation.Method), targetURL: testCase.URL, baselineURL: operation.URL,
-					body:        append([]byte(nil), testCase.Body...),
-					contentType: operation.ContentType, caseName: testCase.Name, category: testCase.Category, identity: identity,
-				}
-				planned.idorBaselineKey = idorBaselineKey(planned)
-				planned.qualifiesIDORBaseline = testCase.Category == "baseline" && hasIDORMutations
-				planned.requiresValidIDORBaseline = isIDORMutationCategory(testCase.Category)
-				planned.guidedRoot = plannedProbeFingerprint(planned)
-				plans = append(plans, planned)
-			}
-			if report.Summary.RequestBudgetHit {
-				break
-			}
-		}
-		if report.Summary.RequestBudgetHit {
-			break
-		}
+	plans, err := buildProbePlans(operations, identities, options, &report.Summary)
+	if err != nil {
+		return Report{}, err
 	}
-	seenPlans := make(map[string]struct{}, len(plans))
-	for _, plan := range plans {
-		seenPlans[plannedProbeFingerprint(plan)] = struct{}{}
-	}
-	unresolvedRoots := make(map[string]struct{})
-	idorBaselineStates := make(map[string]bool)
-	publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, false)
-	for index := 0; index < len(plans); index++ {
-		plan := plans[index]
-		if plan.requiresValidIDORBaseline && !idorBaselineStates[plan.idorBaselineKey] {
-			report.Summary.SkippedInvalidIDOR++
-			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
-			continue
-		}
-		if report.Summary.Requests > 0 {
-			if err := wait(ctx, options.Delay); err != nil {
-				publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, true)
-				return report, fmt.Errorf("fuzz request pacing canceled: %w", err)
-			}
-		}
-		probe, responseBody := executeProbe(ctx, client, plan, options)
-		report.Probes = append(report.Probes, probe)
-		updateSummary(&report.Summary, probe)
-		if plan.qualifiesIDORBaseline {
-			qualified := qualifiesAsIDORBaseline(probe)
-			idorBaselineStates[plan.idorBaselineKey] = qualified
-			if qualified {
-				report.Summary.QualifiedIDORBaselines++
-			} else {
-				report.Summary.RejectedIDORBaselines++
-			}
-		}
-		if plan.guidedDepth > 0 {
-			report.Summary.GuidedRetries++
-			if plan.guidedFromFailure && responseIsSuccessfulData(probe, responseBody) {
-				report.Summary.GuidedSuccesses++
-				report.Findings = append(report.Findings, Finding{
-					Severity: "informational", Category: "response_guided_success", Title: "Response-guided repair produced a successful data response",
-					Method: probe.Method, URL: probe.URL,
-					Evidence: fmt.Sprintf("case=%s identity=%s status=%d repair=%s; response values omitted", probe.Case, probe.Identity, probe.Status, plan.guidedCause),
-					OWASP:    []string{"API8:2023"},
-				})
-			}
-		}
-		if shouldStopForRateLimit(probe) {
-			report.Summary.RateLimited = true
-			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
-			break
-		}
-		if options.ResponseGuided && plan.guidedDepth < options.MaxGuidedRetries {
-			retry, decision := guidedRetry(plan, probe, responseBody)
-			if decision.Hinted {
-				if report.Probes[len(report.Probes)-1].Guidance == "" {
-					report.Probes[len(report.Probes)-1].Guidance = decision.Reason
-				} else {
-					report.Probes[len(report.Probes)-1].Guidance += "; response analysis: " + decision.Reason
-				}
-			}
-			if decision.RepairAvailable {
-				retry.guidedRoot = plan.guidedRoot
-				retry.guidedFromFailure = responseIsApplicationFailure(probe, responseBody)
-				retry.qualifiesIDORBaseline = false
-				fingerprint := plannedProbeFingerprint(retry)
-				_, duplicate := seenPlans[fingerprint]
-				if !duplicate && len(plans) < options.MaxRequests {
-					seenPlans[fingerprint] = struct{}{}
-					plans = append(plans, retry)
-				} else if !duplicate {
-					report.Summary.RequestBudgetHit = true
-				}
-			} else if decision.Unresolved {
-				if _, exists := unresolvedRoots[plan.guidedRoot]; !exists {
-					unresolvedRoots[plan.guidedRoot] = struct{}{}
-					report.Summary.UnresolvedHints++
-				}
-			}
-		}
-		publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, &plan, false)
+	state := newProbeRunState(plans)
+	if err := executeProbePlans(ctx, client, &report, state, options, wait); err != nil {
+		return report, err
 	}
 	if !report.Summary.RateLimited && len(options.Workflows) > 0 {
 		if err := executeWorkflows(ctx, client, &report, identities, options, wait); err != nil {
-			publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, true)
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true)
 			return report, err
 		}
 	}
 	workflowFindings := append([]Finding(nil), report.Findings...)
 	report.Findings = append(analyzeProbeFindings(report.Probes), workflowFindings...)
 	report.CompletedAt = time.Now().UTC()
-	publishRunProgress(options.Progress, report.Summary, len(plans), options.MaxRequests, nil, true)
+	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true)
 	return report, nil
+}
+
+func buildProbePlans(operations []pentestreport.Operation, identities []Identity, options Options, summary *Summary) ([]plannedProbe, error) {
+	plans := make([]plannedProbe, 0, min(options.MaxRequests, len(operations)*4))
+	for _, operation := range operations {
+		if stateChanging(operation.Method) && !options.AcceptRisk {
+			summary.SkippedUnsafe++
+			continue
+		}
+		operationPlans, truncated, err := planOperationProbes(operation, identities, options, options.MaxRequests-len(plans))
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, operationPlans...)
+		if truncated {
+			summary.RequestBudgetHit = true
+			return plans, nil
+		}
+	}
+	return plans, nil
+}
+
+func planOperationProbes(operation pentestreport.Operation, identities []Identity, options Options, limit int) ([]plannedProbe, bool, error) {
+	if len(operation.RequestBody) > maximumBaselineRequestBytes {
+		return nil, false, fmt.Errorf("baseline body for %s %s exceeds the %d-byte safe replay ceiling", operation.Method, operation.URL, maximumBaselineRequestBytes)
+	}
+	if len(operation.URL) > 8*1024 {
+		return nil, false, fmt.Errorf("operation URL for %s exceeds the 8192-byte request limit", operation.Method)
+	}
+	mutations, err := apitest.Mutations(operation, apitest.MutationOptions{
+		KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, err)
+	}
+	hasIDORMutations := false
+	for _, mutation := range mutations {
+		if isIDORMutationCategory(mutation.Category) {
+			hasIDORMutations = true
+			break
+		}
+	}
+	cases := append([]apitest.Mutation{{Name: "baseline", Category: "baseline", URL: operation.URL, Body: []byte(operation.RequestBody)}}, mutations...)
+	plans := make([]plannedProbe, 0, min(limit, len(cases)*len(identities)))
+	for _, testCase := range cases {
+		for _, identity := range identities {
+			if len(plans) >= limit {
+				return plans, true, nil
+			}
+			plan := plannedProbe{
+				method: strings.ToUpper(operation.Method), targetURL: testCase.URL, baselineURL: operation.URL,
+				body:        append([]byte(nil), testCase.Body...),
+				contentType: operation.ContentType, caseName: testCase.Name, category: testCase.Category, identity: identity,
+			}
+			plan.idorBaselineKey = idorBaselineKey(plan)
+			plan.qualifiesIDORBaseline = testCase.Category == "baseline" && hasIDORMutations
+			plan.requiresValidIDORBaseline = isIDORMutationCategory(testCase.Category)
+			plan.guidedRoot = plannedProbeFingerprint(plan)
+			plans = append(plans, plan)
+		}
+	}
+	return plans, false, nil
+}
+
+type probeRunState struct {
+	plans              []plannedProbe
+	seenPlans          map[string]struct{}
+	unresolvedRoots    map[string]struct{}
+	idorBaselineStates map[string]bool
+}
+
+func newProbeRunState(plans []plannedProbe) *probeRunState {
+	state := &probeRunState{
+		plans: plans, seenPlans: make(map[string]struct{}, len(plans)),
+		unresolvedRoots: make(map[string]struct{}), idorBaselineStates: make(map[string]bool),
+	}
+	for _, plan := range plans {
+		state.seenPlans[plannedProbeFingerprint(plan)] = struct{}{}
+	}
+	return state
+}
+
+func executeProbePlans(ctx context.Context, client *http.Client, report *Report, state *probeRunState, options Options, wait waitFunc) error {
+	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, false)
+	for index := 0; index < len(state.plans); index++ {
+		plan := state.plans[index]
+		if plan.requiresValidIDORBaseline && !state.idorBaselineStates[plan.idorBaselineKey] {
+			report.Summary.SkippedInvalidIDOR++
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+			continue
+		}
+		if report.Summary.Requests > 0 {
+			if err := wait(ctx, options.Delay); err != nil {
+				publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, true)
+				return fmt.Errorf("fuzz request pacing canceled: %w", err)
+			}
+		}
+		stop := executePlannedProbe(ctx, client, report, state, plan, options)
+		publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+		if stop {
+			break
+		}
+	}
+	return nil
+}
+
+func executePlannedProbe(ctx context.Context, client *http.Client, report *Report, state *probeRunState, plan plannedProbe, options Options) bool {
+	probe, responseBody := executeProbe(ctx, client, plan, options)
+	report.Probes = append(report.Probes, probe)
+	updateSummary(&report.Summary, probe)
+	recordIDORBaseline(report, state, plan, probe)
+	recordGuidedResult(report, plan, probe, responseBody)
+	if shouldStopForRateLimit(probe) {
+		report.Summary.RateLimited = true
+		return true
+	}
+	if options.ResponseGuided && plan.guidedDepth < options.MaxGuidedRetries {
+		scheduleGuidedRetry(report, state, plan, probe, responseBody, options.MaxRequests)
+	}
+	return false
+}
+
+func recordIDORBaseline(report *Report, state *probeRunState, plan plannedProbe, probe ProbeResult) {
+	if !plan.qualifiesIDORBaseline {
+		return
+	}
+	qualified := qualifiesAsIDORBaseline(probe)
+	state.idorBaselineStates[plan.idorBaselineKey] = qualified
+	if qualified {
+		report.Summary.QualifiedIDORBaselines++
+	} else {
+		report.Summary.RejectedIDORBaselines++
+	}
+}
+
+func recordGuidedResult(report *Report, plan plannedProbe, probe ProbeResult, responseBody []byte) {
+	if plan.guidedDepth == 0 {
+		return
+	}
+	report.Summary.GuidedRetries++
+	if plan.guidedFromFailure && responseIsSuccessfulData(probe, responseBody) {
+		report.Summary.GuidedSuccesses++
+		report.Findings = append(report.Findings, Finding{
+			Severity: "informational", Category: "response_guided_success", Title: "Response-guided repair produced a successful data response",
+			Method: probe.Method, URL: probe.URL,
+			Evidence: fmt.Sprintf("case=%s identity=%s status=%d repair=%s; response values omitted", probe.Case, probe.Identity, probe.Status, plan.guidedCause),
+			OWASP:    []string{"API8:2023"},
+		})
+	}
+}
+
+func scheduleGuidedRetry(report *Report, state *probeRunState, plan plannedProbe, probe ProbeResult, responseBody []byte, maxRequests int) {
+	retry, decision := guidedRetry(plan, probe, responseBody)
+	if decision.Hinted {
+		guidance := &report.Probes[len(report.Probes)-1].Guidance
+		if *guidance == "" {
+			*guidance = decision.Reason
+		} else {
+			*guidance += "; response analysis: " + decision.Reason
+		}
+	}
+	if decision.RepairAvailable {
+		retry.guidedRoot = plan.guidedRoot
+		retry.guidedFromFailure = responseIsApplicationFailure(probe, responseBody)
+		retry.qualifiesIDORBaseline = false
+		fingerprint := plannedProbeFingerprint(retry)
+		_, duplicate := state.seenPlans[fingerprint]
+		if !duplicate && len(state.plans) < maxRequests {
+			state.seenPlans[fingerprint] = struct{}{}
+			state.plans = append(state.plans, retry)
+		} else if !duplicate {
+			report.Summary.RequestBudgetHit = true
+		}
+		return
+	}
+	if decision.Unresolved {
+		if _, exists := state.unresolvedRoots[plan.guidedRoot]; !exists {
+			state.unresolvedRoots[plan.guidedRoot] = struct{}{}
+			report.Summary.UnresolvedHints++
+		}
+	}
 }
 
 func normalizeOptions(options *Options) error {

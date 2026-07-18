@@ -66,11 +66,12 @@ func runBrute(ctx context.Context, cfg *config.Config) error {
 		return resultRun.finish(err)
 	}
 	var outputErr error
-	if cfg.BruteAllFormats {
+	switch {
+	case cfg.BruteAllFormats:
 		outputErr = brute.OutputAllFormats(allReports, cfg.Outfile)
-	} else if ofmt != "console" && ofmt != "" {
+	case ofmt != "console" && ofmt != "":
 		outputErr = brute.OutputBruteFormat(allReports, ofmt, cfg.Outfile)
-	} else if isBatch {
+	case isBatch:
 		brute.PrintBatchSummary(allReports)
 	}
 	return resultRun.finish(outputErr)

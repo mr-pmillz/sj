@@ -303,6 +303,44 @@ func TestRunReportsIncompleteRequestBudget(t *testing.T) {
 	}
 }
 
+func TestRunHonorsRequestBudgetAtAndAboveBoundary(t *testing.T) {
+	t.Run("exact budget is complete", func(t *testing.T) {
+		var calls atomic.Int32
+		client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return fuzzResponse(request, http.StatusOK, `{"status":"complete"}`)
+		})}
+		report, err := run(t.Context(), client, []pentestreport.Operation{{
+			Method: http.MethodGet, URL: "https://api.example/search", Target: "/search",
+			RequestBody: strings.Repeat("x", apitest.MaximumPayloadBytes+1),
+		}}, Options{MaxRequests: 1, Delay: minimumRequestDelay}, noWait)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 1 || report.Summary.Requests != 1 || report.Summary.RequestBudgetHit {
+			t.Fatalf("calls=%d summary=%#v", calls.Load(), report.Summary)
+		}
+	})
+
+	t.Run("exceeded budget never sends beyond limit", func(t *testing.T) {
+		var calls atomic.Int32
+		client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return fuzzResponse(request, http.StatusOK, `{"status":"complete"}`)
+		})}
+		report, err := run(t.Context(), client, []pentestreport.Operation{
+			{Method: http.MethodGet, URL: "https://api.example/a", Target: "/a"},
+			{Method: http.MethodGet, URL: "https://api.example/b", Target: "/b"},
+		}, Options{MaxRequests: 3, Delay: minimumRequestDelay}, noWait)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 3 || report.Summary.Requests != 3 || !report.Summary.RequestBudgetHit {
+			t.Fatalf("calls=%d summary=%#v", calls.Load(), report.Summary)
+		}
+	})
+}
+
 func TestPlanReportsRequiredRequestsBeforeNetworkExecution(t *testing.T) {
 	idRange := apitest.NumericRange{Start: 1, End: 3}
 	operations := []pentestreport.Operation{
