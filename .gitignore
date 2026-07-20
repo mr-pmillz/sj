@@ -36,6 +36,11 @@ Thumbs.db
 *.json
 targets/
 
+# Docs
+!docs/package.json
+!docs/package-lock.json
+!docs/tsconfig.json
+
 # MCP config (contains API keys)
 mcp.json
 .mcp.json
