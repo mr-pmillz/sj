@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.4](https://github.com/mr-pmillz/sj/compare/v2.7.3...v2.7.4) - 2026-07-20
+
+### ⚙️ Miscellaneous Tasks
+
+- Ci: create verified changelog commits - ([cc94e00](https://github.com/mr-pmillz/sj/commit/cc94e00f7b8576d71b39e52aa5175bca8df4a135))
+- Ci: create verified changelog commits - ([6d52d4c](https://github.com/mr-pmillz/sj/commit/6d52d4ce64a7862024e3ed2b48d721dcf0cd59e8))
+- Build changelog commits through GitHub's Git data API using the existing App installation token. Verify the returned signature before advancing the release or hotfix branch, and use a non-forced ref update so concurrent changes are never overwritten. - ([6d52d4c](https://github.com/mr-pmillz/sj/commit/6d52d4ce64a7862024e3ed2b48d721dcf0cd59e8))
+- Reduce the default workflow token to read-only access, remove obsolete local Git identity setup, and update the loop guard for App-authenticated pushes. - ([6d52d4c](https://github.com/mr-pmillz/sj/commit/6d52d4ce64a7862024e3ed2b48d721dcf0cd59e8))
+
 ## [2.7.3](https://github.com/mr-pmillz/sj/compare/v2.7.2...v2.7.3) - 2026-07-20
 
 ### ✨ New features
@@ -12,6 +21,10 @@ All notable changes to this project will be documented [here](https://github.com
 
 - Fix favicon - ([6452b26](https://github.com/mr-pmillz/sj/commit/6452b2690c8a2f30a86712fc60abdd01237111b9))
 - Fixed URI for getting-started in docs - ([2a72fac](https://github.com/mr-pmillz/sj/commit/2a72fac697c1a78c0fefe42d6c331502e7566939))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([a233e62](https://github.com/mr-pmillz/sj/commit/a233e62cf13fe136e923ac7e5e281482f5fdfbc2))
 
 ## [2.7.2](https://github.com/mr-pmillz/sj/compare/v2.7.1...v2.7.2) - 2026-07-20
 
