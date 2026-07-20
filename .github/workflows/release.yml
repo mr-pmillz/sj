@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+  artifact-metadata: write
+
+jobs:
+  # ================
+  # RELEASE JOB
+  #   runs after a successful build
+  #   only runs on push "*" tag
+  # ================
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+        with:
+          fetch-depth: 0
+
+      # Setup Go
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # ratchet:actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set GOPATH
+        run: |
+          echo "GOPATH=$(go env GOPATH)/bin" >> $GITHUB_ENV
+
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # ratchet:actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.SJ_APP_ID }}
+          private-key: ${{ secrets.SJ_APP_PRIVATE_KEY }}
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # ratchet:orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: -r . --latest
+        env:
+          OUTPUT: RELEASE_CHANGELOG.md
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # ratchet:docker/setup-buildx-action@v4.2.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # ratchet:docker/login-action@v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # ratchet:goreleaser/goreleaser-action@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean --release-notes RELEASE_CHANGELOG.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+
+      # After GoReleaser runs, attest all the files in ./dist/checksums.txt:
+      # See https://docs.docker.com/build/metadata/attestations/
+      - name: Attest Build Provenance for Archives
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # ratchet:actions/attest@v4
+        with:
+          subject-checksums: ./dist/checksums.txt
+      # After GoReleaser runs, attest all the images in ./dist/digests.txt:
+      - name: Attest Build Provenance for Docker Images
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # ratchet:actions/attest@v4
+        with:
+          subject-checksums: ./dist/digests.txt
+
+      - name: Upload assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        with:
+          name: casm-cli
+          path: dist/*

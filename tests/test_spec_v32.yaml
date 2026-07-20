@@ -1,0 +1,63 @@
+openapi: 3.2.0
+$self: https://docs.example.test/openapi.yaml
+info:
+  title: OpenAPI 3.2 Test API
+  version: 1.0.0
+servers:
+  - url: https://{region}.api.example.test/v2
+    variables:
+      region:
+        default: us
+        enum: [us, eu]
+security:
+  - bearer: []
+paths:
+  /items/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        style: matrix
+        schema:
+          type: string
+          example: item-1
+    get:
+      operationId: getItem
+      responses:
+        "200":
+          description: Found
+    additionalOperations:
+      COPY:
+        operationId: copyItem
+        responses:
+          "204":
+            description: Copied
+  /search:
+    query:
+      operationId: queryItems
+      parameters:
+        - name: complete-query
+          in: querystring
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  term:
+                    type: string
+                    const: hardened
+      responses:
+        "200":
+          description: Results
+webhooks:
+  itemChanged:
+    post:
+      operationId: itemChanged
+      responses:
+        "204":
+          description: Accepted
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer

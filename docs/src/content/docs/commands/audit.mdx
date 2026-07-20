@@ -1,0 +1,37 @@
+---
+title: audit
+description: Passively audit an API contract for security and correctness risks.
+---
+
+The `audit` command analyzes a Swagger/OpenAPI document without calling its documented API operations. It checks effective security requirements, risky schemes, plaintext servers, operation metadata, path parameters, callbacks, webhooks, and OpenAPI 3.2 surfaces.
+
+## Usage
+
+```bash
+sj audit -u <URL> [flags]
+sj audit -l <FILE> [flags]
+```
+
+## Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--output-format` | `-F` | `console` | Report as `console`, `json`, or `sarif`. |
+| `--fail-on` | | `none` | Exit nonzero for findings at or above `high`, `medium`, `low`, or `info`. |
+
+Use the [global flags](/commands/global-flags/) for input, size limits, and output files.
+
+## Examples
+
+```bash
+# Human-readable local review
+sj audit -l ./openapi.yaml -f yaml
+
+# CI policy gate
+sj audit -l ./openapi.yaml -f yaml --fail-on high
+
+# Code-scanning artifact
+sj audit -u https://api.example/openapi.json -F sarif -o sj.sarif
+```
+
+An empty Security Requirement object is treated as an anonymous alternative, while multiple schemes in one requirement are treated as an AND condition. Alternatives in the security array are treated as OR conditions, matching OpenAPI semantics.

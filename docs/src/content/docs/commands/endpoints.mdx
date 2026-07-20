@@ -1,0 +1,57 @@
+---
+title: endpoints
+description: Extract and print raw API endpoint paths from a definition file.
+---
+
+The `endpoints` command extracts a plain list of API endpoint paths from a Swagger/OpenAPI definition file. The output contains raw paths without parameter substitution, making it ideal for use with other tools and scripts.
+
+## Usage
+
+```bash
+sj endpoints -u <URL> [flags]
+sj endpoints -l <FILE> [flags]
+```
+
+## Flags
+
+This command uses only the [global flags](/commands/global-flags/). The key flags for `endpoints` are:
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--url` | `-u` | URL of the definition file. |
+| `--local-file` | `-l` | Path to a local definition file. |
+| `--outfile` | `-o` | Write the endpoint list to a file. |
+| `--target` | `-T` | Override the target host in the output. |
+
+## Examples
+
+### List endpoints from a URL
+
+```bash
+sj endpoints -u https://petstore.swagger.io/v2/swagger.json
+```
+
+### From a local file
+
+```bash
+sj endpoints -l ./swagger.json
+```
+
+### Save to a file
+
+```bash
+sj endpoints -u https://petstore.swagger.io/v2/swagger.json -o endpoints.txt
+```
+
+### Pipe into other tools
+
+```bash
+sj endpoints -u https://target.example.com/swagger.json | sort -u > unique-endpoints.txt
+```
+
+## Use Cases
+
+- Feeding endpoint paths into directory brute-force tools
+- Creating target lists for custom scanning scripts
+- Comparing endpoints across different versions of an API
+- Generating scope documentation for a penetration test

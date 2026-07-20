@@ -1,0 +1,4 @@
+interface:
+  display_name: "sj Full API Workflow"
+  short_description: "Run authorized API recon through reporting"
+  default_prompt: "Use $sj-full-api-workflow to run an authorized, SOCKS5-routed API assessment from recon through reporting."

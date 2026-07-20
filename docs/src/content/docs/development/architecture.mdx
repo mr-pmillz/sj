@@ -1,0 +1,120 @@
+---
+title: Architecture
+description: Package layout and design of the sj codebase.
+---
+
+This page describes the high-level structure of the `sj` codebase to help contributors orient themselves quickly.
+
+## Repository Layout
+
+```text
+sj/
+├── cmd/sj/
+│   └── main.go              # Entrypoint — calls internal/cli.Execute()
+├── internal/
+│   └── cli/
+│       ├── root.go           # Root cobra command, persistent flags
+│       ├── audit.go          # Passive audit subcommand
+│       ├── automate.go       # automate subcommand
+│       ├── brute.go          # brute subcommand
+│       ├── convert.go        # convert subcommand
+│       ├── endpoints.go      # endpoints subcommand
+│       ├── mcp.go            # MCP stdio server subcommand
+│       ├── prepare.go        # prepare subcommand
+│       └── spec.go           # Shared spec-loading helper
+├── pkg/
+│   ├── brute/                # Brute-force scanner logic
+│   ├── audit/                # Passive security and contract analysis
+│   ├── config/               # Config struct and mode constants
+│   ├── httpclient/           # HTTP client wrapper (proxy, TLS, User-Agent)
+│   ├── mcpserver/            # Typed MCP handlers and security policy
+│   ├── openapi/              # OpenAPI/Swagger parsing, conversion, resolution
+│   ├── output/               # Colored console output, structured writers
+│   ├── scanner/              # Request generation and endpoint scanning
+│   └── specsource/           # Shared bounded source loading
+├── version.go                # Version, commit, and build-date variables
+├── Makefile                  # Build, test, lint, and install targets
+├── Dockerfile                # Multi-arch container image
+└── docs/                     # This Starlight documentation site
+```
+
+## Key Packages
+
+### `internal/cli`
+
+Defines the Cobra command tree. Each file registers one subcommand and its flags. The root command (`root.go`) defines all persistent (global) flags and initializes the shared `config.Config` struct.
+
+### `pkg/config`
+
+Holds the `Config` struct that carries all flag values and runtime state. Mode constants (`ModeAutomate`, `ModeBrute`, `ModePrepare`, etc.) control which code path is taken in the scanner.
+
+### `pkg/httpclient`
+
+Wraps the standard `net/http` client with explicit proxy configuration, TLS 1.2 minimums, redirect control, body limits, random User-Agent selection, custom headers, and timeouts.
+
+### `pkg/openapi`
+
+Parses Swagger 2.0 and OpenAPI 3.0–3.2 definition files. Handles confined local `$ref` resolution, v2-to-v3 conversion, modern JSON Schema examples, and endpoint metadata.
+
+### `pkg/mcpserver`
+
+Registers typed tools using the official MCP Go SDK. It applies host allowlists, local-file and active-request gates, output limits, context cancellation, and structured tool errors before calling the same audit, scanner, brute-force, and conversion packages used by the CLI.
+
+### `pkg/specsource`
+
+Loads remote and local specifications with the configured size, timeout, redirect, proxy, and confined-reference policies. Both Cobra commands and MCP tools use this package.
+
+### `pkg/audit`
+
+Performs deterministic, network-free checks of security requirements, schemes, servers, operation metadata, path parameters, callbacks, and webhooks. It renders console, JSON, and SARIF reports.
+
+### `pkg/scanner`
+
+The core request-generation engine. Given a parsed spec and a config, it builds requests for each endpoint, fills parameter placeholders with test values, sends the requests (in `automate` mode), and formats the output.
+
+### `pkg/brute`
+
+Implements the brute-force discovery logic. Maintains a built-in list of common Swagger/OpenAPI paths and supports custom wordlists. Handles batch scanning and report generation.
+
+### `pkg/output`
+
+Provides colored console output helpers (`PrintInfo`, `PrintErr`, `Die`) and structured output writers for JSON, JSONL, and CSV formats.
+
+## Data Flow
+
+```text
+CLI flags → config.Config
+                │
+                ▼
+        specsource.Load (URL or file)
+                │
+                ▼
+        openapi.Parse / Validate / Resolve
+                │
+                ▼
+        scanner.GenerateRequests
+                │
+                ├── audit: analyze the contract without endpoint requests
+                ├── automate: send approved requests, collect status codes
+                ├── prepare: generate curl commands
+                └── endpoints: print raw paths
+                │
+                ▼
+        output.Writer (console / json / jsonl / csv)
+```
+
+## Build System
+
+The `Makefile` provides the standard targets:
+
+| Target | Description |
+|--------|-------------|
+| `make build` | Compile to `bin/sj` with version info via ldflags |
+| `make install` | Install to `$GOPATH/bin` |
+| `make test` | Run all tests with coverage |
+| `make test-race` | Run tests with the race detector |
+| `make test-coverage` | Generate an HTML coverage report |
+| `make lint` | Run `golangci-lint` |
+| `make fmt` | Format with `gofmt` and `goimports` |
+| `make vet` | Run `go vet` |
+| `make tidy` | Run `go mod tidy` |

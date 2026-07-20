@@ -1,0 +1,50 @@
+---
+title: convert
+description: Convert a Swagger v2 definition file to OpenAPI v3.
+---
+
+The `convert` command converts a Swagger (v2) definition file to the OpenAPI (v3) specification and writes the output to a file. This is useful when you need to work with tools that only support OpenAPI v3.
+
+## Usage
+
+```bash
+sj convert -u <URL> -o <OUTPUT_FILE> [flags]
+sj convert -l <FILE> -o <OUTPUT_FILE> [flags]
+```
+
+## Flags
+
+This command uses only the [global flags](/commands/global-flags/). The key flags for `convert` are:
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--url` | `-u` | URL of the Swagger v2 definition file. |
+| `--local-file` | `-l` | Path to a local Swagger v2 definition file. |
+| `--outfile` | `-o` | Path to write the converted OpenAPI v3 file. |
+| `--format` | `-f` | Format of the input file (`json`, `yaml`, `yml`, `js`). |
+
+## Examples
+
+### Convert from URL
+
+```bash
+sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
+```
+
+### Convert a local file
+
+```bash
+sj convert -l ./swagger.json -o openapi.json
+```
+
+### Convert a YAML definition
+
+```bash
+sj convert -l ./swagger.yaml -f yaml -o openapi.json
+```
+
+## How It Works
+
+1. The Swagger v2 definition file is loaded from the URL or local path.
+2. The specification is parsed and transformed to OpenAPI v3 format.
+3. The converted specification is written to the output file.

@@ -1,0 +1,92 @@
+---
+title: brute
+description: Discover hidden Swagger/OpenAPI definition files by brute-forcing common paths.
+---
+
+The `brute` command sends requests to a target host to discover Swagger/OpenAPI definition files at commonly used paths. This is useful when you suspect a target exposes an API but do not know where the definition file is located.
+
+## Usage
+
+```bash
+sj brute -u <URL> [flags]
+sj brute -U <FILE> [flags]
+```
+
+## Flags
+
+In addition to the [global flags](/commands/global-flags/), `brute` accepts:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--wordlist` | `-w` | *(built-in)* | Path to a custom wordlist of paths to brute-force. |
+| `--endpoint-only` | `-e` | `false` | Only print the discovered endpoint path (no extra output). |
+| `--output-format` | `-F` | `console` | Output format: `console`, `json`, `jsonl`, `csv`, or `txt`. |
+| `--output-all-formats` | `-O` | `false` | Write JSON, JSONL, CSV, and TXT outputs. Requires `-o`. |
+| `--url-file` | `-U` | | File containing a list of target URLs to brute-force (one per line). |
+| `--max-candidates` | | `10000` | Bound generated URLs or batch targets. |
+
+## Examples
+
+### Basic brute-force
+
+```bash
+sj brute -u https://target.example.com
+```
+
+### With a custom wordlist
+
+```bash
+sj brute -u https://target.example.com -w /path/to/wordlist.txt
+```
+
+### Endpoint-only output
+
+```bash
+sj brute -u https://target.example.com -e
+```
+
+### Batch mode with a URL file
+
+```bash
+sj brute -U urls.txt
+```
+
+Where `urls.txt` contains one target URL per line:
+
+```text
+https://target1.example.com
+https://target2.example.com
+https://target3.example.com
+```
+
+### JSON output
+
+```bash
+sj brute -u https://target.example.com -F json -o brute-results.json
+```
+
+### Through a proxy
+
+```bash
+sj brute -u https://target.example.com -p http://127.0.0.1:8080
+```
+
+## How It Works
+
+1. A list of common Swagger/OpenAPI paths is loaded (from the built-in list or a custom wordlist).
+2. Each path is appended to the target URL and a request is sent.
+3. Bounded responses are content-sniffed to find Swagger 2.0 or OpenAPI 3.x documents even when the server labels them incorrectly.
+4. Discovered definition files are reported.
+5. In batch mode (`-U`), a summary is printed after all targets are processed.
+
+:::tip
+Combine `brute` with `automate` for a complete workflow. JSON and JSONL discovery output can be passed directly to `automate`, including reports from batch brute-force runs.
+
+```bash
+# Step 1: Discover definition files
+sj brute -U targets.txt -F json -o discovered.json
+
+# Step 2: Scan every discovered specification
+sj automate -U discovered.json -F json -o scan-results.json
+```
+:::

@@ -1,0 +1,65 @@
+---
+title: sj - Swagger Jacker
+description: CLI tool for auditing exposed Swagger/OpenAPI definition files
+hero:
+  tagline: Audit exposed Swagger and OpenAPI definition files from the command line.
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/mr-pmillz/sj
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What is sj?
+
+The process of reviewing and testing exposed API definition files is often tedious and requires a large investment of time for a thorough review. **sj** (Swagger Jacker) is a CLI tool that performs an initial check of API endpoints identified through exposed Swagger/OpenAPI definition files.
+
+Once you determine which endpoints require authentication and which do not, you can use the `prepare` command to generate command templates for further manual testing.
+
+## Commands
+
+<CardGrid>
+  <Card title="audit" icon="shield">
+    Passively identify authentication, transport, and contract risks with CI-ready SARIF output.
+  </Card>
+  <Card title="automate" icon="rocket">
+    Send automated requests to discovered endpoints and check which ones require authentication.
+  </Card>
+  <Card title="brute" icon="magnifier">
+    Brute-force common paths to discover hidden Swagger/OpenAPI definition files on a target.
+  </Card>
+  <Card title="prepare" icon="document">
+    Generate curl (or other tool) commands for manual testing of each discovered endpoint.
+  </Card>
+  <Card title="endpoints" icon="list-format">
+    Extract and print raw API endpoint paths from a definition file.
+  </Card>
+  <Card title="convert" icon="pencil">
+    Convert a Swagger v2 definition file to the OpenAPI v3 specification.
+  </Card>
+  <Card title="mcp" icon="document">
+    Expose typed, policy-constrained sj tools to AI agents over MCP stdio.
+  </Card>
+</CardGrid>
+
+## Quick Example
+
+```bash
+# Review the contract without sending endpoint requests
+sj audit -l ./openapi.yaml -f yaml --fail-on high
+
+# Check which endpoints are accessible without authentication
+sj automate -u https://petstore.swagger.io/v2/swagger.json
+
+# Discover hidden definition files
+sj brute -u https://target.example.com
+
+# Generate curl commands for manual testing
+sj prepare -u https://petstore.swagger.io/v2/swagger.json
+```

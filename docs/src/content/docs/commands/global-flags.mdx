@@ -1,0 +1,82 @@
+---
+title: Global Flags
+description: Persistent flags available across all sj commands.
+---
+
+These flags are available on every `sj` command. They are defined as persistent flags on the root command.
+
+## Connection
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--url` | `-u` | | Load the definition file from a URL. |
+| `--local-file` | `-l` | | Load the definition file from a local path. |
+| `--target` | `-T` | | Manually set the target host for requests, if different from the documentation host. |
+| `--base-path` | `-b` | | Set the API base path if not defined in the definition file (e.g., `/V2/`). |
+| `--proxy` | `-p` | `NOPROXY` | Proxy host and port (e.g., `http://127.0.0.1:8080`). |
+| `--replay-proxy` | | | Replay matched requests through this proxy. |
+| `--socks5-proxy` | | | Route all primary requests through a `socks5://` or `socks5h://` proxy. Port 1080 is used when omitted. |
+| `--socks5-username` | | | Optional username for SOCKS5 RFC 1929 authentication. |
+| `--socks5-password` | | | Optional password for SOCKS5 RFC 1929 authentication. Requires a username. |
+| `--timeout` | `-t` | `30` | Request timeout in seconds. |
+| `--max-response-bytes` | | `10485760` | Maximum response body size read per request. |
+| `--max-spec-bytes` | | `10485760` | Maximum remote or local specification size. |
+| `--insecure` | `-i` | `false` | Skip TLS certificate validation. |
+
+## Request Customization
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--agent` | `-A` | *(random)* | Set the User-Agent string. A random User-Agent is used by default. |
+| `--headers` | `-H` | | Add custom headers in `"Name: Value"` format. Multiple flags accepted. |
+| `--format` | `-f` | `json` | Declare the format of the definition file (`json`, `yaml`, `yml`, `js`). |
+| `--custom-url` | `-c` | `https://example.com` | Custom URL value for testing discovered URL parameters. |
+| `--custom-date` | `-d` | `1990-01-01` | Custom date for testing discovered date parameters (format: `YYYY-MM-DD`). |
+| `--custom-email` | | `noreply@localhost.localdomain` | Custom email address for testing discovered email parameters. |
+
+## Output
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--outfile` | `-o` | | Write results to a file. Supported by `audit`, `automate`, `brute`, and `convert`. |
+| `--quiet` | `-q` | `false` | Use non-interactive defaults; credentials are never prompted for. |
+
+## Safety
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--force` | | `false` | Bypass unsafe-method and dangerous-keyword safety checks. |
+| `--safe-word` | `-s` | | Exclude specific words from the dangerous-word check. Multiple flags accepted. |
+
+## Examples
+
+```bash
+# Load from URL with custom timeout and proxy
+sj automate -u https://target.example.com/swagger.json -t 60 -p http://127.0.0.1:8080
+
+# Load from local file in YAML format
+sj prepare -l ./openapi.yaml -f yaml
+
+# Route any subcommand through an anonymous SOCKS5 proxy
+sj brute -u https://target.example.com \
+  --socks5-proxy socks5://127.0.0.1:9050
+
+# Use an authenticated SOCKS5 proxy
+sj automate -u https://target.example.com/openapi.json \
+  --socks5-proxy socks5://proxy.example.com:1080 \
+  --socks5-username audit-user \
+  --socks5-password "$SOCKS5_PASSWORD"
+
+# Skip TLS verification and set a custom User-Agent
+sj automate -u https://target.example.com/swagger.json -i -A "Mozilla/5.0"
+
+# Add authentication headers
+sj automate -u https://target.example.com/swagger.json \
+  -H "Authorization: Bearer TOKEN" \
+  -H "X-API-Key: my-key"
+
+# Use a custom target host
+sj automate -u https://docs.example.com/swagger.json -T https://api.example.com
+```
+
+`--proxy` and `--socks5-proxy` are mutually exclusive. Do not embed credentials in the SOCKS5 URL; use the credential flags. Because command-line passwords may be visible to local process inspection or shell history, use these flags only in an appropriately controlled environment.

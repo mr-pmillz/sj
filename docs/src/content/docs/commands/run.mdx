@@ -1,0 +1,27 @@
+---
+title: run
+description: Execute the full authorized API assessment workflow.
+---
+
+`run --full-workflow` chains OpenAPI recon, endpoint enumeration, bounded numeric IDOR testing, Bruno collection generation, SQLite evidence storage, and Markdown/HTML reporting.
+
+```bash
+sj --socks5-proxy socks5://127.0.0.1:9000 \
+  --database targets/results/authorized-qa.db \
+  --max-response-bytes 1073741824 \
+  -o targets/results/full-workflow \
+  run --full-workflow \
+  --url-file targets/unique-base-urls.txt \
+  --workers 20 --exclude DELETE \
+  --idor-range 1-100 --max-cases 4096 \
+  --max-fuzz-requests 20000 --delay 500ms \
+  --max-evidence 100
+```
+
+The output directory must not already exist. Brute defaults to 20 configurable target-level workers; active fuzzing remains sequential and paced. DELETE is always excluded. Non-DELETE state-changing methods still require a separate `--accept-risk` decision. Automate and fuzz progress is enabled for the workflow; fuzz progress uses immutable atomic, body-free snapshots and renders only to stderr.
+
+The fuzz stage enables response-guided repair with at most two chained retries per deterministic probe. The preflight reserves the worst-case retry budget before it sends traffic. Structured validation requirements can be repaired; credential requirements, file uploads, and ambiguous backend exceptions remain unresolved unless the operator supplies the required authorized identity or test data.
+
+Numeric IDOR enumeration is additionally gated by a live per-identity baseline. Only current 2xx, non-failure, substantive JSON data responses release numeric mutations; invalid, catch-all, or trivial baselines are recorded and skipped.
+
+Automate and fuzz response capture is enabled automatically using the configured response read ceiling, and SQLite storage remains enabled by default. If active fuzzing stops on a rate-limit signal, already captured evidence is still used to generate the Bruno collection and reports, and the command returns a partial-coverage error.

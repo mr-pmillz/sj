@@ -1,0 +1,55 @@
+---
+title: fuzz
+description: Run bounded, paced active API tests from automate results.
+---
+
+The `fuzz` command replays captured operations with bounded IDOR, username-enumeration, verbose-error, PII, identity-comparison, bad-character, and workflow probes. It runs sequentially, stops on HTTP 429 or a near-empty advertised rate budget, and does not generate denial-of-service payloads.
+
+Response-guided repair is enabled by default. sj parses structured Pydantic/FastAPI and ASP.NET validation errors plus conservative integer, UUID, base64, required-field, and Go-unmarshal hints. It combines deterministic requirements into one retry and can follow a short validation chain. Every possible retry is reserved in the offline preflight before traffic is sent.
+
+```bash
+sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
+  --response-guided --max-guided-retries 2 \
+  --max-requests 2000 --delay 500ms --progress
+```
+
+`--progress` writes a goroutine-safe status line to stderr. The scan owner publishes immutable atomic snapshots containing counts and the current method/case only; URLs, identity headers, request bodies, and response bodies are never copied into progress state. This keeps structured stdout and output files valid while allowing a renderer to observe a running scan without racing result collection.
+
+sj never executes server-provided content or arbitrary regexes. It does not invent bearer tokens, subscription keys, session headers, or file uploads. Ambiguous errors such as `NoneType` without a named field are retained as unresolved hints instead of guessed application semantics. A guided 2xx response is evidence that the repaired request was accepted, not proof of a vulnerability.
+
+## Numeric IDOR enumeration
+
+```bash
+sj --socks5-proxy socks5://127.0.0.1:9000 \
+  --database authorized-qa.db \
+  --max-response-bytes 1073741824 \
+  -o idor-1-100.json \
+  fuzz --run AUTOMATE_RUN_ID \
+  --scope idor --idor-range 1-100 \
+  --max-cases 4096 --max-requests 20000 --delay 500ms \
+  --store-responses --max-stored-response-bytes 1073741824 \
+  --output-format json
+```
+
+The range is inclusive and limited to 1,000 values. sj mutates identifier-bearing path segments, query fields, and top-level JSON properties. It rejects a `--max-cases` value that would silently truncate the requested range.
+
+Distinct response hashes are not sufficient IDOR proof. The analyzer filters identical catch-all responses, explicit failure envelopes, echoed IDs, and single changing scalar fields. A differential finding requires multiple successful, object-shaped responses with substantive data. Confirm authorization impact by comparing object ownership across test identities.
+
+PII matching is also evidence-oriented: payment-card candidates must match a recognized issuer range and pass a Luhn checksum. Reports revalidate imported PII findings against captured response proof when it is available, preventing ordinary long database identifiers from inflating high-severity totals. A retained pattern is still a review candidate, not proof that the field is sensitive or improperly exposed.
+
+Before sending any numeric or adjacent-ID mutations, sj replays the current baseline separately for each identity. The baseline must return a 2xx, non-failure, substantive JSON object or array. A 4xx/5xx, non-JSON catch-all, `ok:false` envelope, or trivial single echoed scalar rejects that identity/endpoint pair and skips all of its IDOR mutations. Historical automate status alone never qualifies an active IDOR run.
+
+Response-guided repairs of an invalid baseline are retained as separate reproduction evidence, but they do not automatically release precomputed numeric cases because those mutations do not yet contain the repaired request requirements. Capture the repaired request as a new valid automate/workflow operation before numeric enumeration.
+
+## Safety behavior
+
+- State-changing methods are skipped unless `--accept-risk` is present.
+- DELETE and other destructive operations should be excluded during source automation.
+- `--max-requests` is a hard budget; reaching it before all planned cases produces an incomplete-coverage error.
+- A run where every attempted request fails at the transport layer produces an error instead of a misleading successful completion; captured diagnostics are still written and stored.
+- The preflight includes deterministic probes and the worst-case `--max-guided-retries` reserve. Narrow scope or increase the explicit budget when the full plan does not fit.
+- `qualified_idor_baselines`, `rejected_idor_baselines`, and `skipped_invalid_idor` show the live baseline gate outcome. A skipped invalid case is deliberate false-positive prevention, not completed numeric coverage.
+- Bad-character payloads are short, non-time-based probes for quoting, traversal, markup, template, format-string, and SQL metacharacter handling. They do not contain sleep, oversized, recursive, or resource-exhaustion cases.
+- Response storage is opt-in for standalone fuzz runs. Set the stored-body ceiling equal to the read ceiling when complete evidence is required, then verify that no result is marked truncated.
+
+Use repeated `--identity-header 'NAME=Header: Value'` flags to compare authorized identities. Complete persisted-side-effect tests require an explicit workflow file and `--accept-risk`.

@@ -1,0 +1,110 @@
+---
+title: Quickstart
+description: Get up and running with sj in minutes.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This guide walks you through basic usage of `sj` to audit an exposed Swagger/OpenAPI definition file.
+
+## Basic Workflow
+
+<Steps>
+
+1. **Find a target with an exposed definition file**
+
+   Swagger and OpenAPI definition files are commonly found at paths like `/swagger.json`, `/v2/swagger.json`, `/openapi.json`, or `/api-docs`. If you do not know the location, use the `brute` command to discover it.
+
+2. **Run a passive audit first**
+
+   Inspect authentication, transport, and contract risks without sending requests to documented operations:
+
+   ```bash
+   sj audit -u https://petstore.swagger.io/v2/swagger.json
+   ```
+
+3. **Run the automate command**
+
+   Send automated requests to each endpoint and check their status codes:
+
+   ```bash
+   sj automate -u https://petstore.swagger.io/v2/swagger.json
+   ```
+
+   Endpoints returning `200` without authentication are potentially accessible to anyone.
+
+   By default, only safe/read-only methods are sent. Use `--accept-risk` only when authorized to test state-changing methods.
+
+4. **Generate manual test commands**
+
+   For endpoints that need deeper investigation, generate curl commands:
+
+   ```bash
+   sj prepare -u https://petstore.swagger.io/v2/swagger.json
+   ```
+
+5. **Test manually**
+
+   Copy and run the generated curl commands to verify the behavior of each endpoint.
+
+</Steps>
+
+## Discovering Hidden Definition Files
+
+If you have a target but do not know where its definition file lives:
+
+```bash
+sj brute -u https://target.example.com
+```
+
+This sends requests to commonly used paths (e.g., `/swagger.json`, `/api/swagger.json`, `/v2/api-docs`) and reports which ones return valid definition files.
+
+You can also supply a custom wordlist:
+
+```bash
+sj brute -u https://target.example.com -w /path/to/wordlist.txt
+```
+
+## Extracting Endpoint Paths
+
+To get a plain list of API routes from a definition file:
+
+```bash
+sj endpoints -u https://petstore.swagger.io/v2/swagger.json
+```
+
+This is useful for feeding into other tools or scripts.
+
+## Converting Swagger v2 to OpenAPI v3
+
+```bash
+sj convert -u https://petstore.swagger.io/v2/swagger.json -o openapi.json
+```
+
+## Using a Local File
+
+All commands support loading a definition from a local file instead of a URL:
+
+```bash
+sj automate -l ./swagger.json
+sj prepare -l ./swagger.json
+sj endpoints -l ./swagger.json
+```
+
+## Using a Proxy
+
+Route requests through a proxy (such as Burp Suite) for inspection:
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json -p http://127.0.0.1:8080
+```
+
+## Custom Headers
+
+Add custom headers (e.g., authentication tokens) to all requests:
+
+```bash
+sj automate -u https://target.example.com/swagger.json \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-Custom-Header: value"
+```

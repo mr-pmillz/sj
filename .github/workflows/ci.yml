@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  # Pushes to main publish the default-branch coverage baseline that PRs are
+  # compared against; develop/release/hotfix pushes still run build+test+lint+
+  # coverage, but the coverage upload step self-gates (see the upload step below).
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+      - 'hotfix/**'
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+  pull_request:
+    # Base (target) branches. Covers feature/* → develop and
+    # release/* | hotfix/* | develop → main so release PRs show CI status.
+    branches:
+      - develop
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  code-quality: write # required by actions/upload-code-coverage
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # The "build" workflow
+  build:
+    # Skip on default-branch (main) pushes: a merge into main only needs to
+    # refresh the coverage baseline (the coverage job below), and the merged
+    # code was already built/linted/tested on the PR that produced it. The
+    # golangci and test jobs `needs: build`, so they auto-skip here too.
+    if: ${{ !(github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+
+      # Setup Go
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # ratchet:actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Run build of the application
+      - name: Run build
+        run: |
+          go env -w GOFLAGS=-mod=mod
+          go mod tidy
+          make build
+
+  golangci:
+    needs: build
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # ratchet:actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # ratchet:golangci/golangci-lint-action@v9
+        with:
+          # Optional: the value can be v2.3 or v2.3.4 or latest to use the latest version.
+          version: latest
+          # Optional: golangci-lint command line arguments.
+          args: --config ./.golangci-lint.yml
+
+  coverage:
+    name: Coverage
+    needs: build
+    # On default-branch (main) pushes the build job is skipped, so the implicit
+    # success() gate would skip coverage too. Override it: run when build
+    # succeeded (PRs, develop/release/hotfix pushes) OR when this is a main push
+    # (build intentionally skipped). !cancelled() lets it evaluate despite the
+    # skipped dependency while still bailing out if the run is cancelled.
+    if: >-
+      ${{ !cancelled() && (
+        (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) ||
+        needs.build.result == 'success'
+      ) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # ratchet:actions/checkout@v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # ratchet:actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@3cf14356a16c7931cfeacd7dfee585527618df3d
+
+      - name: Install gocover-cobertura
+        run: go install github.com/boumenot/gocover-cobertura@4afa1205ab3b54ae098dd4724c1657aad10f7484 # v1.5.0
+
+      - name: Run tests with coverage
+        run: |
+          set -euo pipefail
+          mkdir -p coverage
+          gotestsum \
+            --jsonfile coverage/gotest.json \
+            --format pkgname \
+            -- ./... -race -coverprofile=coverage/coverage.txt -covermode=atomic
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage/coverage.txt | tee coverage/coverage-summary.txt
+          {
+            echo "## Coverage Summary"
+            echo ""
+            echo '```'
+            tail -n 1 coverage/coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate HTML coverage report
+        run: go tool cover -html=coverage/coverage.txt -o coverage/coverage.html
+
+      # Convert the Go coverage profile into Cobertura XML for GitHub's
+      # native code-coverage feature. gocover-cobertura reads the profile on
+      # stdin and writes XML to stdout; filenames are emitted module-relative
+      # (e.g. internal/cli/run.go) so GitHub maps them to repo paths.
+      - name: Generate Cobertura XML coverage report
+        run: |
+          set -euo pipefail
+          gocover-cobertura < coverage/coverage.txt > coverage/coverage.xml
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage/coverage.txt
+            coverage/coverage.xml
+            coverage/coverage.html
+            coverage/coverage-summary.txt
+            coverage/gotest.json
+          if-no-files-found: error
+
+      - name: Publish test results
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # ratchet:dorny/test-reporter@v3
+        if: always()
+        with:
+          name: Go Tests
+          path: coverage/gotest.json
+          reporter: golang-json
+          fail-on-error: false
+
+      # Publish coverage to GitHub's native code-coverage feature. The action
+      # only accepts uploads from the default branch (publishes the baseline)
+      # or a pull request (publishes the comparison, via an auto-detected
+      # pull_request_number); every other branch is rejected with HTTP 400
+      # ("Only default branch is allowed if no pull_request_number is provided").
+      # So gate this to:
+      #   - push events on the default branch (main) -> baseline
+      #   - non-fork pull requests -> PR comparison (fork PRs get a read-only
+      #     token that cannot write coverage, so they are excluded)
+      # develop/release/hotfix pushes intentionally skip the upload — their
+      # coverage is still captured in the artifacts uploaded above. fail-on-error
+      # keeps a transient upload failure a warning rather than a red X.
+      - name: Upload coverage report to GitHub
+        if: >-
+          ${{ success() && (
+            (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) ||
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+          ) }}
+        uses: actions/upload-code-coverage@abb5995db9e0199b0e2bb9dbd136fce4cb1ec4d3 # ratchet:actions/upload-code-coverage@v1
+        with:
+          file: coverage/coverage.xml
+          language: Go
+          label: code-coverage/go
+          fail-on-error: false

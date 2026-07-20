@@ -1,0 +1,122 @@
+---
+title: automate
+description: Send automated requests to discovered API endpoints.
+---
+
+The `automate` command sends a request to each endpoint discovered in a Swagger/OpenAPI definition file and reports the HTTP status code of each response. This gives you a quick view of which endpoints require authentication and which do not.
+
+## Usage
+
+```bash
+sj automate -u <URL> [flags]
+sj automate -l <FILE> [flags]
+sj automate -U <URL_FILE_OR_BRUTE_OUTPUT> [flags]
+```
+
+## Flags
+
+In addition to the [global flags](/commands/global-flags/), `automate` accepts:
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--test-string` | | `testvalue` | The string value to use when testing endpoints that accept string parameters. |
+| `--verbose` | `-v` | `false` | Show a preview of each response body. |
+| `--response-preview-length` | | `50` | Number of characters to show in the response preview (requires `--verbose`). |
+| `--accept-risk` | | `false` | Allow state-changing methods and endpoints with dangerous keywords. |
+| `--get-accessible-endpoints` | | `false` | Only output endpoints that return a 2xx status code. |
+| `--retry-on-hint` | | `false` | Retry requests that return 401 with hints about missing parameters. |
+| `--required-only` | | `false` | Populate only parameters marked as required. |
+| `--url-file` | `-U` | | Load specification URLs from a text file or from `brute` JSON/JSONL output. |
+| `--max-targets` | | `10000` | Maximum unique specification URLs accepted from `--url-file`. |
+| `--output-format` | `-F` | `console` | Output format: `console`, `json`, `jsonl`, or `csv`. |
+| `--output-all-formats` | `-O` | `false` | Write results in all formats (json, jsonl, csv). Requires `-o`. |
+| `--progress` | | `false` | Show console-style progress on stderr while using a structured output format. |
+
+## Examples
+
+### Basic scan
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json
+```
+
+### Verbose output with response previews
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json -v --response-preview-length 100
+```
+
+### Filter for accessible endpoints only
+
+```bash
+sj automate -u https://petstore.swagger.io/v2/swagger.json --get-accessible-endpoints
+```
+
+### JSON output to file
+
+```bash
+sj automate -u https://target.example.com/swagger.json -F json -o results.json
+```
+
+### Export all formats at once
+
+```bash
+sj automate -u https://target.example.com/swagger.json -O -o results
+```
+
+This writes `results.json`, `results.jsonl`, and `results.csv`.
+
+### Through a proxy with custom headers
+
+```bash
+sj automate -u https://target.example.com/swagger.json \
+  -p http://127.0.0.1:8080 \
+  -H "Authorization: Bearer TOKEN" \
+  --accept-risk
+```
+
+### From a local file
+
+```bash
+sj automate -l ./swagger.json -v
+```
+
+### From a list of specification URLs
+
+```bash
+sj automate -U specification-urls.txt -F json -o results.json
+```
+
+Blank lines and lines beginning with `#` are ignored. URLs must be absolute HTTP(S) URLs without embedded credentials or fragments. Duplicate URLs are scanned once in first-seen order.
+
+```text
+# specification-urls.txt
+https://api-one.example.com/openapi.json
+https://api-two.example.com/swagger.yaml
+```
+
+### From brute output
+
+Both structured formats emitted by `brute` can be passed directly to `automate`:
+
+```bash
+sj brute -U targets.txt -F json -o discovered.json
+sj automate -U discovered.json -F json -o scan-results.json
+
+sj brute -U targets.txt -F jsonl -o discovered.jsonl
+sj automate -U discovered.jsonl -F jsonl -o scan-results.jsonl
+```
+
+For JSON reports, `automate` reads every URL in `specs_found`. For JSONL, it reads the `url` field from every row. Batch processing is sequential and bounded by `--max-targets` and `--max-spec-bytes`. If one specification fails, later entries are still processed and successful structured results are written; the command exits nonzero with a failure summary.
+
+## How It Works
+
+1. The definition file is fetched from a URL, loaded locally, or expanded from a URL list or `brute` report.
+2. All endpoints and their HTTP methods are extracted.
+3. For each endpoint, parameter placeholders are filled with test values (the default string value is `testvalue`; URL parameters use `https://example.com`; date parameters use `1990-01-01`).
+4. A request is sent to each endpoint and the status code is recorded.
+5. Results are printed to the console or written once in the requested format. Batch structured results include a `source` field identifying the specification that produced each request.
+
+:::caution
+The default active scan sends only `GET`, `HEAD`, `OPTIONS`, and OpenAPI 3.2 `QUERY`. State-changing or custom methods are recorded as skipped unless you pass `--accept-risk` or `--force`. Use either option only on systems you are authorized to test.
+:::
