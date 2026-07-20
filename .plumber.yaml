@@ -59,15 +59,17 @@ github:
       trustedOwners:
       - actions
       - github
-      - orhun
-      - dorny
-      - golangci
-      - docker
-      - goreleaser
     githubActionMustComeFromAuthorizedSources:
       enabled: true
       trustGithubOfficialActions: true
       trustSameOrgActions: true
+      trustedGithubActions:
+        - orhun/git-cliff-action
+        - dorny/test-reporter
+        - golangci/golangci-lint-action
+        - docker/setup-buildx-action
+        - docker/login-action
+        - goreleaser/goreleaser-action
     workflowMustNotInjectUserInputInScripts:
       enabled: true
     workflowMustNotWriteUntrustedContentToGitHubEnv:
