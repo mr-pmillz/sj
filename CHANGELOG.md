@@ -1,0 +1,190 @@
+# Changelog
+
+All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
+
+## [2.7.3](https://github.com/mr-pmillz/sj/compare/v2.7.2...v2.7.3) - 2026-07-20
+
+### ✨ New features
+
+- Add CHANGELOG.md - ([697e06b](https://github.com/mr-pmillz/sj/commit/697e06bb9fa80de1418f33860437baa34baa3bbd))
+
+### 🐛 Bug fixes
+
+- Fix favicon - ([6452b26](https://github.com/mr-pmillz/sj/commit/6452b2690c8a2f30a86712fc60abdd01237111b9))
+- Fixed URI for getting-started in docs - ([2a72fac](https://github.com/mr-pmillz/sj/commit/2a72fac697c1a78c0fefe42d6c331502e7566939))
+
+## [2.7.2](https://github.com/mr-pmillz/sj/compare/v2.7.1...v2.7.2) - 2026-07-20
+
+### ✨ New features
+
+- Added docs json files that were gitignored - ([ed6af6f](https://github.com/mr-pmillz/sj/commit/ed6af6f1311427e8f879e5b200fa44d173c3de01))
+
+## [2.7.1] - 2026-07-20
+
+### ✨ New features
+
+- Add tparse to Makefile, gracefully handle no idor targets in run --fu… - ([043091e](https://github.com/mr-pmillz/sj/commit/043091e5fc3185d973dcf8dedc2024ba10269b1d))
+- Add tparse to Makefile, gracefully handle no idor targets in run --full-workflow mode - ([0042928](https://github.com/mr-pmillz/sj/commit/004292815c17c553ba5f11b53bfca2902e88dd89))
+- Feat: add full API assessment workflow - ([a15f21b](https://github.com/mr-pmillz/sj/commit/a15f21b70cd1ebb731b872b9711ef01d6827e4a2))
+- Expose brute and automate through the MCP server, add configurable target concurrency, preserve SOCKS5 routing, exclude selected methods, and keep complete response evidence in SQLite by default. - ([a15f21b](https://github.com/mr-pmillz/sj/commit/a15f21b70cd1ebb731b872b9711ef01d6827e4a2))
+- Add bounded response-guided fuzzing with live per-identity IDOR qualification, numeric range enumeration, workflow and identity comparisons, safe bad-character payloads, rate-limit protections, goroutine-safe progress snapshots, and explicit all-transport-failure handling. - ([a15f21b](https://github.com/mr-pmillz/sj/commit/a15f21b70cd1ebb731b872b9711ef01d6827e4a2))
+- Generate Bruno reproduction collections and weighted Markdown, HTML, and colorized terminal reports with toggleable response proof, OWASP API mappings, application-failure analysis, wildcard false-positive filtering, and checksum-aware PII revalidation. - ([a15f21b](https://github.com/mr-pmillz/sj/commit/a15f21b70cd1ebb731b872b9711ef01d6827e4a2))
+- Add the run --full-workflow orchestration, project-level sj workflow skill, command documentation, adversarial regression coverage, SQLite/report integration tests, and lint-driven refactors across scanner, fuzz, store, and HTTP client packages. - ([a15f21b](https://github.com/mr-pmillz/sj/commit/a15f21b70cd1ebb731b872b9711ef01d6827e4a2))
+- Feat: add persistent API penetration testing workflows - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Enable default-on, versioned SQLite storage for audit, brute, automate, endpoint, preparation, fuzz, collection, conversion, and report runs. Add immutable run IDs, result reuse, private database and sidecar permissions, transaction-safe persistence, and the runs command. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Add Bruno collection generation with populated request samples, bounded IDOR and username enumeration payloads, identity comparison requests, workflow templates, state-changing request guards, and atomic private output. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Introduce bounded API fuzzing for all, interesting, or selected operations. Support multiple authenticated identities, explicit business workflows, persisted side-effect verification, PII and verbose-error detection, username enumeration checks, request budgets, pacing, and proactive rate-limit stopping without denial-of-service payloads. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Improve brute discovery with configurable target workers and wildcard HTTP 200 false-positive filtering based on repeated response fingerprints and conservative response-size matching. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Expand API penetration-test reporting to ingest brute, automate, fuzz, and stored findings; deduplicate results; calculate weighted severity and HTTP metrics; map findings to the OWASP API Security Top 10; and render terminal, Markdown, and HTML output. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Add adversarial coverage for storage durability and permissions, workflow preflight behavior, rate-limit handling, response redaction and bounds, wildcard filtering, query enumeration, generated collections, reporting, and concurrent brute scans. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Feat: add batch API scanning and reporting - ([6074546](https://github.com/mr-pmillz/sj/commit/60745468c7392c6f6cd575598974e509deb9c562))
+- Feat: add policy-constrained MCP server support - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Add an optional sj mcp command using github.com/modelcontextprotocol/go-sdk v1.6.1 over the standard input/output transport. Register typed audit_openapi, plan_openapi_requests, convert_openapi, scan_openapi, and discover_openapi tools with inferred input/output schemas, structured results, and MCP safety annotations. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Protect agent-driven execution with explicit hostname allowlists, disabled-by-default local-file and active access, a separate destructive-request gate, operation-level target validation, and rejection of legacy force-based safety bypasses. Preserve the existing safe-method and dangerous-path behavior unless both server policy and a per-call accept_risk request authorize broader scanning. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Bound protocol messages before SDK decoding and enforce output-size, result-count, discovery-candidate, response-preview, and global concurrency limits. Propagate cancellation through source loading, scans, retries, discovery, and execution-slot waits, and truncate oversized discovery result sets with explicit metadata. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Extract shared bounded URL and local-file loading into pkg/specsource, retain confined local reference resolution, and expose preflighted scanner request-plan execution so MCP policy checks complete before active network calls. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Add protocol-level client/server tests for tool discovery, generated schemas, structured audit/plan/convert/discovery outputs, active and destructive policy gates, host and filesystem isolation, safe-method enforcement, cancellation, authenticated transport reuse, input bounds, concurrency, and invalid configuration. Document MCP client setup, available tools, policy flags, architecture, and security guidance. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Verified with full unit and race suites, go vet, golangci-lint, binary and documentation builds, CLI policy smoke tests, and a real SDK subprocess negotiation over stdin/stdout. - ([a26617c](https://github.com/mr-pmillz/sj/commit/a26617c17a1d24c679d4908dce8fc4d91ef09bc9))
+- Feat: add batch automate inputs and global SOCKS5 proxies - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Allow automate to consume newline-delimited URL lists and the JSON or JSONL emitted by brute. Bound input size and target counts, normalize and deduplicate specification URLs, preserve source-spec attribution in batch results, and extend structured output handling. - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Add persistent SOCKS5 proxy flags to every subcommand with anonymous and username/password authentication. Validate schemes, hosts, ports, and credential limits; reject embedded credentials and conflicting HTTP proxy settings; and install a context-aware x/net SOCKS5 dialer with remote DNS, timeout, cancellation, and HTTP/2 support. - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Propagate request contexts through scanning, retries, and replay paths so batch cancellation remains bounded and predictable. Add CLI, parser, output, scanner, transport, authentication, protocol, cancellation, and invalid-input tests. - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Update the README and command documentation with batch automation and SOCKS5 examples, security guidance, and output behavior. Add the current golang.org/x/net dependency and refresh related transitive modules. - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Verified with full unit tests, race tests, go vet, golangci-lint, binary build, documentation build, CLI help smoke tests, and staged diff checks. - ([d70d11b](https://github.com/mr-pmillz/sj/commit/d70d11bb30b04d67e2fa6075405a6aac09b81caa))
+- Feat: add immediate feedback and smart path variations to brute scanner - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Print discovered specs and interesting URLs to stderr in real time - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Instead of waiting until the scan completes. When a spec is found, - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Immediately generate and test path variations (version swaps, extension - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Swaps, sibling filenames) to find related specs faster. Stop the bulk - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Scan early once specs are found past the priority URL phase to avoid - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Triggering WAF/CDN blocks. - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Includes 7 unit tests for GeneratePathVariations. - ([a0e7085](https://github.com/mr-pmillz/sj/commit/a0e7085461a802ef678626301821ba1fc4740cd9))
+- Feat: add multi-format output support to brute command - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- Add json, jsonl, csv, and txt output formats to the brute command - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- Via -F/--output-format flag. Add -O/--output-all-formats to write - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- All formats at once (requires -o for base filename). - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- Includes 9 unit tests covering all formats with single/multi-target - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- And empty-spec edge cases. - ([369916d](https://github.com/mr-pmillz/sj/commit/369916d3c9d5dafdb88d72852734b18b3d388ba0))
+- Added docker support for releases - ([3f99ffb](https://github.com/mr-pmillz/sj/commit/3f99ffb48c148a6fac619c7e3fddddc679e20c13))
+- Added fix to auto-extract JS-wrapped specs in automate/endpoints/prepare; fixed POST body leak, Content-Type carryover, and multipart boundary issues - ([3c2a3b8](https://github.com/mr-pmillz/sj/commit/3c2a3b807d4381ba30e5f89b30477ac91aa22b05))
+- Feat: add curl command in verbose output for 'automate' mode - ([8310c89](https://github.com/mr-pmillz/sj/commit/8310c8995d5574afed4fbd5fb743452895a6b530))
+- Added support for 'oneOf', 'anyOf', and 'allOf' schema keywords. - ([65d424c](https://github.com/mr-pmillz/sj/commit/65d424c6a74e9b824fcf35e2c64c7c6622f36831))
+- Added support for basic parsing of schema references - ([cecaccc](https://github.com/mr-pmillz/sj/commit/cecaccc07a21ebd466bd79a5dba1160fef737297))
+- Add a param to pass in a wordlist to the brute subcommand - ([3f02c53](https://github.com/mr-pmillz/sj/commit/3f02c53d94752c34251e8386a65a655935adf866))
+- Add updated path to the prefix paths - ([246d6f1](https://github.com/mr-pmillz/sj/commit/246d6f1241948d524e488c6d7c506694c5237677))
+- Added sqlmap support to the 'prepare' command. - ([686022c](https://github.com/mr-pmillz/sj/commit/686022c8279110598e331d14fcb59605c965d85a))
+- Add the start of a new brute command - ([06173bd](https://github.com/mr-pmillz/sj/commit/06173bd6ee6135924739b57b55f51ac6a89ff46d))
+- Added JSON output support - ([f6449f1](https://github.com/mr-pmillz/sj/commit/f6449f16293fd2891888eefd460899e6add689c7))
+
+### ✨: New features
+
+- Feat: harden sj and add OpenAPI 3.2 auditing - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Add a passive audit command with deterministic console, JSON, and SARIF reports, severity thresholds, security-scheme analysis, server checks, path validation, and operation metadata findings. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Expand request planning for OpenAPI 3.2 query and additional operations, querystring parameters, path and operation parameter merging, server variables, modern serialization styles, Swagger 2 body and form handling, and deterministic example generation. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Harden HTTP and specification loading with bounded reads, TLS 1.2 minimums, redirect blocking, explicit proxy behavior, same-origin protections, reference policy enforcement, path traversal defenses, input validation, cancellation, and safe defaults for state-changing methods. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Make generated artifacts atomic and private, propagate output errors, escape terminal and spreadsheet control data, improve brute-force discovery, preserve operation headers during retries, and remove deep process exits. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Add comprehensive adversarial unit, race, and fuzz coverage across CLI, audit, brute force, configuration, HTTP, OpenAPI parsing, output, request generation, serialization, and retry behavior. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Refresh documentation, GitHub Pages configuration, build targets, lint policy, GoReleaser settings, and the non-root Alpine container image with tini-based signal handling. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Verified with go test, race tests, fuzz tests, go vet, golangci-lint, govulncheck, documentation builds, GoReleaser validation, and Docker build checks. - ([6e461c8](https://github.com/mr-pmillz/sj/commit/6e461c8e36ede3b3172c0cd14492419fae0f2975))
+- Feat: comprehensive spec reference resolution improvements - ([90f0870](https://github.com/mr-pmillz/sj/commit/90f0870bfb710273d19a92efac3079ca9689a363))
+- Enhanced ResolveRef for Swagger v2 and OpenAPI v3, added external file references, implemented oneOf/anyOf/additionalProperties, refactored parameter handling, added test suite - ([90f0870](https://github.com/mr-pmillz/sj/commit/90f0870bfb710273d19a92efac3079ca9689a363))
+
+### 🐛 Bug fixes
+
+- Fix checkout order in ci.yml - ([1d8e4e2](https://github.com/mr-pmillz/sj/commit/1d8e4e2d0ea991de1230cb8bccfc6f98ca7a95fa))
+- Fixed linter issues - ([eff0ad1](https://github.com/mr-pmillz/sj/commit/eff0ad1e30841323d47583081d05313f4daa02ab))
+- Extend automate output with full resolved URLs, colorized status classes, excluded methods, redacted request evidence, and opt-in bounded response body storage. Allow automate to consume stored brute run results directly. - ([f66da04](https://github.com/mr-pmillz/sj/commit/f66da04a2dbed0d6cb40cf1d3c269d7c5817ba9d))
+- Fixed bug where custom headers were not sent with the brute command - ([1eda960](https://github.com/mr-pmillz/sj/commit/1eda960182bb1102cb29b0a4459f793132397e3f))
+- Fix: reconcile merged ref-hardening changes with current logging helpers - ([942ad84](https://github.com/mr-pmillz/sj/commit/942ad84c54cabfbcfd8e3b0aa15490b2c8155fa7))
+- Fix: normalize server base paths for v3 parsing - ([878f7dc](https://github.com/mr-pmillz/sj/commit/878f7dcd39f643e1112af809314afb4146e36ad3))
+- Fix: extract path from absolute server URLs when -T flag is used - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- High priority fix: - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - OpenAPI v3 specs with absolute server URLs (e.g., https://api.example.com/v1) - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+-   now preserve the path component (/v1) when -T flag overrides the host - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - Parse absolute server URL to extract path and set as basePath when apiTarget - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+-   is already set by -T flag - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - Impact: -T https://staging.example.com with spec servers[0].url = - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+-   https://api.example.com/v1 now produces https://staging.example.com/v1/users - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+-   (was https://staging.example.com/users) - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- Test coverage: - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - Added TestOpenAPIv3AbsoluteServerURLWithTargetFlag to verify path extraction - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - Test validates both basePath extraction and apiTarget preservation - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- - All 10 tests pass (9 PASS, 1 SKIP) - ([275f426](https://github.com/mr-pmillz/sj/commit/275f426fc27e289e843690e6ba5e09ae80058769))
+- Fix: preserve basePath with -T flag and allow endpoints with relative URLs - ([6d027a6](https://github.com/mr-pmillz/sj/commit/6d027a66ce883e52d58958616fdafabefa0bdd98))
+- 1. -T flag now preserves server path prefixes from spec - ([6d027a6](https://github.com/mr-pmillz/sj/commit/6d027a66ce883e52d58958616fdafabefa0bdd98))
+- 2. endpoints command works with relative server URLs - ([6d027a6](https://github.com/mr-pmillz/sj/commit/6d027a66ce883e52d58958616fdafabefa0bdd98))
+- 3. Enhanced tests to assert actual runtime behavior - ([6d027a6](https://github.com/mr-pmillz/sj/commit/6d027a66ce883e52d58958616fdafabefa0bdd98))
+- Fix: JSON curl quoting bug and relative server URL handling - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- High priority fix: - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- 1. Remove trailing double-quote from JSON curl generation - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Changed -d '%s'" to -d '%s' on line 216 - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Fixes shell syntax errors in prepare output - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Fixes malformed POST bodies in automate (was stripping " but leaving ') - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Impact: JSON POST requests now valid shell and valid HTTP bodies - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- Medium priority fix: - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- 2. Handle relative server URLs in local file mode - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Detect when spec has relative URL (e.g., /api/v1) and no base available - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Fail fast with clear error: "Use -T to specify target server" - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Prevents silent generation of invalid URLs (://...) - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+-    - Impact: Clear user guidance instead of skipped endpoints - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- Testing: - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- - Verified JSON curl has proper quoting: -d '{"key":"val"}' - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- - Verified bash syntax validation passes - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- - Added TestJSONCurlQuoting and TestRelativeServerURLHandling - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- - All 8 tests pass (7 PASS, 1 SKIP) - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- - Added test_relative_server.yaml fixture - ([703039d](https://github.com/mr-pmillz/sj/commit/703039dc750b5e0d2c690ce7a5cb8098173220e4))
+- Fix: resolve 4 critical reference resolution bugs - ([e2a9437](https://github.com/mr-pmillz/sj/commit/e2a94378bf085aa2857bd979e38a535617e65d8b))
+- 1. External parameter/requestBody refs preserve context for nested refs - ([e2a9437](https://github.com/mr-pmillz/sj/commit/e2a94378bf085aa2857bd979e38a535617e65d8b))
+- 2. Nested external refs resolve relative to parent file directory - ([e2a9437](https://github.com/mr-pmillz/sj/commit/e2a94378bf085aa2857bd979e38a535617e65d8b))
+- 3. Swagger v2 local files use proper URL schemes from spec - ([e2a9437](https://github.com/mr-pmillz/sj/commit/e2a94378bf085aa2857bd979e38a535617e65d8b))
+- 4. Added comprehensive Go test suite with 6 test functions - ([e2a9437](https://github.com/mr-pmillz/sj/commit/e2a94378bf085aa2857bd979e38a535617e65d8b))
+- Fix: resolve all 5 auditor-reported bugs - ([c9fa4f1](https://github.com/mr-pmillz/sj/commit/c9fa4f1257553681b3341404d5deef3ac80897a1))
+- Fixed external refs, nested refs, query object params, extra body fields, and default values - ([c9fa4f1](https://github.com/mr-pmillz/sj/commit/c9fa4f1257553681b3341404d5deef3ac80897a1))
+- This commit fixes three critical bugs that caused segmentation faults: - ([a33eef4](https://github.com/mr-pmillz/sj/commit/a33eef47f41cc15b10775db09e548dcf450dabdc))
+- Fix: prevent header-processing logic from dropping custom headers - ([5554e2b](https://github.com/mr-pmillz/sj/commit/5554e2bd30de944e44dac529032d0d9970426136))
+- Fixed bug where the base path was sometimes applied to the URL multiple times - ([7417f9f](https://github.com/mr-pmillz/sj/commit/7417f9f917826db6d4647cdf0c12ef2bafffad71))
+- Fixed a bug that prevented use of header values containing a colon - ([fd602b9](https://github.com/mr-pmillz/sj/commit/fd602b9ca883ade135a0e9d1475d3b526fd83089))
+- Fix: refactor EnforceSingleContentType to not remove all custom headers except Content-Type - ([025f3f1](https://github.com/mr-pmillz/sj/commit/025f3f18cfaaf74cfef4f3bd351a1c097251e822))
+- Fixed null pointer bug - ([5274b1b](https://github.com/mr-pmillz/sj/commit/5274b1b0abf1309f85098e29982c02ebbabdb26c))
+- Fixed bug in verbose JSON output - ([d7b3459](https://github.com/mr-pmillz/sj/commit/d7b34598d2766e539bdcfb1621bc89c46e063406))
+- Fixed bug that caused improperly formatted JSON output - ([530143b](https://github.com/mr-pmillz/sj/commit/530143b4eec9d14cc5c3404816fff04d8eeb7013))
+- Fix parameter handling bug in AddParametersToRequest() function - ([69de3ab](https://github.com/mr-pmillz/sj/commit/69de3abbf1485b449e38949f68580fc6b5cee033))
+- Modified version number to reflect bug fix - ([9fd1b78](https://github.com/mr-pmillz/sj/commit/9fd1b7808111f84a83f4f7d7fb069358fea7b046))
+- Fixed bug in the '--get-accessible-endpoints' flag - ([69b316e](https://github.com/mr-pmillz/sj/commit/69b316e7bc1b6bd43ee5079638f18ba1721a6535))
+- Fixed bug where output file would close pre-emptively - ([615f0c7](https://github.com/mr-pmillz/sj/commit/615f0c7a2655764f430010a0fe728b5c5f2b37a8))
+- Fixed bug in handling variations of schema references - ([a39028b](https://github.com/mr-pmillz/sj/commit/a39028b463839dffb1df6bd91b5ac1859cefe884))
+- Fixed bug that occurred when referencing non-existent schema values - ([6a01afb](https://github.com/mr-pmillz/sj/commit/6a01afb367cda14cf4815f95095c62ef255bb9e3))
+- Fixed bug where parameter values did not populate correctly - ([c399ca1](https://github.com/mr-pmillz/sj/commit/c399ca1ff8d0b57118c3e3a10ad774361d2e587b))
+- Fixed bug in response handling when a definition file initiates a redirect - ([8261a1c](https://github.com/mr-pmillz/sj/commit/8261a1c154de85d437835608e757e760e55dd28b))
+- Fixes bug due to improper handling of definition files with no servers defined - ([3d0e81f](https://github.com/mr-pmillz/sj/commit/3d0e81ffd4bb5f3691569869b74b730b6e0d585b))
+- Fixes multiple output and error handling bugs - ([4d05f51](https://github.com/mr-pmillz/sj/commit/4d05f51fbebe9d8a4e18142e9daaec12d801c1f2))
+- Fixes bug in dangerous word check function and adds flag to avoid checks for specific words. - ([09bbd4e](https://github.com/mr-pmillz/sj/commit/09bbd4e4c5f2c4e93fec09440ff3cbf8a99ad2ff))
+- Fixed bug in 'brute' command to avoid checking for dangerous strings - ([69bb632](https://github.com/mr-pmillz/sj/commit/69bb632a7f79822e196858cdefdd2378735b7a4e))
+- Fix the setting of the target to be within the scope of the function, otherwise it was set to nothing. - ([1f691cd](https://github.com/mr-pmillz/sj/commit/1f691cd7babfe418e5c2150428a126a3cb00b259))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: bump version - ([017eb9a](https://github.com/mr-pmillz/sj/commit/017eb9af507c7441b4ebe7807d26d1dfae9dcbc7))
+
+### 🚜 Refactor
+
+- Refactor: restructure project to idiomatic Go layout with reusable packages - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Move entry point from root main.go to cmd/sj/main.go - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Add version.go at module root for ldflags injection - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/config: central Config struct replacing 40+ global vars - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/httpclient: Client struct with *http.Client pointer - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/openapi: spec parsing, schema resolution, auth, conversion - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/output: Writer struct with multi-format output (JSON/JSONL/CSV) - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/scanner: request building with mode-based dispatch - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Extract pkg/brute: URL discovery scanner with wordlists - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Create internal/cli: cobra command wiring with shared loadSpec helper - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Default to random User-Agent (remove --randomize-user-agent flag) - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Remove all BishopFox references; update test defaults to example.com - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Add Astro Starlight documentation site in docs/ - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+- - Rewrite README.md with updated ownership and examples - ([a5acb3e](https://github.com/mr-pmillz/sj/commit/a5acb3e33250025c996afdb7610643f3ca082a4d))
+
+### 🛠 Improvements
+
+- Update .gitignore - ([32af8a0](https://github.com/mr-pmillz/sj/commit/32af8a0980fea556677c403fbdaa736f3a0f2611))
+
+<!-- generated by git-cliff -->
