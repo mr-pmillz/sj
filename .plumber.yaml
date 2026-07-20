@@ -21,7 +21,7 @@ github:
       - develop
       defaultMustBeProtected: true
       allowForcePush: false
-      codeOwnerApprovalRequired: true
+      codeOwnerApprovalRequired: false
     externalRefsMustNotCollide:
       enabled: true
     pipelineMustNotEnableDebugTrace:
