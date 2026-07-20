@@ -2,10 +2,27 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.5](https://github.com/mr-pmillz/sj/compare/v2.7.4...v2.7.5) - 2026-07-20
+
+### ✨ New features
+
+- Added missing allowed action to plumber config - ([cb610ce](https://github.com/mr-pmillz/sj/commit/cb610ced0720163b18f6d5ac04131b5dd2c648bf))
+- Added CODEOWNERS - ([3e58f71](https://github.com/mr-pmillz/sj/commit/3e58f71b62faf6b6613225462710acc1e982f746))
+- Add plumber config - ([920d843](https://github.com/mr-pmillz/sj/commit/920d843e73d6c6fdc397d027d1fa4d93924935e6))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([73873f7](https://github.com/mr-pmillz/sj/commit/73873f7ca5452e32d23a34186c7f2ea95a2db59a))
+
+### 🛠 Improvements
+
+- Update plumber settings - ([5f5da33](https://github.com/mr-pmillz/sj/commit/5f5da33b7a4d18766d23fb0c77ec3cb5b4059049))
+
 ## [2.7.4](https://github.com/mr-pmillz/sj/compare/v2.7.3...v2.7.4) - 2026-07-20
 
 ### ⚙️ Miscellaneous Tasks
 
+- Chore: update changelog - ([424b9bc](https://github.com/mr-pmillz/sj/commit/424b9bc37e09391b0605a1a21eb871d87f6ac52f))
 - Ci: create verified changelog commits - ([cc94e00](https://github.com/mr-pmillz/sj/commit/cc94e00f7b8576d71b39e52aa5175bca8df4a135))
 - Ci: create verified changelog commits - ([6d52d4c](https://github.com/mr-pmillz/sj/commit/6d52d4ce64a7862024e3ed2b48d721dcf0cd59e8))
 - Build changelog commits through GitHub's Git data API using the existing App installation token. Verify the returned signature before advancing the release or hotfix branch, and use a non-forced ref update so concurrent changes are never overwritten. - ([6d52d4c](https://github.com/mr-pmillz/sj/commit/6d52d4ce64a7862024e3ed2b48d721dcf0cd59e8))

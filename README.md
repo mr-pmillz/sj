@@ -6,25 +6,26 @@
 [![Release](https://github.com/mr-pmillz/sj/actions/workflows/release.yml/badge.svg)](https://github.com/mr-pmillz/sj/releases)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/mr-pmillz/sj)](https://go.dev/)
 [![License](https://img.shields.io/github/license/mr-pmillz/sj)](LICENSE)
+[![Plumber Score](https://score.getplumber.io/github.com/mr-pmillz/sj.svg)](https://score.getplumber.io/github.com/mr-pmillz/sj)
 
 sj is a command line tool designed to assist with auditing exposed Swagger/OpenAPI definition files by checking the associated API endpoints for weak authentication. It also provides command templates for manual vulnerability testing.
 
 It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON Schema, server overrides, webhooks, `QUERY`, and additional operations. Core subcommands include:
 
-| Command | Description |
-|---------|-------------|
-| `audit` | Passively finds authentication, transport, and contract risks; supports JSON and SARIF |
-| `automate` | Crafts requests to each endpoint and analyzes the response status code |
-| `prepare` | Generates curl/sqlmap commands for manual testing |
-| `endpoints` | Lists raw API routes (no parameter substitution) |
-| `brute` | Discovers hidden definition files via common file paths |
-| `convert` | Converts Swagger v2 definitions to OpenAPI v3 |
-| `collection` | Generates populated Bruno API penetration-testing collections from automate results |
-| `fuzz` | Runs rate-safe active API mutation, identity-comparison, PII, enumeration, and error checks |
-| `report` | Builds terminal, Markdown, and HTML API penetration-test reports |
+| Command               | Description                                                                                      |
+|-----------------------|--------------------------------------------------------------------------------------------------|
+| `audit`               | Passively finds authentication, transport, and contract risks; supports JSON and SARIF           |
+| `automate`            | Crafts requests to each endpoint and analyzes the response status code                           |
+| `prepare`             | Generates curl/sqlmap commands for manual testing                                                |
+| `endpoints`           | Lists raw API routes (no parameter substitution)                                                 |
+| `brute`               | Discovers hidden definition files via common file paths                                          |
+| `convert`             | Converts Swagger v2 definitions to OpenAPI v3                                                    |
+| `collection`          | Generates populated Bruno API penetration-testing collections from automate results              |
+| `fuzz`                | Runs rate-safe active API mutation, identity-comparison, PII, enumeration, and error checks      |
+| `report`              | Builds terminal, Markdown, and HTML API penetration-test reports                                 |
 | `run --full-workflow` | Chains authorized recon, enumeration, bounded exploitation, collection generation, and reporting |
-| `runs` | Lists runs in the default-on SQLite result database |
-| `mcp` | Starts an optional, policy-constrained MCP server for AI agents |
+| `runs`                | Lists runs in the default-on SQLite result database                                              |
+| `mcp`                 | Starts an optional, policy-constrained MCP server for AI agents                                  |
 
 ## Installation
 
