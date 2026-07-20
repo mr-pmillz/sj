@@ -6,8 +6,13 @@ All notable changes to this project will be documented [here](https://github.com
 
 ### ✨ New features
 
+- Added missing allowed action to plumber config - ([cb610ce](https://github.com/mr-pmillz/sj/commit/cb610ced0720163b18f6d5ac04131b5dd2c648bf))
 - Added CODEOWNERS - ([3e58f71](https://github.com/mr-pmillz/sj/commit/3e58f71b62faf6b6613225462710acc1e982f746))
 - Add plumber config - ([920d843](https://github.com/mr-pmillz/sj/commit/920d843e73d6c6fdc397d027d1fa4d93924935e6))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([73873f7](https://github.com/mr-pmillz/sj/commit/73873f7ca5452e32d23a34186c7f2ea95a2db59a))
 
 ### 🛠 Improvements
 
