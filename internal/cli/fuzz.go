@@ -103,7 +103,10 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 		return err
 	}
 	if len(selected) == 0 && len(workflows) == 0 {
-		return fmt.Errorf("no automate operations matched the requested fuzz scope")
+		emptyIDORScope := len(options.Endpoints) == 0 && strings.EqualFold(strings.TrimSpace(options.Scope), apitest.ScopeIDOR)
+		if !emptyIDORScope {
+			return fmt.Errorf("no automate operations matched the requested fuzz scope")
+		}
 	}
 	baseHeaders := append([]string(nil), cfg.Headers...)
 	if !hasHeader(baseHeaders, "User-Agent") {
