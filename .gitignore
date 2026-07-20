@@ -31,6 +31,11 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
+# Docs
+!docs/package.json
+!docs/package-lock.json
+!docs/tsconfig.json
+
 /sj
 *.txt
 *.json
