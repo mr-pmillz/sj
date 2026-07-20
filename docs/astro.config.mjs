@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import mermaid from 'astro-mermaid';
 
 const [repositoryOwner, repositoryName] = (
   process.env.GITHUB_REPOSITORY ?? 'BishopFox/sj'
@@ -12,10 +13,11 @@ export default defineConfig({
     `https://${repositoryOwner.toLowerCase()}.github.io`,
   base,
   integrations: [
+    mermaid({ autoTheme: true }),
     starlight({
       title: 'sj - Swagger Jacker',
       description: 'CLI tool for auditing exposed Swagger/OpenAPI definition files',
-      favicon: '/favicon.png',
+      favicon: '/favicon.png?v=2',
       social: [
         {
           icon: 'github',
@@ -59,6 +61,12 @@ export default defineConfig({
           items: [
             { slug: 'development/architecture' },
             { slug: 'development/contributing' },
+          ],
+        },
+        {
+          label: 'Contributing',
+          items: [
+            { slug: 'contributing/release-process' },
           ],
         },
       ],
