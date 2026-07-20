@@ -2,10 +2,15 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
-## [unreleased]
+## [2.7.3](https://github.com/mr-pmillz/sj/compare/v2.7.2...v2.7.3) - 2026-07-20
+
+### ✨ New features
+
+- Add CHANGELOG.md - ([697e06b](https://github.com/mr-pmillz/sj/commit/697e06bb9fa80de1418f33860437baa34baa3bbd))
 
 ### 🐛 Bug fixes
 
+- Fix favicon - ([6452b26](https://github.com/mr-pmillz/sj/commit/6452b2690c8a2f30a86712fc60abdd01237111b9))
 - Fixed URI for getting-started in docs - ([2a72fac](https://github.com/mr-pmillz/sj/commit/2a72fac697c1a78c0fefe42d6c331502e7566939))
 
 ## [2.7.2](https://github.com/mr-pmillz/sj/compare/v2.7.1...v2.7.2) - 2026-07-20
