@@ -21,9 +21,13 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) ./cmd/sj
 
 test: ## Run all tests
+	@if ! command -v tparse >/dev/null 2>&1; then \
+			echo "tparse not installed; installing..."; \
+			go install github.com/mfridman/tparse@latest; \
+	fi
 	@echo "🧪 Running all tests..."
 	@mkdir -p $(COVER_DIR)
-	go test -covermode=atomic -coverprofile=$(COVER_DIR)/coverage.out ./...
+	go test -json -covermode=atomic -coverprofile=$(COVER_DIR)/coverage.out ./... | tparse -all
 
 test-race:
 	go test ./... -count=1 -race
