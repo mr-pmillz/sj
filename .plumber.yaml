@@ -70,6 +70,7 @@ github:
         - docker/setup-buildx-action
         - docker/login-action
         - goreleaser/goreleaser-action
+        - getplumber/plumber
     workflowMustNotInjectUserInputInScripts:
       enabled: true
     workflowMustNotWriteUntrustedContentToGitHubEnv:
