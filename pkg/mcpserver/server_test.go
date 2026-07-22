@@ -454,14 +454,20 @@ func TestBruteToolRunsBatchAndPreflightsEveryTargetPolicy(t *testing.T) {
 		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			calls.Add(1)
 			status := http.StatusNotFound
+			contentType := "application/json"
 			body := `{"error":"missing"}`
-			if request.URL.Path == "/swagger.json" {
+			switch request.URL.Path {
+			case "/swagger.json":
+				status = http.StatusForbidden
+				contentType = "text/html"
+				body = `<!doctype html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/check"></script>`
+			case "/openapi.json":
 				status = http.StatusOK
 				body = testOpenAPI
 			}
 			return &http.Response{
 				StatusCode: status,
-				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Header:     http.Header{"Content-Type": []string{contentType}},
 				Body:       io.NopCloser(strings.NewReader(body)),
 				Request:    request,
 			}, nil
@@ -485,11 +491,20 @@ func TestBruteToolRunsBatchAndPreflightsEveryTargetPolicy(t *testing.T) {
 			SpecsFound []struct {
 				URL string `json:"url"`
 			} `json:"specs_found"`
+			Summary struct {
+				WAFChallengeDetected  bool `json:"waf_challenge_detected"`
+				WAFChallengeResponses int  `json:"waf_challenge_responses"`
+			} `json:"summary"`
 		} `json:"reports"`
 	}
 	decodeStructured(t, result, &output)
 	if len(output.Reports) != 2 || len(output.Reports[0].SpecsFound) == 0 || len(output.Reports[1].SpecsFound) == 0 || calls.Load() == 0 {
 		t.Fatalf("calls=%d output=%#v", calls.Load(), output)
+	}
+	for _, report := range output.Reports {
+		if !report.Summary.WAFChallengeDetected || report.Summary.WAFChallengeResponses != 1 {
+			t.Fatalf("MCP report lost WAF coverage classification: %#v", report)
+		}
 	}
 
 	calls.Store(0)

@@ -614,6 +614,12 @@ func (state *loader) finalize() {
 		if summary.TransportErrorLimitReached {
 			state.dataset.TransportLimitedTargets++
 		}
+		if summary.WAFChallengeDetected {
+			state.dataset.WAFChallengedTargets++
+		}
+		state.dataset.WAFChallengeResponses += summary.WAFChallengeResponses
+		state.dataset.BruteReferencesRejected += summary.ReferencesRejected
+		state.dataset.BruteReferencesSkipped += summary.ReferencesSkipped
 	}
 	unique := len(state.dataset.Targets) + len(state.dataset.Discoveries) + len(state.dataset.BruteObservations) + len(state.dataset.Operations) + len(state.dataset.Failures) + len(state.dataset.ImportedFindings)
 	state.dataset.DuplicateRecords = max(0, state.dataset.RawRecords-unique)

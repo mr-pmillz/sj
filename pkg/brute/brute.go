@@ -33,6 +33,8 @@ const maxConsecutiveTransportErrors = 3
 const (
 	minimumExactWildcardResponses = 5
 	minimumSizeWildcardResponses  = 8
+	maxReferenceDepth             = 3
+	maxReferencesPerResponse      = 32
 )
 
 func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
@@ -237,6 +239,9 @@ func makeReport(target string, matches []match, interesting []Interesting, summa
 }
 
 func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bool) error {
+	if report.Summary.WAFChallengeDetected {
+		output.PrintWarn("Browser/WAF challenges were detected in %d response(s); discovery results may be incomplete. For an authorized assessment, replay the exact solved browser User-Agent and Cookie headers from the same network path.", report.Summary.WAFChallengeResponses)
+	}
 	if len(matches) == 0 {
 		output.PrintErr("\nNo definition file found for:\t%s", output.TerminalSafe(report.Target))
 	} else if dumpSpec && !s.Cfg.EndpointOnly {
@@ -262,8 +267,9 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 			output.PrintInfo("  [%d] %s (%s)\n", interesting.StatusCode, output.TerminalSafe(interesting.URL), output.TerminalSafe(interesting.ContentType))
 		}
 	}
-	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d wildcard false positives filtered, %d errors\n",
-		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.FalsePositivesFiltered, report.Summary.Errors)
+	output.PrintInfo("\nSummary: %d URLs tested, %d specs found, %d interesting, %d wildcard false positives filtered, %d WAF challenges, %d references rejected, %d references skipped, %d errors\n",
+		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.FalsePositivesFiltered, report.Summary.WAFChallengeResponses,
+		report.Summary.ReferencesRejected, report.Summary.ReferencesSkipped, report.Summary.Errors)
 	return nil
 }
 
@@ -301,10 +307,17 @@ type scanState struct {
 	interesting                []Interesting
 	summary                    Summary
 	tested                     map[string]bool
+	known                      map[string]bool
+	queued                     map[string]bool
 	found                      map[string]bool
-	variationQueue             []string
+	variationQueue             []scanCandidate
 	consecutiveTransportErrors int
 	responseFingerprints       []responseFingerprint
+}
+
+type scanCandidate struct {
+	url            string
+	referenceDepth int
 }
 
 type responseFingerprint struct {
@@ -314,9 +327,14 @@ type responseFingerprint struct {
 }
 
 func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []string) ([]match, []Interesting, Summary, error) {
-	state := &scanState{tested: make(map[string]bool, len(candidates)), found: map[string]bool{}}
+	state := &scanState{
+		tested: make(map[string]bool, len(candidates)),
+		known:  make(map[string]bool, len(candidates)),
+		queued: make(map[string]bool),
+		found:  make(map[string]bool),
+	}
 	for _, candidate := range candidates {
-		state.tested[candidate] = true
+		state.known[candidate] = true
 	}
 candidateLoop:
 	for index, candidate := range candidates {
@@ -326,7 +344,7 @@ candidateLoop:
 		if s.Cfg.BruteWorkers <= 1 {
 			fmt.Fprintf(os.Stderr, "\033[2K\rScanning: %d/%d", index+1, len(candidates))
 		}
-		s.processURL(ctx, candidate, state)
+		s.processCandidate(ctx, scanCandidate{url: candidate}, state)
 		if err := ctx.Err(); err != nil {
 			return state.matches, state.interesting, state.summary, err
 		}
@@ -336,7 +354,7 @@ candidateLoop:
 		for len(state.variationQueue) > 0 {
 			variation := state.variationQueue[0]
 			state.variationQueue = state.variationQueue[1:]
-			s.processURL(ctx, variation, state)
+			s.processCandidate(ctx, variation, state)
 			if err := ctx.Err(); err != nil {
 				return state.matches, state.interesting, state.summary, err
 			}
@@ -356,6 +374,26 @@ candidateLoop:
 }
 
 func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanState) {
+	s.processCandidate(ctx, scanCandidate{url: targetURL}, state)
+}
+
+func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate, state *scanState) {
+	if state.tested == nil {
+		state.tested = make(map[string]bool)
+	}
+	if state.known == nil {
+		state.known = make(map[string]bool)
+	}
+	if state.queued == nil {
+		state.queued = make(map[string]bool)
+	}
+	delete(state.queued, candidate.url)
+	if state.tested[candidate.url] {
+		return
+	}
+	state.tested[candidate.url] = true
+	state.known[candidate.url] = true
+	targetURL := candidate.url
 	state.summary.URLsTested++
 	body, contentType, status := s.Client.BruteFetchContext(ctx, targetURL)
 	if status == 0 {
@@ -365,32 +403,47 @@ func (s *Scanner) processURL(ctx context.Context, targetURL string, state *scanS
 	}
 	state.consecutiveTransportErrors = 0
 	countStatus(&state.summary, status)
-	if len(body) == 0 || status < 200 || status >= 300 {
+	if len(body) == 0 {
+		return
+	}
+	if status < 200 || status >= 300 {
+		recordWAFChallenge(body, contentType, status, &state.summary)
 		return
 	}
 
 	matchCount := len(state.matches)
 	if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
-		s.addSpec(targetURL, contentType, extracted, state)
+		s.addSpec(targetURL, contentType, extracted, candidate.referenceDepth, state)
 	}
 	if len(state.matches) == matchCount {
-		s.addSpec(targetURL, contentType, body, state)
+		s.addSpec(targetURL, contentType, body, candidate.referenceDepth, state)
 	}
 	if len(state.matches) > matchCount {
 		return
 	}
+	if recordWAFChallenge(body, contentType, status, &state.summary) {
+		return
+	}
 
-	lowerType := strings.ToLower(contentType)
-	if strings.Contains(lowerType, "html") || looksLikeHTML(body) {
-		discoveredURLs := ExtractSpecURLsFromHTML(body, targetURL)
-		for _, discovered := range discoveredURLs {
-			s.queueVariation(discovered, state)
-		}
+	references := extractDiscoveryReferences(body, contentType, targetURL)
+	state.summary.ReferencesRejected += references.Rejected
+	state.summary.ReferencesSkipped += references.Skipped
+	for _, discovered := range references.URLs {
+		s.queueReference(discovered, candidate.referenceDepth+1, state)
 	}
 	if len(state.interesting) < s.Cfg.MaxCandidates {
 		state.interesting = append(state.interesting, Interesting{URL: targetURL, StatusCode: status, ContentType: contentType})
 		state.responseFingerprints = append(state.responseFingerprints, newResponseFingerprint(targetURL, status, contentType, body))
 	}
+}
+
+func recordWAFChallenge(body []byte, contentType string, status int, summary *Summary) bool {
+	if !looksLikeWAFChallenge(body, contentType, status) {
+		return false
+	}
+	summary.WAFChallengeDetected = true
+	summary.WAFChallengeResponses++
+	return true
 }
 
 func newResponseFingerprint(targetURL string, status int, contentType string, body []byte) responseFingerprint {
@@ -458,7 +511,7 @@ func countStatus(summary *Summary, status int) {
 	}
 }
 
-func (s *Scanner) addSpec(targetURL, contentType string, body []byte, state *scanState) {
+func (s *Scanner) addSpec(targetURL, contentType string, body []byte, referenceDepth int, state *scanState) {
 	spec, version := TryParseAsSpec(body)
 	if spec == nil || state.found[targetURL] {
 		return
@@ -472,15 +525,34 @@ func (s *Scanner) addSpec(targetURL, contentType string, body []byte, state *sca
 	state.matches = append(state.matches, found)
 	output.PrintInfo("\nDefinition file found: %s (OpenAPI %s, %s)\n", output.TerminalSafe(targetURL), output.TerminalSafe(version), output.TerminalSafe(found.title))
 	for _, variation := range GeneratePathVariations(targetURL) {
-		s.queueVariation(variation, state)
+		s.queueVariation(variation, referenceDepth, state)
 	}
 }
 
-func (s *Scanner) queueVariation(candidate string, state *scanState) {
-	if state.tested[candidate] || len(state.tested) >= s.Cfg.MaxCandidates {
+func (s *Scanner) queueReference(candidate string, referenceDepth int, state *scanState) {
+	if referenceDepth > maxReferenceDepth {
+		state.summary.ReferencesSkipped++
 		return
 	}
-	state.tested[candidate] = true
+	s.queueCandidate(scanCandidate{url: candidate, referenceDepth: referenceDepth}, state)
+}
+
+func (s *Scanner) queueVariation(candidate string, referenceDepth int, state *scanState) {
+	s.queueCandidate(scanCandidate{url: candidate, referenceDepth: referenceDepth}, state)
+}
+
+func (s *Scanner) queueCandidate(candidate scanCandidate, state *scanState) {
+	if state.tested[candidate.url] || state.queued[candidate.url] {
+		return
+	}
+	if !state.known[candidate.url] {
+		if len(state.known) >= s.Cfg.MaxCandidates {
+			state.summary.ReferencesSkipped++
+			return
+		}
+		state.known[candidate.url] = true
+	}
+	state.queued[candidate.url] = true
 	state.variationQueue = append(state.variationQueue, candidate)
 }
 
