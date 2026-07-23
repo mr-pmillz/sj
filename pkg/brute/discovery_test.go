@@ -234,6 +234,271 @@ func TestFindAllDefinitionFilesClassifiesWAFChallenge(t *testing.T) {
 	}
 }
 
+func TestFindAllDefinitionFilesStopsAfterPriorityCoverageOfConsecutiveWAFChallenges(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		body := fmt.Sprintf(`<!doctype html><title>Just a moment... %d</title><script src="/cdn-cgi/challenge-platform/%d"></script>`, requests, requests)
+		return bruteResponse(request, http.StatusForbidden, "text/html", body), nil
+	})
+
+	candidates := make([]string, len(PriorityURLs)+10)
+	for index := range candidates {
+		candidates[index] = fmt.Sprintf("https://api.example/candidate-%d", index)
+	}
+	_, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != len(PriorityURLs) {
+		t.Fatalf("requests = %d, want the %d prioritized candidates before stopping", requests, len(PriorityURLs))
+	}
+	if summary.WAFChallengeResponses != len(PriorityURLs) || !summary.WAFChallengeLimitReached {
+		t.Fatalf("summary = %#v, want an explicit WAF stop after priority coverage", summary)
+	}
+}
+
+func TestWAFChallengeLimitPreservesPriorityCoverage(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	specPath := fmt.Sprintf("/candidate-%d", len(PriorityURLs)-1)
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path == specPath {
+			body := `{"openapi":"3.1.0","info":{"title":"Found after challenge tier","version":"1"},"paths":{}}`
+			return bruteResponse(request, http.StatusOK, "application/json", body), nil
+		}
+		body := fmt.Sprintf(`<!doctype html><title>Just a moment... %d</title><script src="/cdn-cgi/challenge-platform/%d"></script>`, requests, requests)
+		return bruteResponse(request, http.StatusForbidden, "text/html", body), nil
+	})
+
+	candidates := make([]string, len(PriorityURLs)+10)
+	for index := range candidates {
+		candidates[index] = fmt.Sprintf("https://api.example/candidate-%d", index)
+	}
+	matches, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || matches[0].url != "https://api.example"+specPath {
+		t.Fatalf("priority-tier specification was suppressed: matches=%#v summary=%#v requests=%d", matches, summary, requests)
+	}
+}
+
+func TestWAFChallengeResponsesDoNotTripUnavailableLimit(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		body := fmt.Sprintf(`<!doctype html><title>Just a moment... %d</title><script src="/cdn-cgi/challenge-platform/%d"></script>`, requests, requests)
+		return bruteResponse(request, http.StatusServiceUnavailable, "text/html", body), nil
+	})
+
+	candidates := make([]string, len(PriorityURLs)+10)
+	for index := range candidates {
+		candidates[index] = fmt.Sprintf("https://api.example/candidate-%d", index)
+	}
+	_, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != len(PriorityURLs) || !summary.WAFChallengeLimitReached {
+		t.Fatalf("requests=%d summary=%#v, want prioritized WAF coverage", requests, summary)
+	}
+	if summary.UnavailableLimitReached {
+		t.Fatalf("WAF challenge was also classified as uniform unavailability: %#v", summary)
+	}
+}
+
+func TestFindAllDefinitionFilesRequiresConsecutiveWAFChallenges(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/challenge-1", "/challenge-2", "/challenge-3", "/challenge-4":
+			body := `<!doctype html><title>Just a moment...</title><script src="/cdn-cgi/challenge-platform/script.js"></script>`
+			return bruteResponse(request, http.StatusForbidden, "text/html", body), nil
+		case "/openapi.json":
+			body := `{"openapi":"3.1.0","info":{"title":"Recovered","version":"1"},"paths":{}}`
+			return bruteResponse(request, http.StatusOK, "application/json", body), nil
+		default:
+			return bruteResponse(request, http.StatusNotFound, "application/json", `{"error":"missing"}`), nil
+		}
+	})
+
+	candidates := []string{
+		"https://api.example/challenge-1",
+		"https://api.example/challenge-2",
+		"https://api.example/ordinary-response",
+		"https://api.example/challenge-3",
+		"https://api.example/challenge-4",
+		"https://api.example/openapi.json",
+	}
+	matches, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || summary.WAFChallengeLimitReached {
+		t.Fatalf("interrupted challenge sequences suppressed later recovery: matches=%#v summary=%#v", matches, summary)
+	}
+}
+
+func TestKnownBulkPathVariationIsNotPromotedAfterSpecDiscovery(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	foundURL := "https://api.example/swagger/v2/swagger-ui-init.js"
+	variations := GeneratePathVariations(foundURL)
+	if len(variations) == 0 {
+		t.Fatal("test fixture did not generate path variations")
+	}
+	knownVariation := variations[len(variations)-1]
+	var calls []string
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.String())
+		if request.URL.String() == foundURL || request.URL.String() == knownVariation {
+			body := `{"openapi":"3.1.0","info":{"title":"Catch-all","version":"1"},"paths":{}}`
+			return bruteResponse(request, http.StatusOK, "application/json", body), nil
+		}
+		return bruteResponse(request, http.StatusNotFound, "application/json", `{"error":"missing"}`), nil
+	})
+
+	candidates := []string{foundURL}
+	for index := 0; index <= len(PriorityURLs); index++ {
+		candidates = append(candidates, fmt.Sprintf("https://api.example/decoy-%d", index))
+	}
+	candidates = append(candidates, knownVariation)
+	matches, _, _, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(calls, knownVariation) {
+		t.Fatalf("known bulk variation was incorrectly promoted: %s", knownVariation)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("matches = %#v, want only the original specification", matches)
+	}
+}
+
+func TestFindAllDefinitionFilesStopsAfterRepeatedEquivalentUnavailableResponses(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		body := fmt.Sprintf(`<html><title>Service unavailable %02d</title></html>`, requests)
+		return bruteResponse(request, http.StatusServiceUnavailable, "text/html", body), nil
+	})
+
+	candidates := make([]string, 10)
+	for index := range candidates {
+		candidates[index] = fmt.Sprintf("https://api.example/candidate-%d", index)
+	}
+	_, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3 equivalent unavailable responses before stopping", requests)
+	}
+	if !summary.UnavailableLimitReached || summary.Responses5xx != 3 {
+		t.Fatalf("summary = %#v, want explicit unavailable-response coverage limit", summary)
+	}
+}
+
+func TestFindAllDefinitionFilesStopsImmediatelyOnRateLimit(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return bruteResponse(request, http.StatusTooManyRequests, "application/json", `{"error":"rate limited"}`), nil
+	})
+
+	candidates := []string{
+		"https://api.example/swagger.json",
+		"https://api.example/openapi.json",
+		"https://api.example/api-docs",
+	}
+	_, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want immediate stop after HTTP 429", requests)
+	}
+	if !summary.RateLimitReached || summary.Responses4xx != 1 {
+		t.Fatalf("summary = %#v, want explicit rate-limit coverage stop", summary)
+	}
+}
+
+func TestFindAllDefinitionFilesRequiresEquivalentUnavailableResponseShapes(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path == "/openapi.json" {
+			return bruteResponse(request, http.StatusOK, "application/json", `{"openapi":"3.1.0","info":{"title":"Recovered","version":"1"},"paths":{}}`), nil
+		}
+		body := fmt.Sprintf(`<html><title>Gateway failure %s</title></html>`, strings.Repeat("x", requests))
+		return bruteResponse(request, http.StatusServiceUnavailable, "text/html", body), nil
+	})
+
+	candidates := []string{
+		"https://api.example/first",
+		"https://api.example/second",
+		"https://api.example/third",
+		"https://api.example/openapi.json",
+	}
+	matches, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 || summary.UnavailableLimitReached {
+		t.Fatalf("distinct unavailable responses suppressed later recovery: matches=%#v summary=%#v", matches, summary)
+	}
+}
+
+func TestFindAllDefinitionFilesContinuesPastOrdinaryNotFoundResponses(t *testing.T) {
+	cfg := config.New()
+	cfg.BruteWorkers = 2
+	client := httpclient.NewClient(cfg)
+	requests := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path == "/openapi.json" {
+			return bruteResponse(request, http.StatusOK, "application/json", `{"openapi":"3.1.0","info":{"title":"Found after 404s","version":"1"},"paths":{}}`), nil
+		}
+		return bruteResponse(request, http.StatusNotFound, "application/json", `{"error":"missing"}`), nil
+	})
+
+	candidates := []string{
+		"https://api.example/first",
+		"https://api.example/second",
+		"https://api.example/third",
+		"https://api.example/openapi.json",
+	}
+	matches, _, _, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests < len(candidates) || len(matches) != 1 {
+		t.Fatalf("requests = %d, matches = %#v; ordinary 404 responses stopped discovery", requests, matches)
+	}
+}
+
 func TestPriorityURLsIncludeSelectedHTMLUIEntrypoints(t *testing.T) {
 	for _, entrypoint := range []string{"/docs/index.html", "/swagger/index.html", "/api-docs/index.html", "/redoc/index.html"} {
 		if !slices.Contains(PriorityURLs, entrypoint) {

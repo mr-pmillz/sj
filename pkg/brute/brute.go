@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,8 @@ const (
 	minimumSizeWildcardResponses  = 8
 	maxReferenceDepth             = 3
 	maxReferencesPerResponse      = 32
+	maxConsecutiveWAFChallenges   = 3
+	maxConsecutiveUnavailable     = 3
 )
 
 func NewScanner(client *httpclient.Client, cfg *config.Config) *Scanner {
@@ -242,6 +245,15 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 	if report.Summary.WAFChallengeDetected {
 		output.PrintWarn("Browser/WAF challenges were detected in %d response(s); discovery results may be incomplete. For an authorized assessment, replay the exact solved browser User-Agent and Cookie headers from the same network path.", report.Summary.WAFChallengeResponses)
 	}
+	if report.Summary.WAFChallengeLimitReached {
+		output.PrintWarn("Discovery stopped after prioritized candidates returned sustained browser/WAF challenges; the target was not exposing its underlying content.")
+	}
+	if report.Summary.RateLimitReached {
+		output.PrintWarn("Discovery stopped after HTTP 429 to avoid exhausting the target's advertised request capacity.")
+	}
+	if report.Summary.UnavailableLimitReached {
+		output.PrintWarn("Discovery stopped after %d consecutive identical 502/503/504 responses; the target was uniformly unavailable.", maxConsecutiveUnavailable)
+	}
 	if len(matches) == 0 {
 		output.PrintErr("\nNo definition file found for:\t%s", output.TerminalSafe(report.Target))
 	} else if dumpSpec && !s.Cfg.EndpointOnly {
@@ -303,16 +315,20 @@ func writeBytesAtomically(path string, data []byte) error {
 }
 
 type scanState struct {
-	matches                    []match
-	interesting                []Interesting
-	summary                    Summary
-	tested                     map[string]bool
-	known                      map[string]bool
-	queued                     map[string]bool
-	found                      map[string]bool
-	variationQueue             []scanCandidate
-	consecutiveTransportErrors int
-	responseFingerprints       []responseFingerprint
+	matches                     []match
+	interesting                 []Interesting
+	summary                     Summary
+	tested                      map[string]bool
+	known                       map[string]bool
+	queued                      map[string]bool
+	found                       map[string]bool
+	variationQueue              []scanCandidate
+	consecutiveTransportErrors  int
+	consecutiveWAFChallenges    int
+	minimumWAFChallengeCoverage int
+	consecutiveUnavailable      int
+	lastUnavailableShape        string
+	responseFingerprints        []responseFingerprint
 }
 
 type scanCandidate struct {
@@ -328,10 +344,11 @@ type responseFingerprint struct {
 
 func (s *Scanner) findAllDefinitionFiles(ctx context.Context, candidates []string) ([]match, []Interesting, Summary, error) {
 	state := &scanState{
-		tested: make(map[string]bool, len(candidates)),
-		known:  make(map[string]bool, len(candidates)),
-		queued: make(map[string]bool),
-		found:  make(map[string]bool),
+		tested:                      make(map[string]bool, len(candidates)),
+		known:                       make(map[string]bool, len(candidates)),
+		queued:                      make(map[string]bool),
+		found:                       make(map[string]bool),
+		minimumWAFChallengeCoverage: min(len(candidates), len(PriorityURLs)),
 	}
 	for _, candidate := range candidates {
 		state.known[candidate] = true
@@ -348,7 +365,7 @@ candidateLoop:
 		if err := ctx.Err(); err != nil {
 			return state.matches, state.interesting, state.summary, err
 		}
-		if state.transportErrorLimitReached() {
+		if state.scanLimitReached() {
 			break
 		}
 		for len(state.variationQueue) > 0 {
@@ -358,7 +375,7 @@ candidateLoop:
 			if err := ctx.Err(); err != nil {
 				return state.matches, state.interesting, state.summary, err
 			}
-			if state.transportErrorLimitReached() {
+			if state.scanLimitReached() {
 				break candidateLoop
 			}
 		}
@@ -397,6 +414,8 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 	state.summary.URLsTested++
 	body, contentType, status := s.Client.BruteFetchContext(ctx, targetURL)
 	if status == 0 {
+		state.resetUnavailableSequence()
+		state.recordWAFChallengeLimit(false)
 		state.summary.Errors++
 		state.consecutiveTransportErrors++
 		return
@@ -404,12 +423,17 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 	state.consecutiveTransportErrors = 0
 	countStatus(&state.summary, status)
 	if len(body) == 0 {
+		state.recordResponseLimit(status, contentType, body, false)
+		state.recordWAFChallengeLimit(false)
 		return
 	}
 	if status < 200 || status >= 300 {
-		recordWAFChallenge(body, contentType, status, &state.summary)
+		challenge := recordWAFChallenge(body, contentType, status, &state.summary)
+		state.recordResponseLimit(status, contentType, body, challenge)
+		state.recordWAFChallengeLimit(challenge)
 		return
 	}
+	state.recordResponseLimit(status, contentType, body, false)
 
 	matchCount := len(state.matches)
 	if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
@@ -419,9 +443,12 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 		s.addSpec(targetURL, contentType, body, candidate.referenceDepth, state)
 	}
 	if len(state.matches) > matchCount {
+		state.recordWAFChallengeLimit(false)
 		return
 	}
-	if recordWAFChallenge(body, contentType, status, &state.summary) {
+	challenge := recordWAFChallenge(body, contentType, status, &state.summary)
+	state.recordWAFChallengeLimit(challenge)
+	if challenge {
 		return
 	}
 
@@ -493,6 +520,59 @@ func (state *scanState) transportErrorLimitReached() bool {
 	return true
 }
 
+func (state *scanState) scanLimitReached() bool {
+	if state.transportErrorLimitReached() {
+		return true
+	}
+	if !state.summary.RateLimitReached && !state.summary.UnavailableLimitReached && !state.summary.WAFChallengeLimitReached {
+		return false
+	}
+	state.variationQueue = nil
+	return true
+}
+
+func (state *scanState) recordWAFChallengeLimit(challenge bool) {
+	if !challenge {
+		state.consecutiveWAFChallenges = 0
+		return
+	}
+	state.consecutiveWAFChallenges++
+	if state.consecutiveWAFChallenges >= maxConsecutiveWAFChallenges && state.summary.URLsTested >= state.minimumWAFChallengeCoverage {
+		state.summary.WAFChallengeLimitReached = true
+	}
+}
+
+func (state *scanState) recordResponseLimit(status int, contentType string, body []byte, wafChallenge bool) {
+	if status == http.StatusTooManyRequests {
+		state.summary.RateLimitReached = true
+		state.resetUnavailableSequence()
+		return
+	}
+	if wafChallenge {
+		state.resetUnavailableSequence()
+		return
+	}
+	if status != http.StatusBadGateway && status != http.StatusServiceUnavailable && status != http.StatusGatewayTimeout {
+		state.resetUnavailableSequence()
+		return
+	}
+	shape := newResponseFingerprint("", status, contentType, body).sizeKey
+	if shape != state.lastUnavailableShape {
+		state.lastUnavailableShape = shape
+		state.consecutiveUnavailable = 1
+		return
+	}
+	state.consecutiveUnavailable++
+	if state.consecutiveUnavailable >= maxConsecutiveUnavailable {
+		state.summary.UnavailableLimitReached = true
+	}
+}
+
+func (state *scanState) resetUnavailableSequence() {
+	state.consecutiveUnavailable = 0
+	state.lastUnavailableShape = ""
+}
+
 func looksLikeHTML(body []byte) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(string(body[:min(len(body), 512)])))
 	return strings.HasPrefix(trimmed, "<!doctype html") || strings.HasPrefix(trimmed, "<html")
@@ -538,6 +618,11 @@ func (s *Scanner) queueReference(candidate string, referenceDepth int, state *sc
 }
 
 func (s *Scanner) queueVariation(candidate string, referenceDepth int, state *scanState) {
+	// Bulk candidates retain their original priority. Only genuinely new path
+	// variants should interrupt that ordering after a specification is found.
+	if state.known[candidate] {
+		return
+	}
 	s.queueCandidate(scanCandidate{url: candidate, referenceDepth: referenceDepth}, state)
 }
 

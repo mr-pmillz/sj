@@ -173,7 +173,7 @@ Scan multiple targets from a file:
 sj brute -U targets.txt --workers 8 -qi -F json -o results.json
 ```
 
-`brute` follows same-origin Swagger UI, Redoc, Swashbuckle, initializer JavaScript, and JSON configuration references with bounded depth and fan-out. Cross-origin, credential-bearing, and non-HTTP references are rejected before network I/O. Browser/WAF challenges, policy rejections, traversal-limit skips, and repeated wildcard HTTP 200 responses are reported as explicit coverage signals. Valid OpenAPI documents are never removed by the wildcard filter.
+`brute` follows same-origin Swagger UI, Redoc, Swashbuckle, initializer JavaScript, and JSON configuration references with bounded depth and fan-out. Cross-origin, credential-bearing, and non-HTTP references are rejected before network I/O. Browser/WAF challenges, sustained-challenge stops after prioritized candidate coverage, rate-limit stops, repeated equivalent 502/503/504 stops, policy rejections, traversal-limit skips, and repeated wildcard HTTP 200 responses are reported as explicit coverage signals. Valid OpenAPI documents are never removed by the wildcard filter.
 
 ### Bruno penetration-test collections
 

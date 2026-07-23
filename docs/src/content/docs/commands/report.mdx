@@ -5,7 +5,7 @@ description: Generate API penetration-test reports from sj result artifacts or S
 
 The `report` command consolidates brute, automate, and fuzz evidence into terminal, Markdown, or self-contained HTML reports with HTTP statistics, host and method distributions, weighted severity, OWASP API Security Top 10 mappings, and API-focused testing guidance.
 
-Brute coverage includes WAF-challenged targets and responses, cross-origin or otherwise policy-rejected documentation references, references skipped by depth/fan-out/candidate limits, wildcard false positives, transport errors, and transport-limited targets. These are coverage limitations rather than confirmed vulnerabilities.
+Brute coverage includes WAF-challenged targets and responses, targets stopped after consecutive WAF challenges, rate-limited targets, targets stopped after repeated equivalent 502/503/504 responses, cross-origin or otherwise policy-rejected documentation references, references skipped by depth/fan-out/candidate limits, wildcard false positives, transport errors, and transport-limited targets. These are coverage limitations rather than confirmed vulnerabilities.
 
 ```bash
 sj --database authorized-qa.db -o api-pentest-report \

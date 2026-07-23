@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/mr-pmillz/sj/pkg/brute"
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/httpclient"
 )
@@ -516,6 +517,46 @@ func TestBruteToolRunsBatchAndPreflightsEveryTargetPolicy(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("brute sent %d requests before rejecting the complete target batch", calls.Load())
+	}
+}
+
+func TestBruteToolReturnsExplicitWAFChallengeCoverageStop(t *testing.T) {
+	var calls atomic.Int64
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			call := calls.Add(1)
+			body := fmt.Sprintf(`<!doctype html><title>Just a moment... %d</title><script src="/cdn-cgi/challenge-platform/%d"></script>`, call, call)
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		})
+		return client, client.InitErr
+	}
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowedHosts: []string{"api.test"}, clientFactory: factory,
+	})
+	result := callTool(t, session, "brute_openapi", map[string]any{
+		"targets":        []string{"https://api.test"},
+		"max_candidates": 3000,
+	})
+	if result.IsError {
+		t.Fatalf("brute failed: %s", toolText(result))
+	}
+	var output struct {
+		Reports []struct {
+			Summary struct {
+				WAFChallengeResponses    int  `json:"waf_challenge_responses"`
+				WAFChallengeLimitReached bool `json:"waf_challenge_limit_reached"`
+			} `json:"summary"`
+		} `json:"reports"`
+	}
+	decodeStructured(t, result, &output)
+	if len(output.Reports) != 1 || calls.Load() != int64(len(brute.PriorityURLs)) || output.Reports[0].Summary.WAFChallengeResponses != len(brute.PriorityURLs) || !output.Reports[0].Summary.WAFChallengeLimitReached {
+		t.Fatalf("calls=%d output=%#v", calls.Load(), output)
 	}
 }
 

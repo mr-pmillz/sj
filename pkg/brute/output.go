@@ -194,6 +194,9 @@ func PrintBatchSummary(reports []Report) {
 	totalReferencesSkipped := 0
 	targetsWithSpecs := 0
 	challengedTargets := 0
+	wafLimitedTargets := 0
+	rateLimitedTargets := 0
+	unavailableLimitedTargets := 0
 	for _, r := range reports {
 		totalSpecs += r.Summary.SpecsFoundCount
 		totalTested += r.Summary.URLsTested
@@ -208,6 +211,15 @@ func PrintBatchSummary(reports []Report) {
 		if r.Summary.WAFChallengeDetected {
 			challengedTargets++
 		}
+		if r.Summary.WAFChallengeLimitReached {
+			wafLimitedTargets++
+		}
+		if r.Summary.RateLimitReached {
+			rateLimitedTargets++
+		}
+		if r.Summary.UnavailableLimitReached {
+			unavailableLimitedTargets++
+		}
 	}
 	output.PrintInfo("\n=== Batch Summary ===\n")
 	output.PrintInfo("Targets processed:  %d\n", len(reports))
@@ -217,5 +229,6 @@ func PrintBatchSummary(reports []Report) {
 	output.PrintInfo("False positives:    %d filtered\n", totalFiltered)
 	output.PrintInfo("WAF challenges:     %d responses across %d targets\n", totalChallenges, challengedTargets)
 	output.PrintInfo("References:         %d rejected by policy, %d skipped by limits\n", totalReferencesRejected, totalReferencesSkipped)
+	output.PrintInfo("Coverage stops:     %d rate-limited, %d WAF-challenge-limited, %d unavailable-response-limited targets\n", rateLimitedTargets, wafLimitedTargets, unavailableLimitedTargets)
 	output.PrintInfo("Total errors:       %d\n", totalErrors)
 }

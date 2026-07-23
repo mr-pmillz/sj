@@ -618,8 +618,17 @@ func (state *loader) finalize() {
 			state.dataset.WAFChallengedTargets++
 		}
 		state.dataset.WAFChallengeResponses += summary.WAFChallengeResponses
+		if summary.WAFChallengeLimitReached {
+			state.dataset.WAFChallengeLimitedTargets++
+		}
 		state.dataset.BruteReferencesRejected += summary.ReferencesRejected
 		state.dataset.BruteReferencesSkipped += summary.ReferencesSkipped
+		if summary.RateLimitReached {
+			state.dataset.RateLimitedTargets++
+		}
+		if summary.UnavailableLimitReached {
+			state.dataset.UnavailableLimitedTargets++
+		}
 	}
 	unique := len(state.dataset.Targets) + len(state.dataset.Discoveries) + len(state.dataset.BruteObservations) + len(state.dataset.Operations) + len(state.dataset.Failures) + len(state.dataset.ImportedFindings)
 	state.dataset.DuplicateRecords = max(0, state.dataset.RawRecords-unique)

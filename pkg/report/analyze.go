@@ -145,7 +145,9 @@ func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 		BruteRequestErrors: dataset.BruteRequestErrors, BruteFalsePositivesFiltered: dataset.BruteFalsePositivesFiltered,
 		TransportLimitedTargets: dataset.TransportLimitedTargets, WAFChallengedTargets: dataset.WAFChallengedTargets,
 		WAFChallengeResponses: dataset.WAFChallengeResponses, BruteReferencesRejected: dataset.BruteReferencesRejected,
-		BruteReferencesSkipped: dataset.BruteReferencesSkipped,
+		WAFChallengeLimitedTargets: dataset.WAFChallengeLimitedTargets,
+		BruteReferencesSkipped:     dataset.BruteReferencesSkipped, RateLimitedTargets: dataset.RateLimitedTargets,
+		UnavailableLimitedTargets: dataset.UnavailableLimitedTargets,
 	}
 	metrics.UniqueRecords = len(dataset.Targets) + len(dataset.Discoveries) + len(dataset.BruteObservations) + len(dataset.Operations) + len(dataset.Failures) + len(dataset.ImportedFindings)
 	sources := make(map[string]struct{})

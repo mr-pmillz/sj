@@ -78,10 +78,10 @@ sj brute -u https://target.example.com -p http://127.0.0.1:8080
 2. Bounded responses are content-sniffed to find Swagger 2.0 or OpenAPI 3.x documents even when the server labels them incorrectly.
 3. Swagger UI, Redoc, and Swashbuckle references are followed through HTML, initializer JavaScript, and JSON configuration documents. Discovered references are promoted ahead of the remaining bulk candidates.
 4. Reference traversal is limited to the original HTTP(S) origin, three reference hops, 32 references per response, and the configured overall candidate limit. Cross-origin, credential-bearing, and non-HTTP references are rejected before a request is sent.
-5. Browser/WAF challenge pages are classified separately from transport errors and ordinary HTTP responses.
+5. Browser/WAF challenge pages are classified separately from transport errors and ordinary HTTP responses. Discovery preserves the complete prioritized candidate tier before stopping on a sustained sequence of classified challenges. It stops immediately on HTTP 429 or after three consecutive equivalent 502, 503, or 504 response shapes so blocked or uniformly unavailable services are not probed thousands of times.
 6. Discovered definition files and coverage limits are reported. In batch mode (`-U`), a combined summary is printed after all targets are processed.
 
-JSON summaries expose `waf_challenge_detected`, `waf_challenge_responses`, `references_rejected`, and `references_skipped`. These fields are also stored in SQLite runs and included in generated assessment reports so a challenge or traversal limit is not mistaken for complete negative coverage.
+JSON summaries expose `waf_challenge_detected`, `waf_challenge_responses`, `waf_challenge_limit_reached`, `references_rejected`, `references_skipped`, `rate_limit_reached`, and `unavailable_limit_reached`. These fields are also stored in SQLite runs and included in generated assessment reports so a challenge, availability response, or traversal limit is not mistaken for complete negative coverage.
 
 :::caution
 Custom request headers are applied to same-origin references only. If an authorized target requires a solved browser session, use the exact browser User-Agent and Cookie headers from the same network path. Treat session cookies and JSON result files containing authenticated specification URLs as sensitive assessment data.

@@ -31,15 +31,18 @@ func sampleReports() []Report {
 				{URL: "https://example.com/swagger-ui/", StatusCode: 200, ContentType: "text/html"},
 			},
 			Summary: Summary{
-				URLsTested:            100,
-				SpecsFoundCount:       2,
-				Responses2xx:          5,
-				Responses4xx:          90,
-				Errors:                5,
-				WAFChallengeDetected:  true,
-				WAFChallengeResponses: 3,
-				ReferencesRejected:    2,
-				ReferencesSkipped:     4,
+				URLsTested:               100,
+				SpecsFoundCount:          2,
+				Responses2xx:             5,
+				Responses4xx:             90,
+				Errors:                   5,
+				WAFChallengeDetected:     true,
+				WAFChallengeResponses:    3,
+				WAFChallengeLimitReached: true,
+				ReferencesRejected:       2,
+				ReferencesSkipped:        4,
+				RateLimitReached:         true,
+				UnavailableLimitReached:  true,
 			},
 		},
 	}
@@ -83,7 +86,7 @@ func TestWriteJSON_SingleReport(t *testing.T) {
 	if decoded.SpecsFound[0].Title != "Petstore" {
 		t.Errorf("first spec title = %q, want %q", decoded.SpecsFound[0].Title, "Petstore")
 	}
-	if !decoded.Summary.WAFChallengeDetected || decoded.Summary.WAFChallengeResponses != 3 || decoded.Summary.ReferencesRejected != 2 || decoded.Summary.ReferencesSkipped != 4 {
+	if !decoded.Summary.WAFChallengeDetected || decoded.Summary.WAFChallengeResponses != 3 || !decoded.Summary.WAFChallengeLimitReached || decoded.Summary.ReferencesRejected != 2 || decoded.Summary.ReferencesSkipped != 4 || !decoded.Summary.RateLimitReached || !decoded.Summary.UnavailableLimitReached {
 		t.Errorf("coverage summary = %#v", decoded.Summary)
 	}
 }
