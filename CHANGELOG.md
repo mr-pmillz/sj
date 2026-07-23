@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.6](https://github.com/mr-pmillz/sj/compare/v2.7.5...v2.7.6) - 2026-07-23
+
+### ✨ New features
+
+- Feat: add bounded API documentation discovery - ([a820390](https://github.com/mr-pmillz/sj/commit/a8203906241551a13d75ed98d250df350f084e39))
+- Follow same-origin Swagger UI, Redoc, and Swashbuckle references through HTML entrypoints, initializer JavaScript, JSON configuration documents, and referenced OpenAPI specifications. Promote discovered references ahead of bulk candidates and prioritize selected documentation UI paths. - ([a820390](https://github.com/mr-pmillz/sj/commit/a8203906241551a13d75ed98d250df350f084e39))
+- Enforce HTTP(S)-only same-origin traversal, reject credential-bearing references before request execution, and bound discovery by reference depth, per-response fan-out, candidate inspection, and the configured overall candidate limit. Preserve request cancellation, response limits, duplicate suppression, and existing path variation behavior. - ([a820390](https://github.com/mr-pmillz/sj/commit/a8203906241551a13d75ed98d250df350f084e39))
+- Classify browser and WAF challenge responses separately from ordinary HTTP failures while ensuring valid OpenAPI documents are parsed first. Expose challenge, policy-rejection, and traversal-limit coverage signals through console and structured output, SQLite history, MCP results, and terminal, Markdown, and HTML reports. - ([a820390](https://github.com/mr-pmillz/sj/commit/a8203906241551a13d75ed98d250df350f084e39))
+- Add adversarial discovery-chain, ordering, origin-policy, depth, fan-out, WAF false-positive, MCP, persistence, rendering, and fuzz coverage. Document the discovery model, safety constraints, output fields, and authenticated-session handling guidance. - ([a820390](https://github.com/mr-pmillz/sj/commit/a8203906241551a13d75ed98d250df350f084e39))
+
+### 🐛 Bug fixes
+
+- Fix: bound brute coverage failure modes - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+- Stop brute discovery immediately on HTTP 429 and after repeated equivalent gateway failures. Bound sustained WAF challenges only after the prioritized candidate tier, and keep classified challenges separate from unavailable responses so protected specifications can still be recovered. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+- Preserve bulk candidate ordering by queueing only genuinely new path variations. This avoids prematurely promoted version surfaces without interfering with same-origin documentation reference promotion. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+- Expose rate-limit, WAF-challenge, and unavailable-response stop reasons through JSON, batch output, SQLite-backed datasets, and terminal, Markdown, and HTML reports. Document these signals as incomplete coverage rather than negative findings. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+- Add adversarial scanner, MCP, structured-output, stored-result, and report tests for intermittent recovery, classification boundaries, candidate ordering, and coverage-field round trips. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+- Verified with the full Go test suite, focused race suites, go vet, golangci-lint, the documentation production build, MCP SOCKS5 target runs, SQLite checks, and report rendering. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([9d47635](https://github.com/mr-pmillz/sj/commit/9d47635e311aec8f7c4e2656fdf2ef59c22f5a22))
+
 ## [2.7.5](https://github.com/mr-pmillz/sj/compare/v2.7.4...v2.7.5) - 2026-07-20
 
 ### ✨ New features
@@ -12,6 +35,7 @@ All notable changes to this project will be documented [here](https://github.com
 
 ### ⚙️ Miscellaneous Tasks
 
+- Chore: update changelog - ([8d9d566](https://github.com/mr-pmillz/sj/commit/8d9d566376dfeaf90bad058f0a101af530a2154a))
 - Chore: update changelog - ([73873f7](https://github.com/mr-pmillz/sj/commit/73873f7ca5452e32d23a34186c7f2ea95a2db59a))
 
 ### 🛠 Improvements
