@@ -13,7 +13,13 @@ func TestDatasetFromStoredObservationsBuildsReportInput(t *testing.T) {
 		{Kind: "automate", Source: "https://api.example/openapi.json", Method: "GET", URL: "https://api.example/users/1", Path: "/users/1", Status: 200, ResponseBody: []byte(`{"email":"person@example.test"}`)},
 		{Kind: "automate_failure", Source: "https://api.example/openapi.json", Metadata: map[string]any{"error": "superseded transient failure"}},
 		{Kind: "automate_failure", Source: "https://api.example/broken.json", Metadata: map[string]any{"error": "path template could not be resolved"}},
-		{Kind: "brute_summary", Source: "https://api.example", Metadata: map[string]any{"urls_tested": 50, "false_positives_filtered": 10}},
+		{Kind: "brute_summary", Source: "https://api.example", Metadata: map[string]any{
+			"urls_tested": 50, "false_positives_filtered": 10,
+			"waf_challenge_detected": true, "waf_challenge_responses": 3,
+			"waf_challenge_limit_reached": true,
+			"references_rejected":         2, "references_skipped": 4,
+			"rate_limit_reached": true, "unavailable_limit_reached": true,
+		}},
 	}
 	dataset, err := DatasetFromStoredObservations(observations)
 	if err != nil {
@@ -24,6 +30,12 @@ func TestDatasetFromStoredObservationsBuildsReportInput(t *testing.T) {
 	}
 	if len(dataset.Discoveries) != 1 || len(dataset.BruteObservations) != 1 || dataset.BruteURLsTested != 50 || dataset.BruteFalsePositivesFiltered != 10 {
 		t.Fatalf("dataset = %#v", dataset)
+	}
+	if dataset.WAFChallengedTargets != 1 || dataset.WAFChallengeResponses != 3 || dataset.WAFChallengeLimitedTargets != 1 || dataset.BruteReferencesRejected != 2 || dataset.BruteReferencesSkipped != 4 {
+		t.Fatalf("brute coverage classification = %#v", dataset)
+	}
+	if dataset.RateLimitedTargets != 1 || dataset.UnavailableLimitedTargets != 1 {
+		t.Fatalf("brute response limits = %#v", dataset)
 	}
 	if len(dataset.Failures) != 1 || dataset.Failures[0].Source != "https://api.example/broken.json" || dataset.Failures[0].Error != "path template could not be resolved" {
 		t.Fatalf("failures = %#v", dataset.Failures)
@@ -85,10 +97,16 @@ func TestDatasetFromStoredResultsRetainsFuzzResponseProof(t *testing.T) {
 func TestMergeDatasetsDeduplicatesEquivalentActiveFindings(t *testing.T) {
 	finding := ImportedFinding{Severity: "high", Category: "pii_exposure", Title: "Potential PII exposed", Method: "GET", URL: "https://api.example/profile", Evidence: "matched_types=email"}
 	merged := MergeDatasets(
-		Dataset{RawRecords: 1, ImportedFindings: []ImportedFinding{finding}},
-		Dataset{RawRecords: 1, ImportedFindings: []ImportedFinding{finding}},
+		Dataset{RawRecords: 1, ImportedFindings: []ImportedFinding{finding}, WAFChallengedTargets: 1, WAFChallengeResponses: 2, WAFChallengeLimitedTargets: 1, BruteReferencesRejected: 3, BruteReferencesSkipped: 4, RateLimitedTargets: 1, UnavailableLimitedTargets: 2},
+		Dataset{RawRecords: 1, ImportedFindings: []ImportedFinding{finding}, WAFChallengedTargets: 2, WAFChallengeResponses: 3, WAFChallengeLimitedTargets: 2, BruteReferencesRejected: 4, BruteReferencesSkipped: 5, RateLimitedTargets: 2, UnavailableLimitedTargets: 3},
 	)
 	if len(merged.ImportedFindings) != 1 || merged.DuplicateRecords != 1 {
 		t.Fatalf("merged dataset = %#v", merged)
+	}
+	if merged.WAFChallengedTargets != 3 || merged.WAFChallengeResponses != 5 || merged.WAFChallengeLimitedTargets != 3 || merged.BruteReferencesRejected != 7 || merged.BruteReferencesSkipped != 9 {
+		t.Fatalf("merged brute coverage = %#v", merged)
+	}
+	if merged.RateLimitedTargets != 3 || merged.UnavailableLimitedTargets != 5 {
+		t.Fatalf("merged brute response limits = %#v", merged)
 	}
 }

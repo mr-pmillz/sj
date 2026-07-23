@@ -119,6 +119,21 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 		if summary.TransportErrorLimitReached {
 			dataset.TransportLimitedTargets++
 		}
+		if summary.WAFChallengeDetected {
+			dataset.WAFChallengedTargets++
+		}
+		dataset.WAFChallengeResponses += summary.WAFChallengeResponses
+		if summary.WAFChallengeLimitReached {
+			dataset.WAFChallengeLimitedTargets++
+		}
+		dataset.BruteReferencesRejected += summary.ReferencesRejected
+		dataset.BruteReferencesSkipped += summary.ReferencesSkipped
+		if summary.RateLimitReached {
+			dataset.RateLimitedTargets++
+		}
+		if summary.UnavailableLimitReached {
+			dataset.UnavailableLimitedTargets++
+		}
 	}
 	sort.Strings(dataset.Targets)
 	sort.Slice(dataset.Discoveries, func(i, j int) bool { return dataset.Discoveries[i].URL < dataset.Discoveries[j].URL })
@@ -172,6 +187,13 @@ func MergeDatasets(datasets ...Dataset) Dataset {
 		merged.BruteRequestErrors += dataset.BruteRequestErrors
 		merged.BruteFalsePositivesFiltered += dataset.BruteFalsePositivesFiltered
 		merged.TransportLimitedTargets += dataset.TransportLimitedTargets
+		merged.WAFChallengedTargets += dataset.WAFChallengedTargets
+		merged.WAFChallengeResponses += dataset.WAFChallengeResponses
+		merged.WAFChallengeLimitedTargets += dataset.WAFChallengeLimitedTargets
+		merged.BruteReferencesRejected += dataset.BruteReferencesRejected
+		merged.BruteReferencesSkipped += dataset.BruteReferencesSkipped
+		merged.RateLimitedTargets += dataset.RateLimitedTargets
+		merged.UnavailableLimitedTargets += dataset.UnavailableLimitedTargets
 		for _, value := range dataset.ImportedFindings {
 			importedFindings[importedFindingKey(value)] = value
 		}

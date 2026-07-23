@@ -38,6 +38,13 @@ type Summary struct {
 	TransportErrorLimitReached bool `json:"transport_error_limit_reached,omitempty"`
 	WildcardResponseDetected   bool `json:"wildcard_response_detected,omitempty"`
 	FalsePositivesFiltered     int  `json:"false_positives_filtered,omitempty"`
+	WAFChallengeDetected       bool `json:"waf_challenge_detected,omitempty"`
+	WAFChallengeResponses      int  `json:"waf_challenge_responses,omitempty"`
+	WAFChallengeLimitReached   bool `json:"waf_challenge_limit_reached,omitempty"`
+	ReferencesRejected         int  `json:"references_rejected,omitempty"`
+	ReferencesSkipped          int  `json:"references_skipped,omitempty"`
+	RateLimitReached           bool `json:"rate_limit_reached,omitempty"`
+	UnavailableLimitReached    bool `json:"unavailable_limit_reached,omitempty"`
 }
 
 // match is an internal type used while scanning for spec files.

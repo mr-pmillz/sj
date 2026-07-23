@@ -70,6 +70,13 @@ type Dataset struct {
 	BruteRequestErrors          int
 	BruteFalsePositivesFiltered int
 	TransportLimitedTargets     int
+	WAFChallengedTargets        int
+	WAFChallengeResponses       int
+	WAFChallengeLimitedTargets  int
+	BruteReferencesRejected     int
+	BruteReferencesSkipped      int
+	RateLimitedTargets          int
+	UnavailableLimitedTargets   int
 }
 
 type ImportedFinding struct {
@@ -120,6 +127,13 @@ type Metrics struct {
 	BruteRequestErrors          int
 	BruteFalsePositivesFiltered int
 	TransportLimitedTargets     int
+	WAFChallengedTargets        int
+	WAFChallengeResponses       int
+	WAFChallengeLimitedTargets  int
+	BruteReferencesRejected     int
+	BruteReferencesSkipped      int
+	RateLimitedTargets          int
+	UnavailableLimitedTargets   int
 	Successes                   int
 	Redirects                   int
 	ClientErrors                int
