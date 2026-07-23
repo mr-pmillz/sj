@@ -21,6 +21,10 @@ All notable changes to this project will be documented [here](https://github.com
 - Add adversarial scanner, MCP, structured-output, stored-result, and report tests for intermittent recovery, classification boundaries, candidate ordering, and coverage-field round trips. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
 - Verified with the full Go test suite, focused race suites, go vet, golangci-lint, the documentation production build, MCP SOCKS5 target runs, SQLite checks, and report rendering. - ([6576786](https://github.com/mr-pmillz/sj/commit/6576786ceb302808a5dc3b314e5a55beaca35f5c))
 
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([9d47635](https://github.com/mr-pmillz/sj/commit/9d47635e311aec8f7c4e2656fdf2ef59c22f5a22))
+
 ## [2.7.5](https://github.com/mr-pmillz/sj/compare/v2.7.4...v2.7.5) - 2026-07-20
 
 ### ✨ New features
