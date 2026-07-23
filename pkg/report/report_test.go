@@ -42,6 +42,30 @@ func TestLoadDeduplicatesEquivalentResultFormats(t *testing.T) {
 	}
 }
 
+func TestLoadAndRenderPreservesWAFChallengeCoverage(t *testing.T) {
+	directory := t.TempDir()
+	path := writeReportFixture(t, directory, "brute.json", `{"target":"https://api.example","specs_found":[],"summary":{"urls_tested":3,"responses_4xx":3,"waf_challenge_detected":true,"waf_challenge_responses":3,"waf_challenge_limit_reached":true,"references_rejected":2,"references_skipped":4,"rate_limit_reached":true,"unavailable_limit_reached":true}}`)
+	dataset, err := Load([]string{path}, DefaultLoadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
+	var rendered bytes.Buffer
+	if err := Write(report, "markdown", &rendered, config.ColorNever); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"WAF-challenged targets: **1**", "WAF challenge responses: **3**",
+		"WAF-challenge-limited targets: **1**",
+		"References rejected by policy: **2**", "References skipped by limits: **4**",
+		"Rate-limited targets: **1**", "Unavailable-response-limited targets: **1**",
+	} {
+		if !strings.Contains(rendered.String(), expected) {
+			t.Fatalf("markdown report omitted %q: %s", expected, rendered.String())
+		}
+	}
+}
+
 func TestLoadRejectsOversizedInputBeforeParsing(t *testing.T) {
 	directory := t.TempDir()
 	path := writeReportFixture(t, directory, "results.json", strings.Repeat("x", 33))

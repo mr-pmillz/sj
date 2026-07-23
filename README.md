@@ -173,7 +173,7 @@ Scan multiple targets from a file:
 sj brute -U targets.txt --workers 8 -qi -F json -o results.json
 ```
 
-`brute` detects repeated wildcard HTTP 200 response fingerprints, including conservative same-size matching, and removes them from interesting results while reporting how many false positives were filtered. Valid OpenAPI documents are never removed by this filter.
+`brute` follows same-origin Swagger UI, Redoc, Swashbuckle, initializer JavaScript, and JSON configuration references with bounded depth and fan-out. Cross-origin, credential-bearing, and non-HTTP references are rejected before network I/O. Browser/WAF challenges, sustained-challenge stops after prioritized candidate coverage, rate-limit stops, repeated equivalent 502/503/504 stops, policy rejections, traversal-limit skips, and repeated wildcard HTTP 200 responses are reported as explicit coverage signals. Valid OpenAPI documents are never removed by the wildcard filter.
 
 ### Bruno penetration-test collections
 
@@ -294,6 +294,7 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
 - **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
+- **Bounded UI Discovery** — Follow same-origin documentation UI, initializer, configuration, and specification references while reporting WAF and traversal coverage limits.
 - **Default SQLite History** — Query immutable run IDs and reuse stored brute/automate/fuzz results without intermediate files.
 - **Bruno Collections** — Generate populated API penetration-test requests, bounded payload dictionaries, identity comparisons, and workflow templates.
 - **Rate-Safe API Fuzzing** — Run bounded object/username enumeration, identity comparisons, PII checks, verbose-error checks, and explicit read-back workflows.

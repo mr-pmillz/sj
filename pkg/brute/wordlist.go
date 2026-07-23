@@ -47,6 +47,7 @@ var JavaScriptEndpoints = []string{
 // PriorityURLs are well-known full paths that are tested first.
 var PriorityURLs = []string{
 	"/swagger.json", "/openapi.json", "/api-docs", "/swagger", "/docs",
+	"/docs/index.html", "/swagger/index.html", "/api-docs/index.html", "/redoc/index.html",
 	"/api/swagger.json", "/api/openapi.json", "/api-docs/swagger.json",
 	"/api/schema/", "/webjars/swagger-ui/index.html",
 	"/API/swagger/ui/index", "/swagger/ui/index",
