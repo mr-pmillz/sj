@@ -47,7 +47,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 		"analyze_api_results",
 		"assess_plan", "assess_report", "assess_resume", "assess_run", "assess_status",
 		"audit_openapi", "automate_openapi", "brute_openapi", "convert_openapi",
-		"discover_openapi", "plan_openapi_requests", "scan_openapi",
+		"discover_openapi", "plan_openapi_requests", "run_full_workflow", "scan_openapi",
 	}
 	gotNames := make([]string, 0, len(result.Tools))
 	for _, tool := range result.Tools {
@@ -85,7 +85,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 			t.Errorf("%s should be read-only", name)
 		}
 	}
-	for _, name := range []string{"automate_openapi", "scan_openapi"} {
+	for _, name := range []string{"automate_openapi", "run_full_workflow", "scan_openapi"} {
 		if tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || !*tools[name].Annotations.DestructiveHint {
 			t.Errorf("%s should advertise potentially destructive behavior", name)
 		}
