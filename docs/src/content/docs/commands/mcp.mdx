@@ -24,7 +24,10 @@ Point an MCP client at the absolute path to the `sj` binary:
         "mcp",
         "--allow-host", "api.example.com",
         "--allow-host", "*.staging.example.com",
-        "--allow-active"
+        "--allow-active",
+        "--assessment-root", "/absolute/path/to/authorized-assessment",
+        "--assessment-evidence-key-file", "/absolute/path/to/assessment-evidence.key",
+        "--database", "/absolute/path/to/authorized-assessment/evidence.db"
       ]
     }
   }
@@ -42,10 +45,37 @@ Point an MCP client at the absolute path to the `sj` binary:
 | `discover_openapi` | Probes common definition paths when active access is enabled. |
 | `brute_openapi` | Probes a target batch with bounded target-level workers and returns structured discovery reports. |
 | `automate_openapi` | Consumes explicit sources or brute reports, deduplicates identical operation plans, and sends a policy-checked batch. |
+| `assess_plan` | Validates a confined local assessment manifest and returns its deterministic offline plan. |
+| `assess_run` | Executes a manifest-backed assessment and persists signed evidence in the operator-configured database. |
+| `assess_resume` | Resumes a persisted assessment after rechecking server authority and signed lifecycle state. |
+| `assess_status` | Verifies and returns persisted assessment status, integrity, findings, and coverage. |
+| `assess_report` | Renders a verified persisted report as a typed, bounded artifact envelope. |
 
 Each document tool accepts exactly one source: inline `document`, allowlisted `url`, or an enabled `local_file`.
 
 `automate_openapi` supports case-insensitive `exclude_methods`, complete `store_responses` capture up to the server emergency ceiling, `full_urls` progress output, and `color` values of `auto`, `always`, or `never`. State-changing plans additionally require `accept_risk=true` and the server-side destructive gate.
+
+Assessment tools never accept a database path from the MCP caller. They use only the global `--database` selected by the server operator. The database must already be a regular non-symlink file under an assessment root, or its canonical existing parent must be under a root when SQLite will create it. Persisted assessment tools reject `--no-database`.
+
+`assess_plan` and `assess_run` accept only an absolute `manifest_path`. The manifest and every local input must resolve beneath one of the repeated `--assessment-root` directories. MCP assessments accept only `env:` secret references; a `file:` reference is root-checked and then rejected so credentials are never copied into the immutable execution snapshot. All manifest origins, base URLs, and remote input URLs must also match `--allow-host`. A manifest proxy must be the same canonical HTTP(S) or SOCKS5 proxy configured by the operator, and manifest-declared insecure TLS is accepted only when the operator also supplies `--insecure`.
+
+Before planning or execution, sj reads the manifest and each local input through a verified regular-file identity, copies them with exclusive `0600` creation into a temporary `0700` directory under the manifest's authorized root, rewrites the snapshot manifest to those copies, and removes the directory after the synchronous lifecycle call. Changes to the caller-controlled source files after preflight cannot alter the plan that is executed.
+
+`assess_report` returns:
+
+```json
+{
+  "content": "...",
+  "content_type": "text/markdown",
+  "encoding": "utf-8"
+}
+```
+
+Terminal, JSON, Markdown, HTML, SARIF, and JUnit are UTF-8 text. Bruno reproduction collections use `content_type: application/zip` and base64 `content`. The complete encoded envelope is subject to `--max-output-bytes`.
+
+`--max-results` is applied consistently to assessment findings and bounded report collections, including plan-node digests. Each collection remains clamped to its renderer hard safety ceiling, and truncation metadata records the persisted total. The encoded-output limit is enforced independently after rendering.
+
+HTML reports are self-contained, offline evidence artifacts. If the signed manifest opted into both response-body storage and sensitive exports, `assess_report` decrypts the AES-256-GCM exchange artifacts with the operator-owned assessment evidence key and returns the actual retained request/response content. Credential-bearing headers remain omitted. The HTML Findings and Comparisons tables suppress false-positive control outcomes, while the Requests & Responses table preserves their auditable traffic. The MCP caller is responsible for writing HTML content to an owner-only `0600` file.
 
 ## Security Policy
 
@@ -54,12 +84,18 @@ The default server permits only passive operations on inline documents. Enable a
 | Flag | Default | Purpose |
 |---|---:|---|
 | `--allow-host HOST` | none | Permit remote specification or target access. Repeat for exact hosts, `host:port`, `*.example.com`, IP addresses, or use `'*'` explicitly. |
-| `--allow-local-files` | false | Permit local files and references confined beneath the source directory. |
+| `--allow-local-files` | false | Permit general document tools to read local specification files. This does not control assessment roots. |
 | `--allow-active` | false | Permit bounded scanning and definition discovery. |
-| `--allow-destructive` | false | Permit `scan_openapi` and `automate_openapi` calls with `accept_risk=true`; requires active access. |
+| `--allow-destructive` | false | Permit scan, automate, assessment run, and assessment resume calls with `accept_risk=true`; requires active access. |
+| `--assessment-root DIR` | none | Authorize and confine only assessment manifests, local inputs, file secret references, and the assessment database to a canonical directory. Repeatable and independent of general local-file access. |
+| `--assessment-evidence-key-file FILE` | none | Load a stable evidence integrity key from a bounded, regular non-symlink `0600` file. The decoded base64 or hexadecimal key must contain at least 32 bytes. |
 | `--max-results N` | `1000` | Bound findings, operations, and returned discovery rows per call; discovery reports indicate truncation. |
 | `--max-output-bytes N` | `1048576` | Bound encoded structured output per call. |
 | `--max-input-bytes N` | `16777216` | Reject oversized protocol messages before the SDK decodes tool arguments. |
 | `--max-concurrent N` | `4` | Bound concurrently executing tool calls across one server process. |
 
-Global timeout, response/specification size, header, TLS, HTTP proxy, and SOCKS5 flags apply to MCP network calls. Configure authentication only in a controlled launcher: command arguments and client configuration may be visible to local users. MCP client cancellation is propagated to in-flight requests.
+`assess_run` and `assess_resume` require `--allow-active`. Their `accept_risk=true` input additionally requires `--allow-destructive`; passive planning, status, and reporting do not. If an active assessment stops after creating durable state, the MCP result remains an error while preserving the structured partial snapshot and `assessment_id` for status or resume.
+
+`--assessment-root` does not enable the general `local_file` document source. That separate surface remains denied unless the operator explicitly supplies `--allow-local-files`; an assessment root therefore cannot be used to read arbitrary local JSON or YAML through audit or conversion tools.
+
+Global timeout, response/specification size, header, TLS, HTTP proxy, and SOCKS5 flags apply to MCP network calls. The assessment runtime derives its HTTP client from that operator configuration but cannot broaden it through tool arguments. When `--assessment-evidence-key-file` is omitted, `SJ_ASSESSMENT_EVIDENCE_KEY` remains the supported launcher-provided fallback; assessment tools fail closed if neither supplies a stable key. Configure authentication only in a controlled launcher: command arguments and client configuration may be visible to local users. MCP client cancellation is propagated to in-flight requests.

@@ -43,6 +43,7 @@ export default defineConfig({
               collapsed: true,
               items: [
                 'commands/audit',
+                'commands/assess',
                 'commands/automate',
                 'commands/brute',
                 'commands/convert',

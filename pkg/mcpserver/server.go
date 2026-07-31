@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	sj "github.com/mr-pmillz/sj"
+	assessmentruntime "github.com/mr-pmillz/sj/pkg/assessment/runtime"
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/httpclient"
 )
@@ -24,20 +26,24 @@ const (
 )
 
 type httpClientFactory func(*config.Config) (*httpclient.Client, error)
+type assessmentRuntimeFactory func(*http.Client, []byte) (assessmentRuntime, error)
 
 // Options configures the optional MCP server and its security boundaries.
 type Options struct {
-	Config           *config.Config
-	Version          string
-	AllowedHosts     []string
-	AllowLocalFiles  bool
-	AllowActive      bool
-	AllowDestructive bool
-	MaxResults       int
-	MaxOutputBytes   int64
-	MaxConcurrent    int
+	Config                *config.Config
+	Version               string
+	AllowedHosts          []string
+	AssessmentRoots       []string
+	AssessmentEvidenceKey []byte
+	AllowLocalFiles       bool
+	AllowActive           bool
+	AllowDestructive      bool
+	MaxResults            int
+	MaxOutputBytes        int64
+	MaxConcurrent         int
 
-	clientFactory httpClientFactory
+	clientFactory     httpClientFactory
+	assessmentFactory assessmentRuntimeFactory
 }
 
 // New constructs an sj MCP server with typed tools and inferred JSON schemas.
@@ -52,10 +58,22 @@ func New(options Options) (*mcp.Server, error) {
 	}
 	base := cloneConfig(options.Config)
 	prepareBaseConfig(base)
+	if strings.TrimSpace(base.DatabasePath) != "" && len(policy.assessmentRoots) > 0 {
+		databasePath, err := policy.checkAssessmentDatabasePath(base.DatabasePath)
+		if err != nil {
+			return nil, err
+		}
+		base.DatabasePath = databasePath
+	}
 	if err := base.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid MCP base configuration: %w", err)
 	}
-	service := &service{base: base, policy: policy, newClient: options.clientFactory, slots: make(chan struct{}, options.MaxConcurrent)}
+	service := &service{
+		base: base, policy: policy, newClient: options.clientFactory,
+		newAssessment: options.assessmentFactory,
+		assessmentKey: append([]byte(nil), options.AssessmentEvidenceKey...),
+		slots:         make(chan struct{}, options.MaxConcurrent),
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	server := mcp.NewServer(&mcp.Implementation{
@@ -64,7 +82,7 @@ func New(options Options) (*mcp.Server, error) {
 		Version:    options.Version,
 		WebsiteURL: "https://github.com/mr-pmillz/sj",
 	}, &mcp.ServerOptions{
-		Instructions: "Use sj to audit, convert, plan, discover, brute-force, and automate Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Active scanning and discovery require server-side opt-in. Network and local-file access are constrained by the server operator.",
+		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Assessment manifests and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
 		Logger:       logger,
 		Capabilities: &mcp.ServerCapabilities{},
 	})
@@ -97,7 +115,36 @@ func withDefaults(options Options) Options {
 			return client, nil
 		}
 	}
+	if options.assessmentFactory == nil {
+		socksProxy := options.Config.SOCKS5Proxy
+		options.assessmentFactory = func(client *http.Client, evidenceKey []byte) (assessmentRuntime, error) {
+			socksTransport, err := assessmentSOCKSTransport(client, socksProxy)
+			if err != nil {
+				return nil, err
+			}
+			return assessmentruntime.New(assessmentruntime.Config{
+				Client: client, EvidenceKey: evidenceKey, SOCKSTransport: socksTransport,
+			})
+		}
+	}
 	return options
+}
+
+func assessmentSOCKSTransport(client *http.Client, rawProxy string) (*assessmentruntime.SOCKSTransportConfig, error) {
+	if strings.TrimSpace(rawProxy) == "" {
+		return nil, nil
+	}
+	canonical, err := canonicalProxyURL(rawProxy)
+	if err != nil || !strings.HasPrefix(canonical, "socks5://") && !strings.HasPrefix(canonical, "socks5h://") {
+		return nil, fmt.Errorf("invalid operator-configured assessment SOCKS proxy")
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.DialContext == nil {
+		return nil, fmt.Errorf("operator-configured assessment SOCKS transport is unavailable")
+	}
+	return &assessmentruntime.SOCKSTransportConfig{
+		ProxyURL: canonical, DialContext: transport.DialContext,
+	}, nil
 }
 
 func validateOptions(options Options) error {
@@ -106,6 +153,9 @@ func validateOptions(options Options) error {
 	}
 	if options.AllowDestructive && !options.AllowActive {
 		return fmt.Errorf("destructive MCP requests require active tools to be enabled")
+	}
+	if len(options.AssessmentEvidenceKey) > 0 && len(options.AssessmentEvidenceKey) < 32 {
+		return fmt.Errorf("MCP assessment evidence key must contain at least 32 bytes")
 	}
 	if options.MaxResults < 1 || options.MaxResults > maximumMCPResults {
 		return fmt.Errorf("MCP result limit must be between 1 and %d", maximumMCPResults)
@@ -142,6 +192,7 @@ func cloneConfig(source *config.Config) *config.Config {
 
 func registerTools(server *mcp.Server, service *service) {
 	readOnly := true
+	closedWorld := false
 	openWorld := true
 	nonDestructive := false
 	destructive := true
@@ -188,6 +239,36 @@ func registerTools(server *mcp.Server, service *service) {
 		Description: "Actively scan explicit OpenAPI sources or every specification in brute reports. Requires server-side active authorization; state-changing requests additionally require destructive authorization and accept_risk=true.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
 	}, service.automate)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "assess_plan",
+		Title:       "Plan an authorization assessment",
+		Description: "Validate a root-confined local assessment manifest and build its deterministic request and evidence plan without sending target requests.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closedWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
+	}, service.assessPlan)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "assess_run",
+		Title:       "Run an authorization assessment",
+		Description: "Execute and persist a root-confined authorization assessment using the server-configured database. Requires server-side active authorization; accept_risk=true additionally requires destructive authorization.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
+	}, service.assessRun)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "assess_resume",
+		Title:       "Resume an authorization assessment",
+		Description: "Resume a persisted authorization assessment from the server-configured database. Requires server-side active authorization; accept_risk=true additionally requires destructive authorization.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
+	}, service.assessResume)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "assess_status",
+		Title:       "Read authorization assessment status",
+		Description: "Verify and return status and coverage for a persisted authorization assessment in the server-configured database.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closedWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
+	}, service.assessStatus)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "assess_report",
+		Title:       "Render an authorization assessment report",
+		Description: "Verify and render a bounded report from a persisted authorization assessment in the server-configured database. Text formats use UTF-8; Bruno collections use base64-encoded ZIP content.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closedWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
+	}, service.assessReport)
 }
 
 type sourceInput struct {
@@ -198,10 +279,12 @@ type sourceInput struct {
 }
 
 type service struct {
-	base      *config.Config
-	policy    policy
-	newClient httpClientFactory
-	slots     chan struct{}
+	base          *config.Config
+	policy        policy
+	newClient     httpClientFactory
+	newAssessment assessmentRuntimeFactory
+	assessmentKey []byte
+	slots         chan struct{}
 }
 
 func (service *service) config() *config.Config {

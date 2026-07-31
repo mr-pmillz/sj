@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -21,6 +23,7 @@ type policy struct {
 	allowDestructive bool
 	allowLocalFiles  bool
 	hosts            []hostRule
+	assessmentRoots  []string
 	maxResults       int
 	maxOutputBytes   int64
 }
@@ -40,7 +43,47 @@ func newPolicy(options Options) (policy, error) {
 		}
 		result.hosts = append(result.hosts, rule)
 	}
+	for _, raw := range options.AssessmentRoots {
+		root, err := canonicalAssessmentRoot(raw)
+		if err != nil {
+			return policy{}, err
+		}
+		if !slicesContain(result.assessmentRoots, root) {
+			result.assessmentRoots = append(result.assessmentRoots, root)
+		}
+	}
 	return result, nil
+}
+
+func canonicalAssessmentRoot(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("assessment root must not be empty")
+	}
+	absolute, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve assessment root: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve assessment root: %w", err)
+	}
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return "", fmt.Errorf("inspect assessment root: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("assessment root %q is not a directory", raw)
+	}
+	return filepath.Clean(canonical), nil
+}
+
+func slicesContain(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHostRule(raw string) (hostRule, error) {
@@ -114,6 +157,74 @@ func (policy policy) checkURL(kind, raw string) error {
 		}
 	}
 	return fmt.Errorf("%s host %q is not allowed by the MCP server", kind, host)
+}
+
+func (policy policy) checkAssessmentPath(kind, raw string) (string, error) {
+	if len(policy.assessmentRoots) == 0 {
+		return "", fmt.Errorf("assessment local access requires at least one operator-configured assessment root")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("%s must be an absolute path", kind)
+	}
+	canonical, err := filepath.EvalSymlinks(filepath.Clean(raw))
+	if err != nil {
+		return "", fmt.Errorf("%s is unavailable: %w", kind, err)
+	}
+	if policy.assessmentPathWithinRoot(canonical) {
+		return canonical, nil
+	}
+	return "", fmt.Errorf("%s is outside the operator-configured assessment roots", kind)
+}
+
+func (policy policy) checkAssessmentDatabasePath(raw string) (string, error) {
+	if len(policy.assessmentRoots) == 0 {
+		return "", fmt.Errorf("assessment database requires at least one operator-configured assessment root")
+	}
+	absolute, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve assessment database path: %w", err)
+	}
+	cleaned := filepath.Clean(absolute)
+	info, err := os.Lstat(cleaned)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("assessment database must be a regular non-symlink file")
+		}
+		canonical, evalErr := filepath.EvalSymlinks(cleaned)
+		if evalErr != nil {
+			return "", fmt.Errorf("resolve assessment database: %w", evalErr)
+		}
+		if !policy.assessmentPathWithinRoot(canonical) {
+			return "", fmt.Errorf("assessment database is outside the operator-configured assessment roots")
+		}
+		return canonical, nil
+	case !os.IsNotExist(err):
+		return "", fmt.Errorf("inspect assessment database: %w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
+	if err != nil {
+		return "", fmt.Errorf("resolve assessment database parent: %w", err)
+	}
+	if !policy.assessmentPathWithinRoot(parent) {
+		return "", fmt.Errorf("assessment database parent is outside the operator-configured assessment roots")
+	}
+	return filepath.Join(parent, filepath.Base(cleaned)), nil
+}
+
+func (policy policy) assessmentPathWithinRoot(canonical string) bool {
+	_, found := policy.assessmentRootForPath(canonical)
+	return found
+}
+
+func (policy policy) assessmentRootForPath(canonical string) (string, bool) {
+	for _, root := range policy.assessmentRoots {
+		relative, err := filepath.Rel(root, canonical)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return root, true
+		}
+	}
+	return "", false
 }
 
 func marshalOutput(output any) ([]byte, error) {

@@ -253,6 +253,26 @@ sj --socks5-proxy socks5://127.0.0.1:9000 \
 
 The output directory must not already exist. DELETE is always excluded, response capture is enabled for automate and fuzz with the configured response read limit, and SQLite storage remains enabled. Non-DELETE state-changing requests still require `--accept-risk`. A rate-limit signal stops active fuzzing immediately; already captured artifacts are still used to generate the Bruno collection and final reports.
 
+### Manifest-driven authorization assessments
+
+Build an offline, deterministic ownership matrix from a local OpenAPI contract, two or more named identities, and explicitly owned test objects:
+
+```bash
+export SJ_ASSESSMENT_EVIDENCE_KEY="$(openssl rand -base64 32)"
+export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
+export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'
+
+sj assess plan --manifest assessment.yaml
+sj --database authorized-assessment.db assess run --manifest assessment.yaml
+sj --database authorized-assessment.db assess status --id ASSESSMENT_ID
+sj --database authorized-assessment.db \
+  assess report --id ASSESSMENT_ID --output-format html > assessment.html
+```
+
+`assess` rejects remote inputs during offline planning, literal credentials, wildcard scope, destructive methods, unsafe payload classes, unbudgeted redirects, and unsigned resume state. The initial runtime executes read-only BOLA/IDOR proof matrices with victim-own, attacker-own, cross-owner, anonymous, and nonexistent-object controls. Confirmed findings require established ownership, an expected deny policy, repeated stable victim-specific evidence, and a distinct successful negative control. See the [assess command guide](https://mr-pmillz.github.io/sj/commands/assess/) for the manifest and lifecycle.
+
+Assessment HTML reports use offline, independently searchable/sortable/paginated tables with a persistent light/dark toggle. False-positive control outcomes are suppressed from Findings and Comparisons instead of being presented as vulnerabilities. When a manifest explicitly enables `storeResponseBodies` and `includeSensitiveExports`, request/response exchanges are stored as bounded AES-256-GCM artifacts and rendered as actual evidence after integrity verification; credential-bearing headers are omitted. Treat these HTML files as sensitive and keep them mode `0600`.
+
 ### SQLite result database
 
 Result storage is enabled by default for `audit`, `automate`, `brute`, `collection`, `convert`, `endpoints`, `fuzz`, `prepare`, and `report`. Each invocation creates an immutable run ID and stores typed observations/findings in a private, versioned SQLite database. The default lives under the user configuration directory, or `$XDG_DATA_HOME/sj/results.db` when that variable is set.
@@ -298,6 +318,9 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Default SQLite History** — Query immutable run IDs and reuse stored brute/automate/fuzz results without intermediate files.
 - **Bruno Collections** — Generate populated API penetration-test requests, bounded payload dictionaries, identity comparisons, and workflow templates.
 - **Rate-Safe API Fuzzing** — Run bounded object/username enumeration, identity comparisons, PII checks, verbose-error checks, and explicit read-back workflows.
+- **Ownership-Backed Assessments** — Build signed, resumable BOLA proof matrices from exact scope, named identities, owned fixtures, expected deny rules, and worst-case traffic budgets.
+- **API Ecosystem Inventory** — Normalize OpenAPI, sj results, HAR, Burp XML, Postman, and gateway logs while identifying shadow, zombie, version-drift, and enumeration candidates without granting active scope.
+- **Protocol-Aware Planning** — Bound GraphQL depth/aliases/complexity and WebSocket/AsyncAPI message authorization cases without generating introspection, flooding, or denial-of-service traffic.
 - **Wildcard-200 Detection** — Suppress repeated web-server fallback responses from brute discovery results.
 - **API Penetration-Test Reports** — Consolidate prior scan results into terminal, Markdown, and self-contained HTML reports with weighted triage and OWASP API mappings.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).
