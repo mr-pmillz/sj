@@ -164,6 +164,25 @@ func TestResultRunNilAndNoDatabasePathsAreNoOps(t *testing.T) {
 	}
 }
 
+func TestRequestAuthContextClassifiesWithoutRetainingValues(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		headers []string
+		want    string
+	}{
+		{name: "none", want: "anonymous"},
+		{name: "non credential", headers: []string{"Accept-Language: en"}, want: "anonymous"},
+		{name: "authorization", headers: []string{"Authorization: Bearer never-persist-this"}, want: "authenticated"},
+		{name: "api key", headers: []string{"X-API-Key: never-persist-this"}, want: "authenticated"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := requestAuthContext(test.headers); got != test.want {
+				t.Fatalf("requestAuthContext() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestResultRunFinishPersistsCanceledAndFailedStatuses(t *testing.T) {
 	t.Parallel()
 

@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,6 +44,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 	}
 
 	wantNames := []string{
+		"analyze_api_results",
 		"assess_plan", "assess_report", "assess_resume", "assess_run", "assess_status",
 		"audit_openapi", "automate_openapi", "brute_openapi", "convert_openapi",
 		"discover_openapi", "plan_openapi_requests", "scan_openapi",
@@ -58,12 +58,18 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 		if tool.Annotations == nil || tool.Annotations.OpenWorldHint == nil {
 			t.Errorf("tool %q is missing safety annotations", tool.Name)
 		}
-		if strings.HasPrefix(tool.Name, "assess_") {
+		if strings.HasPrefix(tool.Name, "assess_") || tool.Name == "analyze_api_results" {
 			schema, err := json.Marshal(tool.InputSchema)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if bytes.Contains(bytes.ToLower(schema), []byte("database")) {
+			var shape struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			}
+			if err := json.Unmarshal(schema, &shape); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := shape.Properties["database"]; exists {
 				t.Errorf("tool %q exposes caller-controlled database configuration: %s", tool.Name, schema)
 			}
 		}
@@ -89,7 +95,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 			t.Errorf("%s should advertise read-only probing behavior", name)
 		}
 	}
-	for _, name := range []string{"assess_plan", "assess_report", "assess_status"} {
+	for _, name := range []string{"analyze_api_results", "assess_plan", "assess_report", "assess_status"} {
 		if !tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || *tools[name].Annotations.DestructiveHint || tools[name].Annotations.OpenWorldHint == nil || *tools[name].Annotations.OpenWorldHint {
 			t.Errorf("%s should advertise local read-only behavior", name)
 		}

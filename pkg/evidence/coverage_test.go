@@ -8,7 +8,7 @@ import (
 func TestDetectPIITypesCoversCredentialAndIdentityClassesWithoutValues(t *testing.T) {
 	t.Parallel()
 
-	body := []byte(`email=analyst@example.test
+	body := []byte(`email=analyst@customer.co
 ssn=123-45-6789
 card=4111111111111111
 jwt=eyJabcdefghijk.abcdefghijkl.abcdefghijkl
@@ -19,7 +19,7 @@ api_key=abcdefghijklmnop`)
 			t.Fatalf("DetectPIITypes() = %v, missing %q", got, expected)
 		}
 	}
-	for _, sensitive := range []string{"analyst@example.test", "123-45-6789", "4111111111111111", "abcdefghijklmnop"} {
+	for _, sensitive := range []string{"analyst@customer.co", "123-45-6789", "4111111111111111", "abcdefghijklmnop"} {
 		if slices.Contains(got, sensitive) {
 			t.Fatalf("type-only output exposed %q: %v", sensitive, got)
 		}

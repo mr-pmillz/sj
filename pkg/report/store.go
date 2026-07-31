@@ -1,6 +1,7 @@
 package report
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -49,14 +50,20 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 			}
 			summaries[observation.Source] = summary
 		case "automate":
+			metadata, err := observationMetadata(observation.Metadata)
+			if err != nil {
+				return Dataset{}, fmt.Errorf("decode stored automate observation %d: %w", index+1, err)
+			}
 			operation := Operation{
-				Origin: "automate",
-				Source: observation.Source, Method: strings.ToUpper(observation.Method), Status: observation.Status,
+				RunID: observation.RunID, ObservationID: observation.ID, ObservedAt: observation.CreatedAt,
+				AuthContext: stringMetadata(metadata, "auth_context"),
+				Origin:      "automate",
+				Source:      observation.Source, Method: strings.ToUpper(observation.Method), Status: observation.Status,
 				Target: observation.Path, URL: observation.URL, ContentType: observation.ContentType,
 				RequestBody: string(observation.RequestBody), ResponseBody: string(observation.ResponseBody),
 				ResponseTruncated: observation.ResponseTruncated,
 			}
-			key := strings.Join([]string{operation.Source, operation.Method, operation.URL, operation.Target, strconv.Itoa(operation.Status)}, "\x00")
+			key := storedOperationKey(operation)
 			operations[key] = operation
 			successfulSources[operation.Source] = struct{}{}
 		case "fuzz_probe":
@@ -71,17 +78,16 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 				target = parsed.EscapedPath()
 			}
 			operation := Operation{
-				Origin: "fuzz", Source: source, Method: strings.ToUpper(observation.Method), Status: observation.Status,
+				RunID: observation.RunID, ObservationID: observation.ID, ObservedAt: observation.CreatedAt,
+				AuthContext: stringMetadata(metadata, "auth_context"),
+				Origin:      "fuzz", Source: source, Method: strings.ToUpper(observation.Method), Status: observation.Status,
 				Target: target, URL: observation.URL, BaselineURL: stringMetadata(metadata, "baseline_url"),
 				Case: stringMetadata(metadata, "case"), Category: stringMetadata(metadata, "category"),
 				Identity: stringMetadata(metadata, "identity"), Guidance: stringMetadata(metadata, "guidance"), ContentType: observation.ContentType,
 				RequestBody: string(observation.RequestBody), ResponseBody: string(observation.ResponseBody),
 				ResponseTruncated: observation.ResponseTruncated,
 			}
-			key := strings.Join([]string{
-				operation.Source, operation.Method, operation.URL, operation.Target, strconv.Itoa(operation.Status),
-				operation.BaselineURL, operation.Case, operation.Identity,
-			}, "\x00")
+			key := storedOperationKey(operation)
 			operations[key] = operation
 		case "automate_failure":
 			metadata, err := observationMetadata(observation.Metadata)
@@ -139,7 +145,7 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 	sort.Slice(dataset.Discoveries, func(i, j int) bool { return dataset.Discoveries[i].URL < dataset.Discoveries[j].URL })
 	sort.Slice(dataset.BruteObservations, func(i, j int) bool { return dataset.BruteObservations[i].URL < dataset.BruteObservations[j].URL })
 	sort.Slice(dataset.Operations, func(i, j int) bool {
-		return dataset.Operations[i].Source+dataset.Operations[i].Method+dataset.Operations[i].Target < dataset.Operations[j].Source+dataset.Operations[j].Method+dataset.Operations[j].Target
+		return operationLess(dataset.Operations[i], dataset.Operations[j])
 	})
 	sort.Slice(dataset.Failures, func(i, j int) bool {
 		return dataset.Failures[i].Source+dataset.Failures[i].Error < dataset.Failures[j].Source+dataset.Failures[j].Error
@@ -207,11 +213,10 @@ func MergeDatasets(datasets ...Dataset) Dataset {
 			interesting[value.URL+"\x00"+strconv.Itoa(value.Status)] = value
 		}
 		for _, value := range dataset.Operations {
-			key := strings.Join([]string{
-				value.Source, value.Method, value.URL, value.Target, strconv.Itoa(value.Status),
-				value.BaselineURL, value.Case, value.Identity,
-			}, "\x00")
-			operations[key] = value
+			key := storedOperationKey(value)
+			if existing, found := operations[key]; !found || operationLess(value, existing) {
+				operations[key] = value
+			}
 		}
 		for _, value := range dataset.Failures {
 			failures[value.Source+"\x00"+value.Error] = value
@@ -240,7 +245,7 @@ func MergeDatasets(datasets ...Dataset) Dataset {
 	sort.Slice(merged.Discoveries, func(i, j int) bool { return merged.Discoveries[i].URL < merged.Discoveries[j].URL })
 	sort.Slice(merged.BruteObservations, func(i, j int) bool { return merged.BruteObservations[i].URL < merged.BruteObservations[j].URL })
 	sort.Slice(merged.Operations, func(i, j int) bool {
-		return merged.Operations[i].Source+merged.Operations[i].Method+merged.Operations[i].Target < merged.Operations[j].Source+merged.Operations[j].Method+merged.Operations[j].Target
+		return operationLess(merged.Operations[i], merged.Operations[j])
 	})
 	sort.Slice(merged.ImportedFindings, func(i, j int) bool {
 		return importedFindingKey(merged.ImportedFindings[i]) < importedFindingKey(merged.ImportedFindings[j])
@@ -252,6 +257,50 @@ func MergeDatasets(datasets ...Dataset) Dataset {
 
 func importedFindingKey(value ImportedFinding) string {
 	return strings.Join([]string{value.Severity, value.Category, value.Title, value.Method, value.URL, value.Evidence, strings.Join(value.OWASP, ",")}, "\x00")
+}
+
+func storedOperationKey(value Operation) string {
+	if value.RunID != "" || value.ObservationID != 0 {
+		return value.RunID + "\x00" + strconv.FormatInt(value.ObservationID, 10)
+	}
+	key := operationContentKey(value)
+	if value.InputOccurrence > 0 {
+		key += "\x00occurrence:" + strconv.FormatInt(value.InputOccurrence, 10)
+	}
+	return key
+}
+
+func operationContentKey(value Operation) string {
+	requestDigest := sha256.Sum256([]byte(value.RequestBody))
+	responseDigest := sha256.Sum256([]byte(value.ResponseBody))
+	return strings.Join([]string{
+		value.Source, value.Method, value.URL, value.Target, strconv.Itoa(value.Status),
+		value.BaselineURL, value.Case, value.Category, value.Identity, value.AuthContext,
+		value.ContentType, fmt.Sprintf("%x", requestDigest), fmt.Sprintf("%x", responseDigest),
+		strconv.FormatBool(value.ResponseTruncated),
+	}, "\x00")
+}
+
+func operationLess(left, right Operation) bool {
+	if !left.ObservedAt.Equal(right.ObservedAt) {
+		if left.ObservedAt.IsZero() {
+			return false
+		}
+		if right.ObservedAt.IsZero() {
+			return true
+		}
+		return left.ObservedAt.Before(right.ObservedAt)
+	}
+	if left.ObservationID != right.ObservationID {
+		return left.ObservationID < right.ObservationID
+	}
+	if left.InputPath != right.InputPath && left.InputPath != "" && right.InputPath != "" {
+		return left.InputPath < right.InputPath
+	}
+	if left.InputPath == right.InputPath && left.InputOrdinal != right.InputOrdinal {
+		return left.InputOrdinal < right.InputOrdinal
+	}
+	return left.Source+left.Method+left.Target+left.URL < right.Source+right.Method+right.Target+right.URL
 }
 
 func observationMetadata(value any) (map[string]any, error) {

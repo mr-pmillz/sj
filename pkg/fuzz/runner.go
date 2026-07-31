@@ -29,10 +29,34 @@ const (
 	defaultResponseBytes        = 1024 * 1024
 	defaultStoredBodySize       = 64 * 1024
 	minimumRequestDelay         = 100 * time.Millisecond
+	maximumRepresentativeURLs   = 3
+	maximumRepresentativeLength = 2048
 )
 
 var (
-	verbosePattern = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|ORA-\d+|syntax error at or near|nonetype|json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\/home\/[^\s]+|C:\\Users\\[^\s]+|\.go:\d+|\.java:\d+)`)
+	verboseDisclosurePatterns = []struct {
+		name    string
+		tier    string
+		pattern *regexp.Regexp
+	}{
+		{name: "stack_trace", tier: "medium", pattern: regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|"backtrace"\s*:\s*\[[\s\S]{0,1000}"(?:file|filename)"\s*:[\s\S]{0,1000}"line(?:_number)?"\s*:\s*\d+)`)},
+		{name: "runtime_diagnostic", tier: "low", pattern: regexp.MustCompile(`(?i)(?:json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\.go:\d+|\.java:\d+|(?:\bfile\b|\bat\b|stack|traceback)[^\r\n]{0,80}(?:/home/|C:\\Users\\)[^\r\n"']+)`)},
+		{name: "pydantic_validation", tier: "low", pattern: regexp.MustCompile(`(?i)(?:errors\.pydantic\.dev|validation errors? for [a-z_][a-z0-9_]*schema|input_type=|\[type=missing)`)},
+		{name: "upstream_client", tier: "low", pattern: regexp.MustCompile(`(?i)(?:httpsconnectionpool|nameresolutionerror|urllib3\.connection|name or service not known)`)},
+		{name: "database_error", tier: "medium", pattern: regexp.MustCompile(`(?i)(?:sqlstate|ORA-\d+|syntax error at or near|cannot insert the value null|sqlparamdata)`)},
+		{name: "database_driver", tier: "medium", pattern: regexp.MustCompile(`(?i)(?:pyodbc(?:\.[a-z]+)?|\[ODBC Driver[^\]]*\]|\[Microsoft\]\[ODBC Driver[^\]]*\])`)},
+		{name: "database_framework", tier: "medium", pattern: regexp.MustCompile(`(?i)(?:sqlalchemy(?:\.[a-z]+)?|sqlalche\.me\/e\/)`)},
+		{name: "database_server", tier: "supporting", pattern: regexp.MustCompile(`(?i)(?:\[SQL Server\]|Microsoft SQL Server)`)},
+		{name: "database_table", tier: "supporting", pattern: regexp.MustCompile(`(?i)\btable\s+['\"\[]?[a-z0-9_$-]+(?:\.[a-z0-9_$-]+){1,3}`)},
+		{name: "database_column", tier: "supporting", pattern: regexp.MustCompile(`(?i)\bcolumn\s+['\"\[]?[a-z_][a-z0-9_$-]*`)},
+		{name: "database_constraint", tier: "supporting", pattern: regexp.MustCompile(`(?i)\bconstraint\s+['\"\[]?[a-z_][a-z0-9_$-]*`)},
+		{name: "stored_procedure", tier: "supporting", pattern: regexp.MustCompile(`(?i)\bEXEC(?:UTE)?\s+[a-z_][a-z0-9_.]*\s+@`)},
+		{name: "sql_statement", tier: "medium", pattern: regexp.MustCompile(`(?i)\[SQL:\s`)},
+		{name: "sql_parameters", tier: "medium", pattern: regexp.MustCompile(`(?i)\[(?:parameters?|params):\s`)},
+	}
+	numericPathSegmentPattern = regexp.MustCompile(`^\d+$`)
+	uuidPathSegmentPattern    = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	hexPathSegmentPattern     = regexp.MustCompile(`(?i)^[0-9a-f]{16,}$`)
 )
 
 type Identity struct {
@@ -92,6 +116,7 @@ type ProbeResult struct {
 	Case               string   `json:"case"`
 	Category           string   `json:"category"`
 	Identity           string   `json:"identity"`
+	AuthContext        string   `json:"auth_context"`
 	ContentType        string   `json:"content_type,omitempty"`
 	RequestBody        string   `json:"request_body,omitempty"`
 	Status             int      `json:"status"`
@@ -101,6 +126,7 @@ type ProbeResult struct {
 	ResponseTruncated  bool     `json:"response_truncated,omitempty"`
 	RateLimitRemaining *int     `json:"rate_limit_remaining,omitempty"`
 	PIITypes           []string `json:"pii_types,omitempty"`
+	DisclosureTypes    []string `json:"disclosure_types,omitempty"`
 	VerboseError       bool     `json:"verbose_error,omitempty"`
 	Error              string   `json:"error,omitempty"`
 	DurationMillis     int64    `json:"duration_ms"`
@@ -481,7 +507,7 @@ func normalizeIdentities(identities []Identity) ([]Identity, error) {
 }
 
 func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, options Options) (ProbeResult, []byte) {
-	result := ProbeResult{Method: plan.method, URL: plan.targetURL, BaselineURL: plan.baselineURL, Case: plan.caseName, Category: plan.category, Identity: plan.identity.Name, ContentType: plan.contentType, RequestBody: string(plan.body), PIITypes: []string{}}
+	result := ProbeResult{Method: plan.method, URL: plan.targetURL, BaselineURL: plan.baselineURL, Case: plan.caseName, Category: plan.category, Identity: plan.identity.Name, AuthContext: identityAuthContext(plan.identity), ContentType: plan.contentType, RequestBody: string(plan.body), PIITypes: []string{}}
 	if plan.guidedCause != "" {
 		result.Guidance = "applied bounded repair for " + plan.guidedCause
 	}
@@ -526,13 +552,32 @@ func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, o
 	digest := sha256.Sum256(body)
 	result.ResponseHash = hex.EncodeToString(digest[:])
 	result.PIITypes = detectPIITypes(body)
-	result.VerboseError = verbosePattern.Match(body)
+	result.DisclosureTypes = detectVerboseDisclosureTypes(body)
+	result.VerboseError = len(result.DisclosureTypes) > 0
 	if options.StoreResponses {
 		storedSize := min(int64(len(body)), options.MaxStoredResponseBytes)
 		result.ResponseBody = string(body[:storedSize])
 		result.ResponseTruncated = result.ResponseTruncated || int64(len(body)) > storedSize
 	}
 	return result, body
+}
+
+func identityAuthContext(identity Identity) string {
+	for name, value := range identity.Headers {
+		if strings.TrimSpace(value) != "" && credentialHeaderName(name) {
+			return "authenticated"
+		}
+	}
+	return "anonymous"
+}
+
+func credentialHeaderName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-auth-token", "x-access-token", "x-amz-security-token", "x-goog-api-key":
+		return true
+	default:
+		return false
+	}
 }
 
 func plannedProbeFingerprint(plan plannedProbe) string {
@@ -655,16 +700,8 @@ func analyzeProbeFindings(probes []ProbeResult) []Finding {
 		seen[key] = struct{}{}
 		findings = append(findings, finding)
 	}
+	addGroupedExposureFindings(probes, add)
 	for _, probe := range probes {
-		if len(probe.PIITypes) > 0 {
-			add(Finding{Severity: "high", Category: "pii_exposure", Title: "Potential PII exposed in API response", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("identity=%s status=%d matched_types=%s; matched values redacted", probe.Identity, probe.Status, strings.Join(probe.PIITypes, ",")), OWASP: []string{"API3:2023"}})
-		}
-		if probe.VerboseError {
-			add(Finding{Severity: "medium", Category: "verbose_error", Title: "Verbose implementation details in API response", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("case=%s identity=%s status=%d response_bytes=%d", probe.Case, probe.Identity, probe.Status, probe.ResponseBytes), OWASP: []string{"API8:2023"}})
-		}
-		if probe.Status >= 500 {
-			add(Finding{Severity: "medium", Category: "server_error", Title: "Fuzz case triggered a server error", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("case=%s identity=%s status=%d", probe.Case, probe.Identity, probe.Status), OWASP: []string{"API8:2023"}})
-		}
 		if probe.Category == "bad_character" && responseReflectsProbeMarker(probe) {
 			add(Finding{Severity: "informational", Category: "input_reflection", Title: "Fuzz marker was reflected in the API response", Method: probe.Method, URL: probe.URL, Evidence: fmt.Sprintf("case=%s identity=%s status=%d; marker value omitted", probe.Case, probe.Identity, probe.Status), OWASP: []string{"API8:2023"}})
 		}
@@ -682,6 +719,330 @@ func analyzeProbeFindings(probes []ProbeResult) []Finding {
 		return findings[i].Category < findings[j].Category
 	})
 	return findings
+}
+
+type exposureFindingGroup struct {
+	category       string
+	severity       string
+	title          string
+	method         string
+	endpoint       string
+	signature      []string
+	owasp          []string
+	matchingProbes int
+	identities     map[string]struct{}
+	statuses       map[int]struct{}
+	representative []string
+}
+
+func addGroupedExposureFindings(probes []ProbeResult, add func(Finding)) {
+	groups := make(map[string]*exposureFindingGroup)
+	for _, probe := range probes {
+		body := probeResponseBody(probe)
+		piiTypes := sortedUniqueStrings(probe.PIITypes)
+		if len(piiTypes) == 0 && len(body) > 0 {
+			piiTypes = detectPIITypes(body)
+		}
+		if len(piiTypes) > 0 && !probeIntendedCredentialIssuance(probe, piiTypes) {
+			addExposureProbe(groups, probe, "pii_exposure", piiFindingSeverity(piiTypes), "Potential sensitive data exposed in API response", piiTypes, []string{"API3:2023"})
+		}
+
+		disclosureTypes := sortedUniqueStrings(probe.DisclosureTypes)
+		if len(disclosureTypes) == 0 && len(body) > 0 {
+			disclosureTypes = detectVerboseDisclosureTypes(body)
+		}
+		mediumTypes, lowTypes := disclosureTypesByTier(disclosureTypes, probe.Status)
+		if len(mediumTypes) > 0 {
+			addExposureProbe(groups, probe, "verbose_error", "medium", "Verbose backend or database details in API response", mediumTypes, []string{"API8:2023"})
+		}
+		if len(lowTypes) > 0 {
+			addExposureProbe(groups, probe, "implementation_disclosure", "low", "Framework or upstream diagnostics in API response", lowTypes, []string{"API8:2023"})
+		} else if len(disclosureTypes) == 0 && probe.VerboseError {
+			addExposureProbe(groups, probe, "implementation_disclosure", "low", "Unclassified implementation diagnostic in API response", []string{"implementation_detail"}, []string{"API8:2023"})
+		}
+	}
+
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		group := groups[key]
+		add(Finding{
+			Severity: group.severity,
+			Category: group.category,
+			Title:    group.title,
+			Method:   group.method,
+			URL:      group.endpoint,
+			Evidence: groupedExposureEvidence(group),
+			OWASP:    append([]string(nil), group.owasp...),
+		})
+	}
+}
+
+func addExposureProbe(groups map[string]*exposureFindingGroup, probe ProbeResult, category, severity, title string, signature, owasp []string) {
+	endpointURL := probe.BaselineURL
+	if endpointURL == "" {
+		endpointURL = probe.URL
+	}
+	endpoint := normalizedEndpointTemplate(endpointURL)
+	key := category + "\x00" + probe.Method + "\x00" + endpoint + "\x00" + strings.Join(signature, ",")
+	group := groups[key]
+	if group == nil {
+		group = &exposureFindingGroup{
+			category: category, severity: severity, title: title, method: probe.Method, endpoint: endpoint,
+			signature: append([]string(nil), signature...), owasp: append([]string(nil), owasp...),
+			identities: make(map[string]struct{}), statuses: make(map[int]struct{}),
+		}
+		groups[key] = group
+	}
+	group.matchingProbes++
+	if identity := strings.TrimSpace(probe.Identity); identity != "" {
+		group.identities[identity] = struct{}{}
+	}
+	group.statuses[probe.Status] = struct{}{}
+	representative := safeRepresentativeURL(probe.URL)
+	if representative != "" && len(group.representative) < maximumRepresentativeURLs && !containsString(group.representative, representative) {
+		group.representative = append(group.representative, representative)
+	}
+}
+
+func groupedExposureEvidence(group *exposureFindingGroup) string {
+	parts := []string{
+		"matched_types=" + strings.Join(group.signature, ","),
+		fmt.Sprintf("matching_probes=%d", group.matchingProbes),
+	}
+	if identities := sortedMapKeys(group.identities); len(identities) > 0 {
+		parts = append(parts, "identities="+strings.Join(identities, ","))
+	}
+	if statuses := sortedStatusKeys(group.statuses); len(statuses) > 0 {
+		parts = append(parts, "statuses="+strings.Join(statuses, ","))
+	}
+	if len(group.representative) > 0 {
+		parts = append(parts, "representative_urls="+strings.Join(group.representative, ","))
+	}
+	if group.category == "pii_exposure" {
+		parts = append(parts, "matched values omitted")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func detectVerboseDisclosureTypes(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	types := make([]string, 0, len(verboseDisclosurePatterns))
+	for _, candidate := range verboseDisclosurePatterns {
+		if candidate.pattern.Match(body) {
+			types = append(types, candidate.name)
+		}
+	}
+	return types
+}
+
+func disclosureTypesByTier(types []string, status int) (medium, low []string) {
+	supporting := make([]string, 0)
+	for _, disclosureType := range sortedUniqueStrings(types) {
+		tier := "supporting"
+		for _, candidate := range verboseDisclosurePatterns {
+			if candidate.name == disclosureType {
+				tier = candidate.tier
+				break
+			}
+		}
+		switch tier {
+		case "medium":
+			medium = append(medium, disclosureType)
+		case "low":
+			low = append(low, disclosureType)
+		default:
+			supporting = append(supporting, disclosureType)
+		}
+	}
+	if len(medium) > 0 || status >= 400 && containsDatabaseObjectDisclosure(supporting) {
+		medium = append(medium, supporting...)
+	}
+	return medium, low
+}
+
+func containsDatabaseObjectDisclosure(types []string) bool {
+	for _, disclosureType := range types {
+		switch disclosureType {
+		case "database_table", "database_column", "database_constraint", "stored_procedure":
+			return true
+		}
+	}
+	return false
+}
+
+func piiFindingSeverity(types []string) string {
+	for _, piiType := range types {
+		switch piiType {
+		case "US SSN", "payment card candidate", "JWT", "IBAN":
+			return "high"
+		}
+	}
+	return "medium"
+}
+
+func probeIntendedCredentialIssuance(probe ProbeResult, types []string) bool {
+	parsed, err := url.Parse(probe.URL)
+	return err == nil && scanevidence.IntendedCredentialIssuance(probe.Method, parsed.Path, probe.Status, probeResponseBody(probe), types)
+}
+
+func probeResponseBody(probe ProbeResult) []byte {
+	if len(probe.analysisBody) > 0 {
+		return probe.analysisBody
+	}
+	if probe.ResponseBody != "" {
+		return []byte(probe.ResponseBody)
+	}
+	return nil
+}
+
+func normalizedEndpointTemplate(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	segments := strings.Split(parsed.EscapedPath(), "/")
+	for index, segment := range segments {
+		decoded, decodeErr := url.PathUnescape(segment)
+		if decodeErr == nil && sensitivePathSegment(decoded) {
+			segments[index] = "{redacted}"
+		} else if decodeErr == nil && identifierPathSegment(decoded) {
+			segments[index] = "{id}"
+		}
+	}
+	path := strings.Join(segments, "/")
+	if path == "" {
+		path = "/"
+	}
+	query := parsed.Query()
+	queryKeys := make([]string, 0, len(query))
+	for key := range query {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
+	templateQuery := make([]string, 0, len(queryKeys))
+	for _, key := range queryKeys {
+		templateQuery = append(templateQuery, url.QueryEscape(key)+"={value}")
+	}
+	prefix := ""
+	if parsed.Scheme != "" || parsed.Host != "" {
+		prefix = parsed.Scheme + "://" + parsed.Host
+	}
+	result := prefix + path
+	if len(templateQuery) > 0 {
+		result += "?" + strings.Join(templateQuery, "&")
+	}
+	return result
+}
+
+func identifierPathSegment(value string) bool {
+	return numericPathSegmentPattern.MatchString(value) || uuidPathSegmentPattern.MatchString(value) || hexPathSegmentPattern.MatchString(value)
+}
+
+func sensitivePathSegment(value string) bool {
+	return len(detectPIITypes([]byte(value))) > 0
+}
+
+func safeRepresentativeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	pathSegments := strings.Split(parsed.Path, "/")
+	for index, segment := range pathSegments {
+		if sensitivePathSegment(segment) {
+			pathSegments[index] = "{redacted}"
+		}
+	}
+	parsed.Path = strings.Join(pathSegments, "/")
+	parsed.RawPath = ""
+	query := parsed.Query()
+	for key, values := range query {
+		if sensitiveQueryKey(key) {
+			query.Set(key, "{redacted}")
+			continue
+		}
+		for index, value := range values {
+			if len(detectPIITypes([]byte(value))) > 0 {
+				values[index] = "{redacted}"
+			}
+		}
+		query[key] = values
+	}
+	parsed.RawQuery = query.Encode()
+	return truncateString(parsed.String(), maximumRepresentativeLength)
+}
+
+func sensitiveQueryKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, fragment := range []string{"authorization", "password", "passwd", "secret", "token", "api_key", "apikey", "session", "signature", "email"} {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedUniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sortedMapKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sortedStatusKeys(values map[int]struct{}) []string {
+	statuses := make([]int, 0, len(values))
+	for value := range values {
+		statuses = append(statuses, value)
+	}
+	sort.Ints(statuses)
+	result := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		result = append(result, strconv.Itoa(status))
+	}
+	return result
+}
+
+func containsString(values []string, candidate string) bool {
+	for _, value := range values {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func truncateString(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
 
 func responseReflectsProbeMarker(probe ProbeResult) bool {

@@ -82,7 +82,7 @@ func New(options Options) (*mcp.Server, error) {
 		Version:    options.Version,
 		WebsiteURL: "https://github.com/mr-pmillz/sj",
 	}, &mcp.ServerOptions{
-		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Assessment manifests and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
+		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, analyze retained API results, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Assessment manifests, retained result inputs, and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
 		Logger:       logger,
 		Capabilities: &mcp.ServerCapabilities{},
 	})
@@ -269,6 +269,12 @@ func registerTools(server *mcp.Server, service *service) {
 		Description: "Verify and render a bounded report from a persisted authorization assessment in the server-configured database. Text formats use UTF-8; Bruno collections use base64-encoded ZIP content.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closedWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
 	}, service.assessReport)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "analyze_api_results",
+		Title:       "Analyze retained API results",
+		Description: "Analyze root-confined legacy result files and selected runs from the operator-configured sj database, suppress obvious false positives, and render a bounded evidence-backed report without network access or database writes.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &closedWorld, DestructiveHint: &nonDestructive, IdempotentHint: true},
+	}, service.analyzeAPIResults)
 }
 
 type sourceInput struct {

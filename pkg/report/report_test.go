@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,7 +97,54 @@ func TestLoadAcceptsExactFileAndRecordLimitsAndRejectsTheNextRecord(t *testing.T
 	}
 }
 
-func TestAnalyzeCreatesWeightedAPIPenetrationTestCandidates(t *testing.T) {
+func TestLoadPreservesOperationOrderAndDistinctAuthenticationContexts(t *testing.T) {
+	directory := t.TempDir()
+	path := writeReportFixture(t, directory, "ordered-results.json", `{"results":[
+		{"source":"https://api.example/openapi.json","method":"POST","status":201,"target":"/entities","url":"https://api.example/entities","auth_context":"anonymous","request_body":"{\"entity_id\":\"testvalue\"}","response_body":"{\"entity_id\":\"testvalue\",\"created\":true}"},
+		{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/entities/testvalue","url":"https://api.example/entities/testvalue","auth_context":"anonymous","response_body":"{\"entity_id\":\"testvalue\",\"created\":true}"},
+		{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/entities/testvalue","url":"https://api.example/entities/testvalue","auth_context":"authenticated","response_body":"{\"entity_id\":\"testvalue\",\"created\":true}"}
+	]}`)
+
+	dataset, err := Load([]string{path}, DefaultLoadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dataset.Operations) != 3 {
+		t.Fatalf("operation occurrences were collapsed: %#v", dataset.Operations)
+	}
+	if dataset.Operations[0].Method != http.MethodPost || dataset.Operations[1].Method != http.MethodGet {
+		t.Fatalf("file chronology was not preserved: %#v", dataset.Operations)
+	}
+	if dataset.Operations[1].AuthContext != "anonymous" || dataset.Operations[2].AuthContext != "authenticated" {
+		t.Fatalf("authentication contexts were not preserved: %#v", dataset.Operations)
+	}
+	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
+	if !hasFinding(report, "PENTEST-PERSISTENT-UNAUTH-WRITE") {
+		t.Fatalf("ordered write/readback proof was not detected: %#v", report.Findings)
+	}
+}
+
+func TestLoadRetainsIdenticalPreAndPostWriteReadOccurrences(t *testing.T) {
+	directory := t.TempDir()
+	path := writeReportFixture(t, directory, "repeated-read-results.json", `{"results":[
+		{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/entities/testvalue","url":"https://api.example/entities/testvalue","auth_context":"anonymous","response_body":"{\"entity_id\":\"testvalue\",\"label\":\"marker\"}"},
+		{"source":"https://api.example/openapi.json","method":"POST","status":201,"target":"/entities","url":"https://api.example/entities","auth_context":"anonymous","request_body":"{\"entity_id\":\"testvalue\",\"label\":\"marker\"}","response_body":"{\"entity_id\":\"testvalue\",\"label\":\"marker\"}"},
+		{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/entities/testvalue","url":"https://api.example/entities/testvalue","auth_context":"anonymous","response_body":"{\"entity_id\":\"testvalue\",\"label\":\"marker\"}"}
+	]}`)
+	dataset, err := Load([]string{path}, DefaultLoadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dataset.Operations) != 3 || dataset.Operations[2].Method != http.MethodGet {
+		t.Fatalf("identical read occurrences were collapsed or reordered: %#v", dataset.Operations)
+	}
+	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
+	if !hasFinding(report, "PENTEST-PERSISTENT-UNAUTH-WRITE") {
+		t.Fatalf("post-write repeated readback was unavailable to sequence analysis: %#v", report.Findings)
+	}
+}
+
+func TestAnalyzeKeepsHeuristicsInMetricsAndOWASPCoverage(t *testing.T) {
 	dataset := Dataset{
 		Targets:     []string{"https://api.example"},
 		Discoveries: []Discovery{{Target: "https://api.example", URL: "https://api.example/openapi.json", Version: "3.1.0"}},
@@ -112,26 +160,26 @@ func TestAnalyzeCreatesWeightedAPIPenetrationTestCandidates(t *testing.T) {
 	}
 	report := Analyze(dataset, AnalyzeOptions{Title: "Authorized QA", GeneratedAt: time.Unix(0, 0).UTC(), MaxEvidence: 5})
 
-	if report.Severity.Critical.Observations == 0 || report.Severity.High.Observations == 0 || report.Severity.Medium.Observations == 0 {
-		t.Fatalf("severity summary = %#v", report.Severity)
+	if len(report.Findings) != 0 || report.Severity.WeightedPoints != 0 {
+		t.Fatalf("heuristic-only inputs were promoted to findings: %#v", report.Findings)
 	}
-	if report.Severity.WeightedPoints == 0 {
-		t.Fatal("weighted severity points were not calculated")
+	if report.Metrics.Failures != 1 {
+		t.Fatalf("coverage failure was not retained as a metric: %#v", report.Metrics)
 	}
 	for _, category := range []string{"API1:2023", "API2:2023", "API3:2023", "API4:2023", "API5:2023", "API6:2023", "API7:2023", "API8:2023", "API9:2023", "API10:2023"} {
 		if !hasOWASPCategory(report, category) {
 			t.Errorf("missing OWASP category %s", category)
 		}
 	}
-	if !hasFinding(report, "PENTEST-IDOR-CANDIDATE") || !hasFinding(report, "PENTEST-BUSINESS-FLOW") {
-		t.Fatalf("expected IDOR and business-logic candidates: %#v", report.Findings)
+	if hasFinding(report, "PENTEST-IDOR-CANDIDATE") || hasFinding(report, "PENTEST-BUSINESS-FLOW") || hasFinding(report, "PENTEST-STATE-CHANGE-CANDIDATE") {
+		t.Fatalf("heuristic-only candidates survived: %#v", report.Findings)
 	}
 	if report.Metrics.SuccessRate <= 0 || report.Metrics.ServerErrorRate <= 0 || report.Metrics.AuthenticationChallengeRate <= 0 {
 		t.Fatalf("statistical metrics = %#v", report.Metrics)
 	}
 }
 
-func TestRenderersEscapeEvidenceAndDiscloseHeuristicLimits(t *testing.T) {
+func TestRenderersEscapeEvidenceAndDiscloseEvidenceStandard(t *testing.T) {
 	dataset := Dataset{Operations: []Operation{{Source: "https://api.example/<script>", Method: "GET", Status: 200, Target: "/users/1|admin"}}}
 	report := Analyze(dataset, AnalyzeOptions{Title: "<script>alert(1)</script>", GeneratedAt: time.Unix(0, 0).UTC()})
 
@@ -141,8 +189,8 @@ func TestRenderersEscapeEvidenceAndDiscloseHeuristicLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		rendered := output.String()
-		if !strings.Contains(strings.ToLower(rendered), "candidate") || !strings.Contains(strings.ToLower(rendered), "not confirmed") {
-			t.Fatalf("%s report omits heuristic disclosure", format)
+		if !strings.Contains(strings.ToLower(rendered), "evidence-backed") || !strings.Contains(strings.ToLower(rendered), "successful http status alone is not proof") {
+			t.Fatalf("%s report omits evidence-standard disclosure", format)
 		}
 		if format == "html" && strings.Contains(rendered, "<script>alert(1)</script>") {
 			t.Fatalf("HTML report contains unescaped title: %s", rendered)
@@ -154,12 +202,19 @@ func TestRenderersEscapeEvidenceAndDiscloseHeuristicLimits(t *testing.T) {
 }
 
 func TestHTMLReportRendersEscapedToggleableResponseProof(t *testing.T) {
-	dataset := Dataset{Operations: []Operation{{
-		Source: "https://api.example/openapi.json", Method: "GET", Status: 200,
-		Target: "/users/1", URL: "https://api.example/users/1", ContentType: "application/json",
-		RequestBody: `{"userId":1}`, ResponseBody: `<script>alert("proof")</script>`, ResponseTruncated: true,
-	}}}
-	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC(), MaxEvidence: 5})
+	report := Report{
+		Title:       "sj API Penetration Test Report",
+		GeneratedAt: time.Unix(0, 0).UTC(),
+		Methodology: reportMethodology,
+		Findings: []Finding{{
+			ID: "PENTEST-PROOF", Severity: SeverityHigh, Title: "Proof rendering",
+			Count: 1, Confidence: "fixture", Evidence: []Evidence{{
+				Source: "https://api.example/openapi.json", Method: "GET", Status: 200,
+				Target: "/users/1", URL: "https://api.example/users/1", ContentType: "application/json",
+				RequestBody: `{"userId":1}`, ResponseBody: `<script>alert("proof")</script>`, ResponseTruncated: true,
+			}},
+		}},
+	}
 	var output bytes.Buffer
 	if err := Write(report, "html", &output, config.ColorNever); err != nil {
 		t.Fatal(err)
@@ -175,11 +230,11 @@ func TestHTMLReportRendersEscapedToggleableResponseProof(t *testing.T) {
 	}
 }
 
-func TestAnalyzeAttachesNumericIDORProbeProofToImportedFinding(t *testing.T) {
+func TestAnalyzeSuppressesUnownedNumericIDORProbeFinding(t *testing.T) {
 	dataset := Dataset{
 		Operations: []Operation{
 			{Origin: "fuzz", Method: "GET", Status: 200, URL: "https://api.example/users/1", Target: "/users/1", BaselineURL: "https://api.example/users/testvalue", Case: "idor_range:path:1:1", Identity: "alice", ResponseBody: `{"id":1}`},
-			{Origin: "fuzz", Method: "GET", Status: 200, URL: "https://api.example/users/2", Target: "/users/2", BaselineURL: "https://api.example/users/testvalue", Case: "idor_range:path:1:2", Identity: "alice", ResponseBody: `{"id":2}`},
+			{Origin: "fuzz", Method: "GET", Status: 200, URL: "https://api.example/users/2", Target: "/users/2", BaselineURL: "https://api.example/users/testvalue", Case: "idor_range:path:1:2", Identity: "bob", ResponseBody: `{"id":2}`},
 		},
 		ImportedFindings: []ImportedFinding{{
 			Severity: "high", Category: "idor_enumeration", Title: "Differential object responses",
@@ -187,16 +242,9 @@ func TestAnalyzeAttachesNumericIDORProbeProofToImportedFinding(t *testing.T) {
 		}},
 	}
 	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC(), MaxEvidence: 5})
-	for _, finding := range report.Findings {
-		if finding.ID != "idor_enumeration" {
-			continue
-		}
-		if len(finding.Evidence) < 3 || finding.Evidence[1].ResponseBody == "" || finding.Evidence[2].ResponseBody == "" {
-			t.Fatalf("IDOR finding did not retain probe proof: %#v", finding.Evidence)
-		}
-		return
+	if hasFinding(report, "idor_enumeration") {
+		t.Fatalf("enumeration without ownership controls was promoted: %#v", report.Findings)
 	}
-	t.Fatalf("imported IDOR finding missing: %#v", report.Findings)
 }
 
 func TestAnalyzeDoesNotCountFuzzProbesAsDistinctAPIOperations(t *testing.T) {
@@ -231,12 +279,58 @@ func TestAnalyzeDistinguishesHTTP200ApplicationFailureAndVerboseHint(t *testing.
 	if hasFinding(report, "PENTEST-STATE-CHANGE-CANDIDATE") {
 		t.Fatalf("HTTP 200 failure envelope was classified as a successful state change: %#v", report.Findings)
 	}
-	if !hasFinding(report, "PENTEST-APPLICATION-FAILURE") || !hasFinding(report, "PENTEST-VERBOSE-ERROR") {
-		t.Fatalf("application failure evidence missing: %#v", report.Findings)
+	if len(report.Findings) != 0 {
+		t.Fatalf("ambiguous NoneType failure was promoted: %#v", report.Findings)
 	}
 }
 
-func TestHTMLProofIncludesEscapedResponseGuidance(t *testing.T) {
+func TestAnalyzeHighlightsPersistentModificationAndSQLDisclosure(t *testing.T) {
+	dataset := Dataset{Operations: []Operation{
+		{
+			Origin: "automate", Source: "https://api.example/openapi.json", Method: "POST",
+			Status: 201, Target: "/entities", URL: "https://api.example/entities",
+			RequestBody: `{"entity_id":"testvalue"}`, ResponseBody: `{"entity_id":"testvalue","created":true}`,
+		},
+		{
+			Origin: "automate", Source: "https://api.example/openapi.json", Method: "GET",
+			Status: 200, Target: "/entities/testvalue", URL: "https://api.example/entities/testvalue",
+			ResponseBody: `{"entity_id":"testvalue","created":true}`,
+		},
+		{
+			Origin: "automate", Source: "https://api.example/openapi.json", Method: "GET",
+			Status: 500, Target: "/invoice_log/1", URL: "https://api.example/invoice_log/1",
+			ResponseBody: `(pyodbc.ProgrammingError) SQL Server invalid object name dbo.invoice_log via SQLAlchemy stored procedure spGetInvoice`,
+		},
+	}}
+	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC(), MaxEvidence: 5})
+	if !hasFinding(report, "PENTEST-PERSISTENT-UNAUTH-WRITE") {
+		t.Fatalf("persistent modification finding missing: %#v", report.Findings)
+	}
+	if !hasFinding(report, "PENTEST-VERBOSE-BACKEND-DISCLOSURE") {
+		t.Fatalf("verbose SQL disclosure finding missing: %#v", report.Findings)
+	}
+}
+
+func TestAnalyzeDoesNotTreatFailureEnvelopeAsPersistentModification(t *testing.T) {
+	dataset := Dataset{Operations: []Operation{
+		{
+			Origin: "automate", Source: "https://api.example/openapi.json", Method: "POST",
+			Status: 200, Target: "/entities", URL: "https://api.example/entities",
+			ResponseBody: `{"ok":false,"error":"validation failed"}`,
+		},
+		{
+			Origin: "automate", Source: "https://api.example/openapi.json", Method: "GET",
+			Status: 200, Target: "/entities/testvalue", URL: "https://api.example/entities/testvalue",
+			ResponseBody: `{"name":"testvalue"}`,
+		},
+	}}
+	report := Analyze(dataset, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
+	if hasFinding(report, "PENTEST-PERSISTENT-UNAUTH-WRITE") {
+		t.Fatalf("failure envelope produced persistent modification finding: %#v", report.Findings)
+	}
+}
+
+func TestHTMLSuppressesResponseGuidedSuccessNoise(t *testing.T) {
 	dataset := Dataset{
 		Operations: []Operation{{
 			Origin: "fuzz", Method: "GET", Status: 200, URL: "https://api.example/tenant?tenantId=1", Target: "/tenant",
@@ -244,7 +338,7 @@ func TestHTMLProofIncludesEscapedResponseGuidance(t *testing.T) {
 			Guidance: "applied <bounded> repair", ResponseBody: `{"id":1,"name":"tenant"}`,
 		}},
 		ImportedFindings: []ImportedFinding{{
-			Severity: "informational", Category: "response_guided_success", Title: "Guided success",
+			Severity: "medium", Category: "response_guided_success", Title: "Guided success",
 			Method: "GET", URL: "https://api.example/tenant?tenantId=1", Evidence: "repair succeeded",
 		}},
 	}
@@ -254,8 +348,8 @@ func TestHTMLProofIncludesEscapedResponseGuidance(t *testing.T) {
 		t.Fatal(err)
 	}
 	rendered := output.String()
-	if !strings.Contains(rendered, "Response-guided analysis") || !strings.Contains(rendered, "applied &lt;bounded&gt; repair") {
-		t.Fatalf("guided proof missing or unescaped: %s", rendered)
+	if strings.Contains(rendered, "Guided success") || strings.Contains(rendered, "Response-guided analysis") {
+		t.Fatalf("response-guided coverage signal survived as a finding: %s", rendered)
 	}
 }
 
@@ -271,23 +365,33 @@ func TestAnalyzeDiscardsImportedPaymentCardFalsePositiveWhenProofIsCaptured(t *t
 			Method: "GET", URL: targetURL, Evidence: "matched_types=payment card candidate; matched values redacted",
 		}},
 	}
-	if report := Analyze(base, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()}); hasFinding(report, "pii_exposure") {
+	if report := Analyze(base, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()}); hasFinding(report, "pii_exposure") || hasFinding(report, "PENTEST-SENSITIVE-DATA-EXPOSURE") {
 		t.Fatalf("long identifier survived payment-card revalidation: %#v", report.Findings)
 	}
 
 	base.Operations[0].ResponseBody = `{"card":"4111111111111111"}`
-	if report := Analyze(base, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()}); !hasFinding(report, "pii_exposure") {
+	if report := Analyze(base, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()}); !hasFinding(report, "PENTEST-SENSITIVE-DATA-EXPOSURE") {
 		t.Fatalf("valid payment-card candidate was discarded: %#v", report.Findings)
 	}
 }
 
-func TestAnalyzePreservesImportedPIICandidateWithoutCapturedProof(t *testing.T) {
+func TestAnalyzeSuppressesImportedPIICandidateWithoutCapturedProof(t *testing.T) {
 	report := Analyze(Dataset{ImportedFindings: []ImportedFinding{{
 		Severity: "high", Category: "pii_exposure", Title: "Potential PII exposed in API response",
 		Method: "GET", URL: "https://api.example/customer/1", Evidence: "matched values redacted",
 	}}}, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
-	if !hasFinding(report, "pii_exposure") {
-		t.Fatalf("candidate without captured proof was incorrectly disproved: %#v", report.Findings)
+	if hasFinding(report, "pii_exposure") {
+		t.Fatalf("candidate without captured proof survived: %#v", report.Findings)
+	}
+}
+
+func TestAnalyzeSuppressesImportedVerboseFindingInFavorOfRetainedBodyAnalysis(t *testing.T) {
+	report := Analyze(Dataset{ImportedFindings: []ImportedFinding{{
+		Severity: "medium", Category: "verbose_error", Title: "Verbose implementation details",
+		Method: "GET", URL: "https://api.example/failure", Evidence: "matched_types=stack_trace",
+	}}}, AnalyzeOptions{GeneratedAt: time.Unix(0, 0).UTC()})
+	if len(report.Findings) != 0 {
+		t.Fatalf("type-only imported disclosure survived without retained proof: %#v", report.Findings)
 	}
 }
 

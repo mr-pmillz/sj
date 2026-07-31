@@ -73,8 +73,18 @@ func FromState(state store.AssessmentState, options Options) (Snapshot, error) {
 	snapshot.Counts = buildCounts(state)
 	snapshot.Coverage = buildCoverage(state, cleaner, limits, &snapshot.Truncation)
 	snapshot.StopReasons = buildStopReasons(state, cleaner, limits, &snapshot.Truncation)
+	findings := state.Findings
+	if options.IncludeEvidence {
+		derived, deriveErr := deriveSemanticFindings(state, cleaner, limits, options.EvidenceDecryptionKey)
+		if deriveErr != nil {
+			return Snapshot{}, deriveErr
+		}
+		if len(derived) > 0 {
+			findings = append(slices.Clone(state.Findings), derived...)
+		}
+	}
 	snapshot.Findings, snapshot.SuppressedDisprovedFindings = buildFindings(
-		state.Findings, cleaner, limits, &snapshot.Truncation,
+		findings, cleaner, limits, &snapshot.Truncation,
 		options.suppressDisproved,
 	)
 	if options.IncludeEvidence {
@@ -972,7 +982,7 @@ func categoryMappings(category string) ([]string, []string) {
 		return []string{"API1:2023"}, []string{"CWE-639"}
 	case "broken-authentication", "authentication":
 		return []string{"API2:2023"}, []string{"CWE-287"}
-	case "bopla", "mass-assignment", "excessive-data", "excessive-data-exposure":
+	case "bopla", "mass-assignment", "excessive-data", "excessive-data-exposure", "pii-exposure", "sensitive-data-exposure":
 		return []string{"API3:2023"}, []string{"CWE-200", "CWE-915"}
 	case "resource-consumption", "rate-limit", "rate-limiting":
 		return []string{"API4:2023"}, []string{"CWE-770"}
@@ -984,7 +994,7 @@ func categoryMappings(category string) ([]string, []string) {
 		return []string{"API7:2023"}, []string{"CWE-918"}
 	case "injection":
 		return []string{"API8:2023"}, []string{"CWE-74"}
-	case "security-misconfiguration", "misconfiguration":
+	case "security-misconfiguration", "misconfiguration", "verbose-error", "implementation-disclosure":
 		return []string{"API8:2023"}, []string{"CWE-16"}
 	case "inventory", "shadow-api", "zombie-api":
 		return []string{"API9:2023"}, []string{"CWE-200"}

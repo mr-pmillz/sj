@@ -2,9 +2,32 @@ package report
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mr-pmillz/sj/pkg/store"
 )
+
+func TestDatasetFromStoredResultsPreservesExchangeProvenanceAndOccurrences(t *testing.T) {
+	first := time.Date(2026, time.July, 18, 4, 0, 0, 0, time.UTC)
+	second := first.Add(3 * time.Hour)
+	observations := []store.Observation{
+		{ID: 10, RunID: "run-create", Kind: "automate", Method: "GET", URL: "https://api.example/entities/marker", Path: "/entities/marker", Status: 200, ResponseBody: []byte(`{"id":"marker"}`), Metadata: map[string]any{"auth_context": "anonymous"}, CreatedAt: first},
+		{ID: 20, RunID: "run-readback", Kind: "fuzz_probe", Method: "GET", URL: "https://api.example/entities/marker", Status: 200, ResponseBody: []byte(`{"id":"marker"}`), Metadata: map[string]any{"identity": "default", "auth_context": "authenticated"}, CreatedAt: second},
+	}
+	dataset, err := DatasetFromStoredResults(observations, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dataset.Operations) != 2 {
+		t.Fatalf("occurrences were deduplicated: %#v", dataset.Operations)
+	}
+	if got := dataset.Operations[0]; got.RunID != "run-create" || got.ObservationID != 10 || !got.ObservedAt.Equal(first) || got.AuthContext != "anonymous" {
+		t.Fatalf("first provenance = %#v", got)
+	}
+	if got := dataset.Operations[1]; got.RunID != "run-readback" || got.ObservationID != 20 || !got.ObservedAt.Equal(second) || got.AuthContext != "authenticated" {
+		t.Fatalf("second provenance = %#v", got)
+	}
+}
 
 func TestDatasetFromStoredObservationsBuildsReportInput(t *testing.T) {
 	observations := []store.Observation{
@@ -58,8 +81,8 @@ func TestDatasetFromStoredResultsIncludesActiveFindingsInMetrics(t *testing.T) {
 	if len(dataset.ImportedFindings) != 1 || report.Metrics.UniqueRecords != 1 {
 		t.Fatalf("dataset=%#v metrics=%#v", dataset, report.Metrics)
 	}
-	if len(report.Findings) != 1 || report.Findings[0].ID != "pii_exposure" {
-		t.Fatalf("findings = %#v", report.Findings)
+	if len(report.Findings) != 0 {
+		t.Fatalf("PII summary without captured proof survived: %#v", report.Findings)
 	}
 }
 
@@ -71,6 +94,13 @@ func TestDatasetFromStoredResultsRetainsFuzzResponseProof(t *testing.T) {
 			"baseline_url": "https://api.example/users/testvalue", "case": "idor_range:path:1:2",
 			"category": "idor_range", "identity": "alice", "guidance": "applied bounded repair",
 		},
+	}, {
+		Kind: "fuzz_probe", Method: "GET", URL: "https://api.example/users/3", Status: 200,
+		ContentType: "application/json", RequestBody: []byte(`{"probe":3}`), ResponseBody: []byte(`{"id":3}`),
+		Metadata: map[string]any{
+			"baseline_url": "https://api.example/users/testvalue", "case": "idor_range:path:1:3",
+			"category": "idor_range", "identity": "bob", "guidance": "applied bounded repair",
+		},
 	}}, []store.Finding{{
 		Severity: "high", Category: "idor_enumeration", Title: "Differential object responses", Method: "GET",
 		URL: "https://api.example/users/testvalue", Evidence: map[string]any{"summary": "successful_ids=2", "owasp": []string{"API1:2023"}},
@@ -78,7 +108,7 @@ func TestDatasetFromStoredResultsRetainsFuzzResponseProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dataset.Operations) != 1 {
+	if len(dataset.Operations) != 2 {
 		t.Fatalf("operations = %#v", dataset.Operations)
 	}
 	operation := dataset.Operations[0]
@@ -86,12 +116,9 @@ func TestDatasetFromStoredResultsRetainsFuzzResponseProof(t *testing.T) {
 		t.Fatalf("stored fuzz proof = %#v", operation)
 	}
 	report := Analyze(dataset, AnalyzeOptions{MaxEvidence: 5})
-	for _, finding := range report.Findings {
-		if finding.ID == "idor_enumeration" && len(finding.Evidence) == 2 && finding.Evidence[1].ResponseBody != "" {
-			return
-		}
+	if hasFinding(report, "idor_enumeration") {
+		t.Fatalf("enumeration without ownership controls was promoted: %#v", report.Findings)
 	}
-	t.Fatalf("stored finding proof missing: %#v", report.Findings)
 }
 
 func TestMergeDatasetsDeduplicatesEquivalentActiveFindings(t *testing.T) {

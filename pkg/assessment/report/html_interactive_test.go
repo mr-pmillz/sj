@@ -422,6 +422,145 @@ func TestRenderStateHTMLDecryptsRetainedHTTPExchange(t *testing.T) {
 	}
 }
 
+func TestRenderStateHTMLHighlightsDerivedPersistentModificationAndVerboseErrors(t *testing.T) {
+	key := bytes.Repeat([]byte{0x3c}, 32)
+	state := interactiveHTMLAssessmentState()
+	state.Findings = nil
+	state.Attempts = []store.AssessmentAttempt{
+		{
+			ID: "attempt-create", AssessmentID: state.Assessment.ID, PlanNodeID: "node-html",
+			Ordinal: 1, Status: store.AttemptSucceeded, Method: http.MethodPost,
+			Origin: "https://api.example.test", HTTPStatus: http.StatusCreated,
+			StartedAt: time.Date(2026, time.July, 31, 13, 0, 0, 0, time.UTC),
+		},
+		{
+			ID: "attempt-readback", AssessmentID: state.Assessment.ID, PlanNodeID: "node-html",
+			Ordinal: 2, Status: store.AttemptSucceeded, Method: http.MethodGet,
+			Origin: "https://api.example.test", HTTPStatus: http.StatusOK,
+			StartedAt: time.Date(2026, time.July, 31, 13, 2, 0, 0, time.UTC),
+		},
+		{
+			ID: "attempt-sql-error", AssessmentID: state.Assessment.ID, PlanNodeID: "node-html",
+			Ordinal: 3, Status: store.AttemptSucceeded, Method: http.MethodGet,
+			Origin: "https://api.example.test", HTTPStatus: http.StatusInternalServerError,
+			StartedAt: time.Date(2026, time.July, 31, 13, 3, 0, 0, time.UTC),
+		},
+	}
+	state.Artifacts = []store.ArtifactMetadata{
+		encryptedExchangeArtifact(t, key, state.Assessment.ID, "attempt-create", evidence.HTTPExchange{
+			Request: evidence.HTTPRequest{
+				Method: http.MethodPost, URL: "https://api.example.test/entities",
+				Headers: http.Header{"Content-Type": []string{"application/json"}},
+				Body:    []byte(`{"entity_id":"testvalue"}`),
+			},
+			Response: evidence.HTTPResponse{
+				StatusCode: http.StatusCreated,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"entity_id":"testvalue","created":true}`),
+			},
+		}),
+		encryptedExchangeArtifact(t, key, state.Assessment.ID, "attempt-readback", evidence.HTTPExchange{
+			Request: evidence.HTTPRequest{
+				Method: http.MethodGet, URL: "https://api.example.test/entities/testvalue",
+			},
+			Response: evidence.HTTPResponse{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"entity_id":"testvalue","created":true}`),
+			},
+		}),
+		encryptedExchangeArtifact(t, key, state.Assessment.ID, "attempt-sql-error", evidence.HTTPExchange{
+			Request: evidence.HTTPRequest{
+				Method: http.MethodGet, URL: "https://api.example.test/invoice_log/1",
+			},
+			Response: evidence.HTTPResponse{
+				StatusCode: http.StatusInternalServerError,
+				Headers:    http.Header{"Content-Type": []string{"application/json"}},
+				Body:       []byte(`{"error":"(pyodbc.ProgrammingError) SQL Server invalid object name dbo.invoice_log via SQLAlchemy stored procedure spGetInvoice"}`),
+			},
+		}),
+	}
+
+	output, err := RenderState(state, FormatHTML, Options{EvidenceDecryptionKey: key})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	document := string(output)
+	for _, expected := range []string{
+		"Successful state-changing API request had persisted readback evidence",
+		"API response disclosed backend implementation or database error details",
+		`data-finding-id="derived-persistent-modification-`,
+		`data-finding-id="derived-verbose-error-`,
+		`"attempt_id":"attempt-create"`,
+		`"attempt_id":"attempt-readback"`,
+		`"attempt_id":"attempt-sql-error"`,
+		`https://api.example.test/entities/testvalue`,
+		`pyodbc.ProgrammingError`,
+		`SQLAlchemy`,
+	} {
+		if !strings.Contains(document, expected) {
+			t.Errorf("HTML derived evidence missing %q", expected)
+		}
+	}
+}
+
+func TestRenderStateHTMLSuppressesObviousSemanticFalsePositives(t *testing.T) {
+	key := bytes.Repeat([]byte{0x3d}, 32)
+	state := interactiveHTMLAssessmentState()
+	state.Findings = nil
+	state.Attempts = []store.AssessmentAttempt{
+		{
+			ID: "attempt-failure-envelope", AssessmentID: state.Assessment.ID, PlanNodeID: "node-html",
+			Ordinal: 1, Status: store.AttemptSucceeded, Method: http.MethodPost,
+			Origin: "https://api.example.test", HTTPStatus: http.StatusOK,
+			StartedAt: time.Date(2026, time.July, 31, 14, 0, 0, 0, time.UTC),
+		},
+		{
+			ID: "attempt-reserved-email", AssessmentID: state.Assessment.ID, PlanNodeID: "node-html",
+			Ordinal: 2, Status: store.AttemptSucceeded, Method: http.MethodGet,
+			Origin: "https://api.example.test", HTTPStatus: http.StatusOK,
+			StartedAt: time.Date(2026, time.July, 31, 14, 1, 0, 0, time.UTC),
+		},
+	}
+	state.Artifacts = []store.ArtifactMetadata{
+		encryptedExchangeArtifact(t, key, state.Assessment.ID, "attempt-failure-envelope", evidence.HTTPExchange{
+			Request: evidence.HTTPRequest{
+				Method: http.MethodPost, URL: "https://api.example.test/entities",
+				Body: []byte(`{"name":"testvalue"}`),
+			},
+			Response: evidence.HTTPResponse{
+				StatusCode: http.StatusOK,
+				Body:       []byte(`{"ok":false,"error":"validation failed"}`),
+			},
+		}),
+		encryptedExchangeArtifact(t, key, state.Assessment.ID, "attempt-reserved-email", evidence.HTTPExchange{
+			Request: evidence.HTTPRequest{
+				Method: http.MethodGet, URL: "https://api.example.test/profile",
+			},
+			Response: evidence.HTTPResponse{
+				StatusCode: http.StatusOK,
+				Body:       []byte(`{"email":"probe@sj.invalid"}`),
+			},
+		}),
+	}
+
+	output, err := RenderState(state, FormatHTML, Options{EvidenceDecryptionKey: key})
+	if err != nil {
+		t.Fatalf("RenderState() error = %v", err)
+	}
+	document := string(output)
+	for _, forbidden := range []string{
+		"Successful state-changing API request had persisted readback evidence",
+		"API response contained sensitive data patterns",
+		`data-finding-id="derived-persistent-modification-`,
+		`data-finding-id="derived-sensitive-data-`,
+	} {
+		if strings.Contains(document, forbidden) {
+			t.Errorf("HTML retained obvious semantic false positive %q", forbidden)
+		}
+	}
+}
+
 func TestRenderStateHTMLRejectsTamperedRetainedHTTPExchange(t *testing.T) {
 	key := bytes.Repeat([]byte{0x2b}, 32)
 	ciphertext, err := evidence.EncryptHTTPExchange(key, evidence.HTTPExchange{
@@ -443,6 +582,27 @@ func TestRenderStateHTMLRejectsTamperedRetainedHTTPExchange(t *testing.T) {
 
 	if _, err := RenderState(state, FormatHTML, Options{EvidenceDecryptionKey: key}); err == nil {
 		t.Fatal("RenderState() accepted tampered encrypted HTTP exchange")
+	}
+}
+
+func encryptedExchangeArtifact(
+	t *testing.T,
+	key []byte,
+	assessmentID string,
+	attemptID string,
+	exchange evidence.HTTPExchange,
+) store.ArtifactMetadata {
+	t.Helper()
+	ciphertext, err := evidence.EncryptHTTPExchange(key, exchange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.ArtifactMetadata{
+		ID: "artifact-" + attemptID, AssessmentID: assessmentID, AttemptID: attemptID,
+		Kind: "http-exchange", ContentType: "application/vnd.sj.http-exchange+json",
+		StorageRef: "encrypted:" + base64.StdEncoding.EncodeToString(ciphertext),
+		SizeBytes:  int64(len(ciphertext)), Sensitive: true,
+		CreatedAt: time.Date(2026, time.July, 31, 13, 5, 0, 0, time.UTC),
 	}
 }
 
