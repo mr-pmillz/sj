@@ -21,6 +21,22 @@ type resultRun struct {
 	run   store.Run
 }
 
+type resultPersistenceError struct {
+	err error
+}
+
+func durableResultContext(commandCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(commandCtx), 5*time.Second)
+}
+
+func (failure *resultPersistenceError) Error() string {
+	return failure.err.Error()
+}
+
+func (failure *resultPersistenceError) Unwrap() error {
+	return failure.err
+}
+
 func beginResultRun(ctx context.Context, cfg *config.Config, command string, metadata any) (*resultRun, error) {
 	if cfg.NoDatabase || strings.TrimSpace(cfg.DatabasePath) == "" {
 		return nil, nil
@@ -57,14 +73,18 @@ func (run *resultRun) finish(commandErr error) error {
 	if finishErr == nil && closeErr == nil {
 		output.PrintInfo("Stored %s run %s in %s\n", run.run.Command, run.run.ID, run.store.Path())
 	}
-	return errors.Join(commandErr, finishErr, closeErr)
+	persistenceErr := errors.Join(finishErr, closeErr)
+	if persistenceErr == nil {
+		return commandErr
+	}
+	return errors.Join(commandErr, &resultPersistenceError{err: persistenceErr})
 }
 
-func (run *resultRun) addAutomateResults(ctx context.Context, writer *output.Writer, failures []error) error {
+func (run *resultRun) addAutomateResults(ctx context.Context, writer *output.Writer) error {
 	if run == nil {
 		return nil
 	}
-	observations := make([]store.Observation, 0, len(writer.Results)+len(writer.VerboseResults)+len(failures))
+	observations := make([]store.Observation, 0, len(writer.Results)+len(writer.VerboseResults)+len(writer.SourceFailures)+len(writer.CoverageGaps))
 	authContext := requestAuthContext(writer.Cfg.Headers)
 	for _, result := range writer.Results {
 		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, "", authContext))
@@ -72,8 +92,17 @@ func (run *resultRun) addAutomateResults(ctx context.Context, writer *output.Wri
 	for _, result := range writer.VerboseResults {
 		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, result.Preview, authContext))
 	}
-	for _, failure := range failures {
-		observations = append(observations, store.Observation{Kind: "automate_failure", Metadata: map[string]any{"error": failure.Error()}})
+	for _, failure := range writer.SourceFailures {
+		observations = append(observations, store.Observation{
+			Kind: "automate_failure", Source: failure.Source,
+			Metadata: map[string]any{"error": failure.Error, "coverage": true},
+		})
+	}
+	for _, gap := range writer.CoverageGaps {
+		observations = append(observations, store.Observation{
+			Kind: "automate_coverage_gap", Source: gap.Origin,
+			Metadata: map[string]any{"reason": gap.Reason, "skipped": gap.Skipped},
+		})
 	}
 	return run.store.AddObservations(ctx, run.run.ID, observations)
 }

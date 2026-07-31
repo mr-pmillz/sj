@@ -79,18 +79,19 @@ type nodeCaseResult struct {
 }
 
 type nodeExecution struct {
-	ctx            context.Context
-	resultStore    *store.Store
-	assessmentID   string
-	nodeID         string
-	proof          persistedNode
-	bindings       map[string][]identityBinding
-	runner         *executor.Executor
-	retrySource    *store.AssessmentAttempt
-	evidencePolicy evidencePolicyMetadata
-	evidenceKey    []byte
-	lease          *assessmentExecutionLease
-	byKind         map[string][]caseEvidence
+	ctx             context.Context
+	resultStore     *store.Store
+	assessmentID    string
+	nodeID          string
+	proof           persistedNode
+	bindings        map[string][]identityBinding
+	runner          *executor.Executor
+	retrySource     *store.AssessmentAttempt
+	evidencePolicy  evidencePolicyMetadata
+	evidenceKey     []byte
+	lease           *assessmentExecutionLease
+	directTransport bool
+	byKind          map[string][]caseEvidence
 }
 
 func (service *Service) execute(
@@ -167,11 +168,17 @@ func proofOrigin(proof persistedNode) string {
 func isIsolatedTargetTransportFailure(
 	executeErr error,
 	attempt executor.Attempt,
-	proxyVerified bool,
+	proxyRequired bool,
+	directTransport bool,
 ) bool {
-	return proxyVerified && errors.Is(executeErr, executor.ErrTransport) &&
-		errors.Is(executeErr, ErrTargetOriginTransport) &&
-		attempt.Outcome == executor.OutcomeRetryableNoSideEffect
+	if !errors.Is(executeErr, executor.ErrTransport) ||
+		attempt.Outcome != executor.OutcomeRetryableNoSideEffect {
+		return false
+	}
+	if proxyRequired {
+		return errors.Is(executeErr, ErrTargetOriginTransport)
+	}
+	return directTransport && isDirectTargetDialError(executeErr)
 }
 
 func (ledger *executionLedger) Reserve(ctx context.Context, reservation executor.Reservation) (executor.ReservationToken, error) {

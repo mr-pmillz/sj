@@ -15,6 +15,7 @@ import (
 const (
 	targetTransportFailureReason  = "target transport failed after required proxy verification"
 	targetOriginUnavailableReason = "target origin unavailable after verified proxy transport failure"
+	targetOriginRateLimitedReason = "target origin unavailable after rate-limit signal"
 	assessmentLeaseTTL            = 30 * time.Second
 	assessmentLeaseHeartbeat      = 10 * time.Second
 )
@@ -82,14 +83,23 @@ func unavailableOriginsFromState(
 ) map[string]string {
 	result := make(map[string]string)
 	for _, item := range coverage {
-		if item.Status != "inconclusive" || item.Reason != targetTransportFailureReason {
+		origin := proofOrigin(proofs[item.PlanNodeID])
+		if origin == "" {
 			continue
 		}
-		if origin := proofOrigin(proofs[item.PlanNodeID]); origin != "" {
+		switch {
+		case item.Status == "inconclusive" && item.Reason == targetTransportFailureReason:
 			result[origin] = targetOriginUnavailableReason
+		case item.Status == "blocked" && isTargetRateLimitStop(item.Reason):
+			result[origin] = targetOriginRateLimitedReason
 		}
 	}
 	return result
+}
+
+func isTargetRateLimitStop(reason string) bool {
+	return reason == string(executor.StopRateLimited) ||
+		reason == string(executor.StopCapacityExhausted)
 }
 
 type assessmentExecutionLease struct {

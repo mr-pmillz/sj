@@ -298,8 +298,9 @@ func TestServiceStopsOnRateLimitAndPersistsPartialCoverage(t *testing.T) {
 	service := newService(t, server.Client())
 
 	result, err := service.Run(t.Context(), assessmentruntime.RunRequest{ManifestPath: manifestPath, DatabasePath: databasePath})
-	if err != nil {
-		t.Fatal(err)
+	var partial *assessmentruntime.PartialCoverageError
+	if !errors.As(err, &partial) {
+		t.Fatalf("Run() error = %v, want PartialCoverageError", err)
 	}
 	if requests.Load() != 1 || result.Snapshot.Assessment.Status != store.AssessmentFailed || result.Snapshot.Counts.Skipped == 0 || len(result.Snapshot.StopReasons) == 0 {
 		t.Fatalf("rate-limited result=%#v requests=%d", result.Snapshot, requests.Load())

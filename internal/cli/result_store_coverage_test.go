@@ -45,6 +45,11 @@ func TestResultRunPersistsEveryCLIResultKind(t *testing.T) {
 	writer := output.NewWriter(cfg)
 	writer.EndpointPaths = []string{"/users/{id}", "health"}
 	writer.PreparedRequests = []output.PreparedRequest{{Method: "GET", URL: "https://api.example.test/users/1", Path: "/users/{id}", Body: []byte(`{"id":1}`)}}
+	writer.CoverageGaps = []output.CoverageGap{{Origin: "https://limited.example.test", Reason: "rate-limited", Skipped: 3}}
+	writer.SourceFailures = []output.SourceFailure{{Source: "https://broken.example.test/openapi.json", Error: "invalid specification"}}
+	if err := run.addAutomateResults(t.Context(), writer); err != nil {
+		t.Fatal(err)
+	}
 	if err := run.addEndpointResults(t.Context(), cfg, writer); err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +102,20 @@ func TestResultRunPersistsEveryCLIResultKind(t *testing.T) {
 	for _, observation := range observations {
 		kinds[observation.Kind]++
 	}
-	for _, kind := range []string{"brute_summary", "brute_spec", "brute_interesting", "endpoint", "prepared_request", "audit_summary", "converted_spec", "report_summary", "fuzz_summary", "fuzz_probe"} {
+	for _, kind := range []string{"brute_summary", "brute_spec", "brute_interesting", "automate_failure", "automate_coverage_gap", "endpoint", "prepared_request", "audit_summary", "converted_spec", "report_summary", "fuzz_summary", "fuzz_probe"} {
 		if kinds[kind] == 0 {
 			t.Errorf("missing persisted observation kind %q: %#v", kind, kinds)
 		}
+	}
+	foundSourceFailure := false
+	for _, observation := range observations {
+		if observation.Kind == "automate_failure" &&
+			observation.Source == "https://broken.example.test/openapi.json" {
+			foundSourceFailure = true
+		}
+	}
+	if !foundSourceFailure {
+		t.Fatalf("structured automate source failure was not persisted: %#v", observations)
 	}
 	findings, err := resultStore.Findings(t.Context(), store.Query{RunIDs: []string{storedRun.ID}, Limit: 100})
 	if err != nil {
@@ -132,7 +147,7 @@ func TestResultRunNilAndNoDatabasePathsAreNoOps(t *testing.T) {
 	if !errors.Is(run.finish(context.Canceled), context.Canceled) {
 		t.Fatal("nil result run did not preserve cancellation")
 	}
-	if err := run.addAutomateResults(t.Context(), output.NewWriter(config.New()), nil); err != nil {
+	if err := run.addAutomateResults(t.Context(), output.NewWriter(config.New())); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.addBruteReports(t.Context(), nil); err != nil {
@@ -222,5 +237,18 @@ func TestResultRunFinishPersistsCanceledAndFailedStatuses(t *testing.T) {
 				t.Fatalf("terminal run = %#v, want status %s", runs[0], wantStatus)
 			}
 		})
+	}
+}
+
+func TestDurableResultContextSurvivesCommandCancellation(t *testing.T) {
+	commandCtx, cancelCommand := context.WithCancel(t.Context())
+	cancelCommand()
+	ctx, cancel := durableResultContext(commandCtx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("durable result context inherited cancellation: %v", err)
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		t.Fatal("durable result context has no deadline")
 	}
 }

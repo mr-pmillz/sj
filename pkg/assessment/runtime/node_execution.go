@@ -82,7 +82,7 @@ func (service *Service) newNodeExecution(
 		ctx: ctx, resultStore: resultStore, assessmentID: assessmentID, nodeID: nodeID,
 		proof: proof, bindings: bindings, runner: runner, retrySource: retrySource,
 		evidencePolicy: evidencePolicy, evidenceKey: service.evidenceKey,
-		lease: lease, byKind: make(map[string][]caseEvidence),
+		lease: lease, byKind: make(map[string][]caseEvidence), directTransport: service.directTransport,
 	}, nil
 }
 
@@ -108,11 +108,11 @@ func (execution *nodeExecution) executeCase(matrixCase persistedCase) nodeCaseRe
 	if err := execution.persistCaseEvidence(matrixCase, result, attempt, executeErr); err != nil {
 		return nodeCaseResult{complete: true, err: err}
 	}
-	if executeErr != nil {
-		return execution.handleAttemptError(attempt, executeErr)
-	}
 	if result.Stopped {
 		return execution.handleStoppedExecutor(result.StopReason)
+	}
+	if executeErr != nil {
+		return execution.handleAttemptError(attempt, executeErr)
 	}
 	if execution.retrySource != nil {
 		return execution.finishSuccessfulRetry()
@@ -266,7 +266,9 @@ func (execution *nodeExecution) handleAttemptError(
 		return nodeCaseResult{complete: true, err: finishErr}
 	}
 	if status == store.PlanNodeFailed &&
-		isIsolatedTargetTransportFailure(executeErr, attempt, execution.proof.ProxyRequired) {
+		isIsolatedTargetTransportFailure(
+			executeErr, attempt, execution.proof.ProxyRequired, execution.directTransport,
+		) {
 		result := execution.finishIsolatedTransportFailure(finishCtx, executeErr)
 		cancel()
 		return result

@@ -36,21 +36,26 @@ type runtimeAssessmentLifecycle struct {
 func newDefaultAssessmentLifecycle(commandConfig *config.Config) assessmentLifecycle {
 	lifecycle := &runtimeAssessmentLifecycle{output: os.Stdout}
 	lifecycle.engine = func(requireStableKey bool) (assessmentRuntime, error) {
-		if err := validateAssessmentRuntimeConfig(commandConfig); err != nil {
-			return nil, err
-		}
-		key, err := runtimeEvidenceKey(requireStableKey)
-		if err != nil {
-			return nil, err
-		}
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.Proxy = nil
-		return assessmentruntime.New(assessmentruntime.Config{
-			Client:      &http.Client{Transport: transport, Timeout: commandConfig.Timeout},
-			EvidenceKey: key,
-		})
+		return newAssessmentRuntime(commandConfig, requireStableKey)
 	}
 	return lifecycle
+}
+
+func newAssessmentRuntime(commandConfig *config.Config, requireStableKey bool) (assessmentRuntime, error) {
+	if err := validateAssessmentRuntimeConfig(commandConfig); err != nil {
+		return nil, err
+	}
+	key, err := runtimeEvidenceKey(requireStableKey)
+	if err != nil {
+		return nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return assessmentruntime.New(assessmentruntime.Config{
+		Client:          &http.Client{Transport: transport, Timeout: commandConfig.Timeout},
+		EvidenceKey:     key,
+		DirectTransport: true,
+	})
 }
 
 func (lifecycle *runtimeAssessmentLifecycle) Plan(ctx context.Context, request assessPlanRequest) error {

@@ -3,6 +3,7 @@ package scanner
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -68,6 +69,39 @@ func TestBuildRequestPlansReturnsEmptyWhenExclusionsRemoveEveryOperation(t *test
 	}
 }
 
+func TestBuildRequestPlansDisablesPatchByDefaultAndRequiresOptIn(t *testing.T) {
+	spec := map[string]any{"paths": map[string]any{
+		"/items": map[string]any{
+			"get":   map[string]any{"responses": map[string]any{}},
+			"patch": map[string]any{"responses": map[string]any{}},
+		},
+	}}
+	plans := buildPlans(t, spec, nil)
+	if len(plans) != 1 || plans[0].Method != http.MethodGet {
+		t.Fatalf("default plans = %#v, want only GET", plans)
+	}
+	plans = buildPlans(t, spec, func(cfg *config.Config) { cfg.AllowPatch = true })
+	if len(plans) != 2 || plans[1].Method != http.MethodPatch {
+		t.Fatalf("opt-in plans = %#v, want GET and PATCH", plans)
+	}
+}
+
+func TestBuildRequestPlansNeverIncludesDelete(t *testing.T) {
+	spec := map[string]any{"paths": map[string]any{
+		"/items": map[string]any{
+			"get":    map[string]any{"responses": map[string]any{}},
+			"delete": map[string]any{"responses": map[string]any{}},
+		},
+	}}
+	plans := buildPlans(t, spec, func(cfg *config.Config) {
+		cfg.AcceptRisk = true
+		cfg.Force = true
+	})
+	if len(plans) != 1 || plans[0].Method != http.MethodGet {
+		t.Fatalf("plans = %#v, want only GET even with legacy bypasses", plans)
+	}
+}
+
 func TestExcludedMethodsNeverReachTheHTTPTransport(t *testing.T) {
 	spec := map[string]any{"paths": map[string]any{
 		"/items": map[string]any{
@@ -96,6 +130,353 @@ func TestExcludedMethodsNeverReachTheHTTPTransport(t *testing.T) {
 	}
 	if !slices.Equal(methods, []string{http.MethodGet}) {
 		t.Fatalf("transport methods = %v, want only GET", methods)
+	}
+}
+
+func TestExecuteRequestPlansContainsRateLimitToOneOrigin(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://limited.example/two", Path: "/two"},
+		{Method: http.MethodGet, URL: "https://healthy.example/two", Path: "/two"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		status := http.StatusOK
+		if request.URL.Host == "limited.example" {
+			status = http.StatusTooManyRequests
+		}
+		return &http.Response{
+			StatusCode: status, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader("response")), Request: request,
+		}, nil
+	})
+	writer := output.NewWriter(cfg)
+	if err := ExecuteRequestPlansContextE(t.Context(), plans, client, cfg, writer); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://limited.example/one",
+		"https://healthy.example/one",
+		"https://healthy.example/two",
+	}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+	if len(writer.Results) != 3 {
+		t.Fatalf("results = %#v, want rate signal plus two healthy results", writer.Results)
+	}
+}
+
+func TestExecuteRequestPlansContainsAdvertisedRateDepletionToOneOrigin(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://limited.example/two", Path: "/two"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		header := http.Header{}
+		if request.URL.Host == "limited.example" {
+			header.Set("X-RateLimit-Remaining", "1")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: header,
+			Body: io.NopCloser(strings.NewReader("response")), Request: request,
+		}, nil
+	})
+	if err := ExecuteRequestPlansContextE(
+		t.Context(), plans, client, cfg, output.NewWriter(cfg),
+	); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://limited.example/one", "https://healthy.example/one"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+}
+
+func TestExecuteRequestPlansUsesRetryRateMetadataForOriginCircuit(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.RetryOnHint = true
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://limited.example/two", Path: "/two"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		status := http.StatusOK
+		header := http.Header{}
+		body := `{"ok":true}`
+		if request.URL.Host == "limited.example" && request.URL.Query().Get("itemId") == "" {
+			status = http.StatusUnauthorized
+			body = `{"error":"missing required parameter","parameter":"itemId"}`
+		} else if request.URL.Host == "limited.example" {
+			header.Set("RateLimit-Remaining", "1")
+		}
+		return &http.Response{
+			StatusCode: status, Header: header,
+			Body: io.NopCloser(strings.NewReader(body)), Request: request,
+		}, nil
+	})
+	if err := ExecuteRequestPlansContextE(
+		t.Context(), plans, client, cfg, output.NewWriter(cfg),
+	); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://limited.example/one",
+		"https://limited.example/one?itemId=testvalue",
+		"https://healthy.example/one",
+	}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+}
+
+func TestExecuteRequestPlansDoesNotRetryAfterPrimaryDepletesRateBudget(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.RetryOnHint = true
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://limited.example/two", Path: "/two"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		header := http.Header{}
+		status := http.StatusOK
+		body := `{"ok":true}`
+		if request.URL.Host == "limited.example" {
+			header.Set("RateLimit-Remaining", "1")
+			status = http.StatusUnauthorized
+			body = `{"error":"missing required parameter","parameter":"itemId"}`
+		}
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	if err := ExecuteRequestPlansContextE(t.Context(), plans, client, cfg, output.NewWriter(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://limited.example/one", "https://healthy.example/one"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+}
+
+func TestExecuteRequestPlansDoesNotReplayAfterRateBudgetDepletion(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Set("RateLimit-Remaining", "1")
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: header,
+			Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request,
+		}, nil
+	})
+	replayCalls := 0
+	client.Replay = &http.Client{Transport: scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		replayCalls++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	})}
+	plan := RequestPlan{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"}
+	if err := ExecuteRequestPlansContextE(
+		t.Context(), []RequestPlan{plan}, client, cfg, output.NewWriter(cfg),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if replayCalls != 0 {
+		t.Fatalf("replay calls = %d, want none after depletion signal", replayCalls)
+	}
+}
+
+func TestExecuteRequestPlansOversized429StillBlocksOrigin(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.MaxResponseBytes = 4
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://limited.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://limited.example/two", Path: "/two"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		status, body := http.StatusOK, "ok"
+		if request.URL.Host == "limited.example" {
+			status, body = http.StatusTooManyRequests, "oversized"
+		}
+		return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	if err := ExecuteRequestPlansContextE(t.Context(), plans, client, cfg, output.NewWriter(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://limited.example/one", "https://healthy.example/one"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+}
+
+func TestExecuteRequestPlansDoesNotTreatRejectedBodyAsSuccessfulResponse(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.MaxResponseBytes = 4
+	cfg.GetAccessibleEndpoints = true
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader("oversized")), Request: request,
+		}, nil
+	})
+	replayCalls := 0
+	client.Replay = &http.Client{Transport: scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		replayCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader("ok")), Request: request,
+		}, nil
+	})}
+	writer := output.NewWriter(cfg)
+	plan := RequestPlan{Method: http.MethodGet, URL: "https://api.example.test/items", Path: "/items"}
+	if err := ExecuteRequestPlansContextE(t.Context(), []RequestPlan{plan}, client, cfg, writer); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.Results) != 1 || writer.Results[0].Status != 0 ||
+		len(writer.AccessibleEndpoints) != 0 || replayCalls != 0 {
+		t.Fatalf("results=%#v accessible=%v replay_calls=%d", writer.Results, writer.AccessibleEndpoints, replayCalls)
+	}
+}
+
+func TestExecuteRequestPlansDoesNotIsolateAmbiguousSharedProxyFailure(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.Proxy = "http://proxy.example.test:8080"
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://first.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://first.example/two", Path: "/two"},
+		{Method: http.MethodGet, URL: "https://first.example/three", Path: "/three"},
+		{Method: http.MethodGet, URL: "https://first.example/four", Path: "/four"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	client.HTTP.Transport = scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		return nil, errors.New("shared proxy unavailable")
+	})
+	circuit := NewTargetCircuit()
+	if err := ExecuteRequestPlansWithCircuitContextE(
+		t.Context(), plans, client, cfg, output.NewWriter(cfg), circuit,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(requested) != len(plans) || len(circuit.CoverageGaps()) != 0 {
+		t.Fatalf("requested=%v gaps=%#v", requested, circuit.CoverageGaps())
+	}
+}
+
+func TestExecuteRequestPlansSkippedUnsafeDoesNotResetTransportCircuit(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://down.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://down.example/two", Path: "/two"},
+		{Method: http.MethodPost, URL: "https://down.example/items", Path: "/items"},
+		{Method: http.MethodGet, URL: "https://down.example/three", Path: "/three"},
+		{Method: http.MethodGet, URL: "https://down.example/four", Path: "/four"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	transport := scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		if request.URL.Host == "down.example" {
+			return nil, errors.New("target transport unavailable")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: request}, nil
+	})
+	if err := client.ReplaceHTTPTransport(transport, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteRequestPlansContextE(t.Context(), plans, client, cfg, output.NewWriter(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://down.example/one", "https://down.example/two",
+		"https://down.example/three", "https://healthy.example/one",
+	}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+}
+
+func TestExecuteRequestPlansContainsRepeatedTransportFailureToOneOrigin(t *testing.T) {
+	cfg := config.New()
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	plans := []RequestPlan{
+		{Method: http.MethodGet, URL: "https://down.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://down.example/two", Path: "/two"},
+		{Method: http.MethodGet, URL: "https://healthy.example/one", Path: "/one"},
+		{Method: http.MethodGet, URL: "https://down.example/three", Path: "/three"},
+		{Method: http.MethodGet, URL: "https://down.example/four", Path: "/four"},
+		{Method: http.MethodGet, URL: "https://healthy.example/two", Path: "/two"},
+	}
+	var requested []string
+	client := httpclient.NewClient(cfg)
+	transport := scannerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		if request.URL.Host == "down.example" {
+			return nil, errors.New("target transport unavailable")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader("response")), Request: request,
+		}, nil
+	})
+	if err := client.ReplaceHTTPTransport(transport, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteRequestPlansContextE(
+		t.Context(), plans, client, cfg, output.NewWriter(cfg),
+	); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://down.example/one",
+		"https://down.example/two",
+		"https://healthy.example/one",
+		"https://down.example/three",
+		"https://healthy.example/two",
+	}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
 	}
 }
 

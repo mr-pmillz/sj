@@ -77,6 +77,7 @@ func executionSnapshotFromPrepared(prepared preparedPlan) (signedExecutionSnapsh
 		PolicyHash: prepared.policyHash, PlanHash: prepared.plan.Hash, ScopeHash: prepared.scopeHash,
 		WindowStart: metadata.WindowStart, WindowEnd: metadata.WindowEnd, RequestRate: metadata.RequestsPerSecond,
 		Evidence: evidencePolicyPointer(metadata.Evidence), Origins: manifestOrigins(prepared.manifest), Identities: signedIdentitiesFromManifest(prepared.manifest),
+		Nodes: make([]signedNode, 0, len(prepared.plan.Nodes)),
 	}
 	for _, node := range prepared.plan.Nodes {
 		encoded, err := json.Marshal(prepared.proofs[node.ID])
@@ -132,7 +133,8 @@ func executionSnapshotFromState(state store.AssessmentState, metadata assessment
 		PolicyHash: state.Assessment.PolicyHash, PlanHash: metadata.PlanHash, ScopeHash: metadata.ScopeHash,
 		WindowStart: metadata.WindowStart, WindowEnd: metadata.WindowEnd, RequestRate: metadata.RequestsPerSecond,
 		Evidence: evidencePolicyPointer(metadata.Evidence),
-		Origins:  persistedScope.Origins,
+		Origins:  persistedScope.Origins, Identities: make([]signedIdentity, 0, len(state.IdentityProfiles)),
+		Nodes: make([]signedNode, 0, len(state.PlanNodes)),
 	}
 	for _, profile := range state.IdentityProfiles {
 		var binding struct {

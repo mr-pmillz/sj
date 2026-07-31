@@ -28,6 +28,20 @@ responds in an abnormal way, manual testing should be conducted (prepare manual 
 
 var newAutomateHTTPClient = newHTTPClient
 
+type automatePartialFailure struct {
+	failed int
+	total  int
+	err    error
+}
+
+func (failure *automatePartialFailure) Error() string {
+	return fmt.Sprintf("%d of %d specification sources failed: %v", failure.failed, failure.total, failure.err)
+}
+
+func (failure *automatePartialFailure) Unwrap() error {
+	return failure.err
+}
+
 func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 	cfg.Mode = config.ModeAutomate
 	if err := cfg.Validate(); err != nil {
@@ -72,6 +86,7 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 	}
 
 	batch := cfg.AutomateURLFile != ""
+	targetCircuit := scanner.NewTargetCircuit()
 	var failures []error
 	for index, source := range sources {
 		if err := ctx.Err(); err != nil {
@@ -81,6 +96,9 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		if batch {
 			output.PrintInfo("[%d/%d] Scanning specification: %s\n", index+1, len(sources), sourceLabel)
 		}
+		if source.url != "" && !targetCircuit.Allow(source.url) {
+			continue
+		}
 
 		scanCfg := cloneAutomateConfig(cfg, source)
 		client, clientErr := newAutomateHTTPClient(scanCfg)
@@ -88,10 +106,15 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 			if !batch {
 				return clientErr
 			}
-			failures = append(failures, fmt.Errorf("source %d (%s): initialize HTTP client: %w", index+1, sourceLabel, clientErr))
+			failure := fmt.Errorf("source %d (%s): initialize HTTP client: %w", index+1, sourceLabel, clientErr)
+			failures = append(failures, failure)
+			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
 			continue
 		}
-		bodyBytes, loadErr := loadSpec(ctx, scanCfg, client)
+		bodyBytes, status, metadata, loadErr := loadSpecWithMetadata(ctx, scanCfg, client)
+		if source.url != "" {
+			targetCircuit.Observe(source.url, status, metadata)
+		}
 		if loadErr != nil {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("automate scan canceled: %w", err)
@@ -99,18 +122,22 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 			if !batch {
 				return loadErr
 			}
-			failures = append(failures, fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, loadErr))
+			failure := fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, loadErr)
+			failures = append(failures, failure)
+			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
 			continue
 		}
 		resolver := openapi.NewResolver(scanCfg.SpecBaseDir)
-		if scanErr := scanner.GenerateRequestsIntoWriterContextE(ctx, bodyBytes, client, scanCfg, w, resolver); scanErr != nil {
+		if scanErr := scanner.GenerateRequestsIntoWriterWithCircuitContextE(ctx, bodyBytes, client, scanCfg, w, resolver, targetCircuit); scanErr != nil {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("automate scan canceled: %w", err)
 			}
 			if !batch {
 				return scanErr
 			}
-			failures = append(failures, fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, scanErr))
+			failure := fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, scanErr)
+			failures = append(failures, failure)
+			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
 		}
 	}
 
@@ -118,7 +145,12 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		w.SpecTitle = ""
 		w.SpecDescription = ""
 	}
-	storageErr := resultRun.addAutomateResults(ctx, w, failures)
+	for _, gap := range targetCircuit.CoverageGaps() {
+		w.CoverageGaps = append(w.CoverageGaps, output.CoverageGap{
+			Origin: gap.Origin, Reason: gap.Reason, Skipped: gap.Skipped,
+		})
+	}
+	storageErr := resultRun.addAutomateResults(ctx, w)
 	outputErr := w.FinalizeOutput()
 	if len(failures) == 0 {
 		if outputErr != nil || storageErr != nil {
@@ -126,8 +158,16 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		}
 		return nil
 	}
-	batchErr := fmt.Errorf("%d of %d specification sources failed: %w", len(failures), len(sources), errors.Join(failures...))
-	return errors.Join(batchErr, wrapError("write output", outputErr), wrapError("store automate results", storageErr))
+	batchErr := &automatePartialFailure{
+		failed: len(failures), total: len(sources), err: errors.Join(failures...),
+	}
+	if outputErr == nil && storageErr == nil {
+		return batchErr
+	}
+	return errors.Join(
+		fmt.Errorf("%d of %d specification sources failed: %w", len(failures), len(sources), errors.Join(failures...)),
+		wrapError("write output", outputErr), wrapError("store automate results", storageErr),
+	)
 }
 
 func wrapError(operation string, err error) error {
@@ -158,6 +198,7 @@ func cloneAutomateConfig(base *config.Config, source automateSource) *config.Con
 
 func init() {
 	automateCmd.PersistentFlags().BoolVar(&cfg.AcceptRisk, "accept-risk", false, "Allow state-changing methods and endpoints with dangerous keywords.")
+	automateCmd.PersistentFlags().BoolVar(&cfg.AllowPatch, "allow-patch", false, "Include PATCH operations; sending them also requires --accept-risk.")
 	automateCmd.PersistentFlags().StringVarP(&cfg.OutputFormat, "output-format", "F", "console", "Output format: 'console' (default), 'json', 'jsonl', or 'csv'.")
 	automateCmd.PersistentFlags().BoolVar(&cfg.GetAccessibleEndpoints, "get-accessible-endpoints", false, "Only output endpoints that return a 2xx status code.")
 	automateCmd.PersistentFlags().BoolVarP(&cfg.OutputAllFormats, "output-all-formats", "O", false, "Write results in all formats (json, jsonl, csv). Requires -o for base filename.")

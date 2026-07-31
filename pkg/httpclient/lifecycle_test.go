@@ -312,7 +312,7 @@ func TestContentTypeReplayAndBruteLifecycle(t *testing.T) {
 	if body, contentType, status := client.BruteFetch("https://api.example.test/large"); body != nil || contentType != "application/json" || status != http.StatusOK {
 		t.Fatalf("oversized brute = (%v,%q,%d)", body, contentType, status)
 	}
-	if body, contentType, status := client.BruteFetch("https://api.example.test/close"); body != nil || contentType != "text/plain" || status != 0 {
+	if body, contentType, status := client.BruteFetch("https://api.example.test/close"); body != nil || contentType != "text/plain" || status != http.StatusOK {
 		t.Fatalf("close-failed brute = (%v,%q,%d)", body, contentType, status)
 	}
 }

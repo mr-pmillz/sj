@@ -86,6 +86,33 @@ func TestRunTargetContextStopsAfterConsecutiveTransportFailures(t *testing.T) {
 	}
 }
 
+func TestFindAllDefinitionFilesStopsOnAdvertisedRateDepletion(t *testing.T) {
+	cfg := config.New()
+	client := httpclient.NewClient(cfg)
+	calls := 0
+	client.HTTP.Transport = bruteRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		header := http.Header{"Content-Type": []string{"application/json"}}
+		header.Set("RateLimit-Remaining", "1")
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(`{"error":"missing"}`)),
+			Request:    request,
+		}, nil
+	})
+
+	_, _, summary, err := NewScanner(client, cfg).findAllDefinitionFiles(t.Context(), []string{
+		"https://api.example.test/one", "https://api.example.test/two",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || !summary.RateLimitReached {
+		t.Fatalf("calls=%d summary=%#v", calls, summary)
+	}
+}
+
 func TestRunTargetContextResetsTransportFailureLimitAfterResponse(t *testing.T) {
 	cfg := config.New()
 	client := httpclient.NewClient(cfg)
@@ -207,6 +234,29 @@ func TestRunTargetsContextPreflightsCompleteBatchBeforeRequests(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("sent %d requests before rejecting the complete target batch", calls)
+	}
+}
+
+func TestRunTargetsContextContainsTargetFailureAndCompletesPeers(t *testing.T) {
+	cfg := config.New()
+	scanner := NewScanner(httpclient.NewClient(cfg), cfg)
+	var scanned []string
+	scanner.runTarget = func(_ context.Context, target string, _ bool) (Report, error) {
+		scanned = append(scanned, target)
+		report := Report{Target: target, SpecsFound: []SpecResult{}, Interesting: []Interesting{}}
+		if strings.Contains(target, "bad") {
+			return report, errors.New("target-local fixture failure")
+		}
+		return report, nil
+	}
+	targets := []string{"https://bad.test", "https://healthy.test"}
+	reports, err := scanner.RunTargetsContext(t.Context(), targets, 1)
+	var partial *PartialBatchError
+	if !errors.As(err, &partial) {
+		t.Fatalf("error = %v, want PartialBatchError", err)
+	}
+	if len(scanned) != 2 || len(reports) != 2 || reports[1].Target != targets[1] {
+		t.Fatalf("scanned=%v reports=%#v", scanned, reports)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mr-pmillz/sj/pkg/apitest"
+	"github.com/mr-pmillz/sj/pkg/brute"
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/output"
 	"github.com/spf13/cobra"
@@ -19,19 +20,26 @@ import (
 const fullWorkflowMaximumFuzzRequests = 50_000
 
 type fullWorkflowCLIOptions struct {
-	FullWorkflow    bool
-	TargetsFile     string
-	OutputDirectory string
-	Workers         int
-	ExcludeMethods  []string
-	IDORRange       string
-	MaxFuzzRequests int
-	MaxCases        int
-	Delay           time.Duration
-	IdentityHeaders []string
-	KnownUsername   string
-	AcceptRisk      bool
-	MaxEvidence     int
+	FullWorkflow         bool
+	SkipBrute            bool
+	TargetsFile          string
+	BruteRunIDs          []string
+	OutputDirectory      string
+	Workers              int
+	ExcludeMethods       []string
+	IDORRange            string
+	MaxFuzzRequests      int
+	MaxCases             int
+	Delay                time.Duration
+	IdentityHeaders      []string
+	KnownUsername        string
+	AcceptRisk           bool
+	AllowPost            bool
+	AllowPatch           bool
+	MaxEvidence          int
+	AssessmentManifest   string
+	AutoAssess           bool
+	AssessmentMaxResults int
 }
 
 var fullWorkflowOptions = fullWorkflowCLIOptions{
@@ -44,8 +52,10 @@ var fullWorkflowCmd = &cobra.Command{
 	Short: "Runs the complete authorized API assessment workflow.",
 	Args:  cobra.NoArgs,
 	Long: `The run --full-workflow command chains definition discovery, endpoint enumeration, bounded IDOR fuzzing,
-Bruno collection generation, and API penetration-test reporting. DELETE is always excluded, responses are stored,
-requests are paced, and active testing stops immediately when a target signals a depleted rate budget.`,
+Bruno collection generation, and API penetration-test reporting. DELETE is always excluded; PATCH and POST require
+their own opt-in flags plus --accept-risk. Responses are stored,
+requests are paced, and a target that signals a depleted rate budget is isolated while healthy targets continue.
+An optional --assessment-manifest appends persisted assess planning, execution, and multi-format reporting.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		options := fullWorkflowOptions
 		options.OutputDirectory = cfg.Outfile
@@ -59,6 +69,7 @@ type fullWorkflowStages struct {
 	fuzz       func(context.Context, *config.Config, fuzzCLIOptions) error
 	collection func(context.Context, *config.Config, collectionCLIOptions) error
 	report     func(context.Context, *config.Config, reportCLIOptions) error
+	assessment func(context.Context, *config.Config, fullWorkflowAssessmentRequest) error
 }
 
 type fullWorkflowPaths struct {
@@ -75,7 +86,7 @@ type fullWorkflowPaths struct {
 func defaultFullWorkflowStages() fullWorkflowStages {
 	return fullWorkflowStages{
 		brute: runBrute, automate: runAutomate, fuzz: runFuzz,
-		collection: runCollection, report: runReport,
+		collection: runCollection, report: runReport, assessment: runFullWorkflowAssessment,
 	}
 }
 
@@ -91,27 +102,74 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	if err != nil {
 		return err
 	}
+	assessmentRequest := newFullWorkflowAssessmentRequest(paths.directory, options)
+	assessmentEnabled := options.AutoAssess || strings.TrimSpace(options.AssessmentManifest) != ""
+	if assessmentEnabled {
+		authorizedOrigins, originErr := fullWorkflowAuthorizedOrigins(ctx, base, options)
+		if originErr != nil {
+			return fmt.Errorf("full workflow assessment stage: authorize targets: %w", originErr)
+		}
+		var manifestErr error
+		if options.AutoAssess {
+			manifestErr = prepareAutomaticFullWorkflowAssessmentManifest(
+				assessmentRequest.ManifestPath,
+				assessmentRequest.AutomateResultsPath,
+				authorizedOrigins,
+				base,
+			)
+		} else {
+			manifestErr = prepareFullWorkflowAssessmentManifest(
+				assessmentRequest.SourceManifestPath,
+				assessmentRequest.ManifestPath,
+				assessmentRequest.AutomateResultsPath,
+				authorizedOrigins,
+			)
+		}
+		if manifestErr != nil {
+			return fmt.Errorf("full workflow assessment stage: materialize manifest: %w", manifestErr)
+		}
+		assessmentRequest.ManifestPrepared = true
+	}
 	output.PrintInfo("Full workflow artifacts: %s\n", paths.directory)
 
-	bruteCfg := cloneWorkflowConfig(base)
-	bruteCfg.BruteURLFile = options.TargetsFile
-	bruteCfg.SwaggerURL = ""
-	bruteCfg.BruteWorkers = options.Workers
-	bruteCfg.BruteAllFormats = true
-	bruteCfg.BruteOutputFormat = "console"
-	bruteCfg.Outfile = paths.bruteBase
-	if err := stages.brute(ctx, bruteCfg); err != nil {
-		return fmt.Errorf("full workflow brute stage: %w", err)
+	var bruteErr error
+	if !options.SkipBrute {
+		bruteCfg := cloneWorkflowConfig(base)
+		bruteCfg.BruteURLFile = options.TargetsFile
+		bruteCfg.SwaggerURL = ""
+		bruteCfg.BruteWorkers = options.Workers
+		bruteCfg.BruteAllFormats = true
+		bruteCfg.BruteOutputFormat = "console"
+		bruteCfg.Outfile = paths.bruteBase
+		bruteErr = stages.brute(ctx, bruteCfg)
+		if bruteErr != nil && !regularFileExists(paths.bruteJSON) {
+			return fmt.Errorf("full workflow brute stage: %w", bruteErr)
+		}
+		bruteContinuationErr := suppressBrutePartialFailure(bruteErr, paths.bruteJSON)
+		if bruteContinuationErr != nil {
+			return fmt.Errorf("full workflow brute stage: %w", bruteContinuationErr)
+		}
+		if bruteErr != nil {
+			output.PrintWarn("Brute completed with isolated target failures; continuing from the retained result corpus: %v", bruteErr)
+		}
 	}
 
 	automateCfg := cloneWorkflowConfig(base)
-	automateCfg.AutomateURLFile = paths.bruteJSON
+	switch {
+	case !options.SkipBrute:
+		automateCfg.AutomateURLFile = paths.bruteJSON
+	case len(options.BruteRunIDs) > 0:
+		automateCfg.AutomateRunIDs = append([]string(nil), options.BruteRunIDs...)
+	default:
+		automateCfg.AutomateURLFile = options.TargetsFile
+	}
 	automateCfg.SwaggerURL = ""
 	automateCfg.OutputAllFormats = true
 	automateCfg.OutputFormat = "console"
 	automateCfg.Outfile = paths.automateBase
 	automateCfg.AcceptRisk = options.AcceptRisk
-	automateCfg.ExcludeMethods = workflowExcludedMethods(options.ExcludeMethods)
+	automateCfg.AllowPatch = options.AllowPatch
+	automateCfg.ExcludeMethods = workflowExcludedMethods(options.ExcludeMethods, options.AllowPost, options.AllowPatch)
 	automateCfg.ProgressDisplay = true
 	automateCfg.RetryOnHint = true
 	automateCfg.FullURLs = true
@@ -120,9 +178,10 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	if automateErr != nil && !regularFileExists(paths.automateJSON) {
 		return fmt.Errorf("full workflow automate stage: %w", automateErr)
 	}
+	automateContinuationErr := suppressAutomatePartialFailure(automateErr, paths.automateJSON)
 
 	var fuzzErr error
-	if automateErr == nil {
+	if automateContinuationErr == nil {
 		fuzzCfg := cloneWorkflowConfig(base)
 		fuzzCfg.Outfile = paths.fuzzJSON
 		fuzzCfg.AcceptRisk = options.AcceptRisk
@@ -132,7 +191,8 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 			IdentityHeaders: append([]string(nil), options.IdentityHeaders...), KnownUsername: options.KnownUsername,
 			MaxRequests: options.MaxFuzzRequests, Delay: options.Delay, MaxCases: max(options.MaxCases, idRange.End-idRange.Start+1),
 			ResponseGuided: true, MaxGuidedRetries: 2, Progress: true,
-			OutputFormat: "json", MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
+			ContinueOnTargetError: true,
+			OutputFormat:          "json", MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
 		})
 	}
 
@@ -144,7 +204,10 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
 	})
 
-	reportInputs := []string{paths.bruteJSON, paths.automateJSON}
+	reportInputs := []string{paths.automateJSON}
+	if !options.SkipBrute {
+		reportInputs = append([]string{paths.bruteJSON}, reportInputs...)
+	}
 	if regularFileExists(paths.fuzzJSON) {
 		reportInputs = append(reportInputs, paths.fuzzJSON)
 	}
@@ -155,12 +218,46 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000, MaxEvidence: options.MaxEvidence,
 	})
 
+	var assessmentErr error
+	if assessmentEnabled {
+		if automateContinuationErr != nil || fuzzErr != nil {
+			assessmentErr = errors.New("skipped because an earlier active stage did not complete")
+		} else if stages.assessment == nil {
+			assessmentErr = errors.New("assessment stage is not configured")
+		} else {
+			assessmentErr = stages.assessment(ctx, fullWorkflowAssessmentConfig(base), assessmentRequest)
+		}
+	}
+
 	return errors.Join(
-		wrapWorkflowStageError("automate", automateErr),
+		wrapWorkflowStageError("brute", suppressBrutePartialFailure(bruteErr, paths.bruteJSON)),
+		wrapWorkflowStageError("automate", automateContinuationErr),
 		wrapWorkflowStageError("fuzz", fuzzErr),
 		wrapWorkflowStageError("collection", collectionErr),
 		wrapWorkflowStageError("report", reportErr),
+		wrapWorkflowStageError("assessment", assessmentErr),
 	)
+}
+
+func suppressBrutePartialFailure(err error, artifactPath string) error {
+	var partial *brute.PartialBatchError
+	var persistence *resultPersistenceError
+	var artifact *bruteArtifactError
+	if errors.As(err, &partial) && !errors.As(err, &persistence) &&
+		!errors.As(err, &artifact) && regularFileExists(artifactPath) {
+		return nil
+	}
+	return err
+}
+
+func suppressAutomatePartialFailure(err error, artifactPath string) error {
+	var partial *automatePartialFailure
+	var persistence *resultPersistenceError
+	if errors.As(err, &partial) && partial.failed > 0 && partial.failed < partial.total &&
+		!errors.As(err, &persistence) && regularFileExists(artifactPath) {
+		return nil
+	}
+	return err
 }
 
 func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOptions) (apitest.NumericRange, error) {
@@ -170,15 +267,27 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 	if base == nil {
 		return apitest.NumericRange{}, fmt.Errorf("full workflow configuration is required")
 	}
-	if strings.TrimSpace(options.TargetsFile) == "" {
-		return apitest.NumericRange{}, fmt.Errorf("full workflow requires --url-file")
+	if options.SkipBrute && len(options.BruteRunIDs) > 0 {
+		if strings.TrimSpace(options.TargetsFile) != "" {
+			return apitest.NumericRange{}, fmt.Errorf("--url-file and --brute-run are mutually exclusive with --skip-brute")
+		}
+		if base.NoDatabase || strings.TrimSpace(base.DatabasePath) == "" {
+			return apitest.NumericRange{}, fmt.Errorf("--brute-run requires a supplied result database")
+		}
+	} else {
+		if strings.TrimSpace(options.TargetsFile) == "" {
+			return apitest.NumericRange{}, fmt.Errorf("full workflow requires --url-file")
+		}
+		info, err := os.Stat(options.TargetsFile)
+		if err != nil {
+			return apitest.NumericRange{}, fmt.Errorf("inspect full workflow target file: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return apitest.NumericRange{}, fmt.Errorf("full workflow target file must be a regular file")
+		}
 	}
-	info, err := os.Stat(options.TargetsFile)
-	if err != nil {
-		return apitest.NumericRange{}, fmt.Errorf("inspect full workflow target file: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return apitest.NumericRange{}, fmt.Errorf("full workflow target file must be a regular file")
+	if !options.SkipBrute && len(options.BruteRunIDs) > 0 {
+		return apitest.NumericRange{}, fmt.Errorf("--brute-run requires --skip-brute")
 	}
 	if strings.TrimSpace(options.OutputDirectory) == "" {
 		return apitest.NumericRange{}, fmt.Errorf("full workflow requires --outfile as a new output directory")
@@ -202,7 +311,47 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 	if options.MaxEvidence < 1 || options.MaxEvidence > 1_000 {
 		return apitest.NumericRange{}, fmt.Errorf("--max-evidence must be between 1 and 1000")
 	}
+	if options.AssessmentMaxResults < 0 {
+		return apitest.NumericRange{}, fmt.Errorf("--assessment-max-results must not be negative")
+	}
+	if options.AutoAssess && strings.TrimSpace(options.AssessmentManifest) != "" {
+		return apitest.NumericRange{}, fmt.Errorf("--auto-assess and --assessment-manifest are mutually exclusive")
+	}
+	if (options.AllowPost || options.AllowPatch) && !options.AcceptRisk {
+		return apitest.NumericRange{}, fmt.Errorf("--allow-post and --allow-patch require --accept-risk")
+	}
+	if options.AutoAssess || strings.TrimSpace(options.AssessmentManifest) != "" {
+		if base.NoDatabase {
+			return apitest.NumericRange{}, fmt.Errorf("assessment continuation cannot be combined with --no-database")
+		}
+		if manifestPath := strings.TrimSpace(options.AssessmentManifest); manifestPath != "" {
+			manifestInfo, manifestErr := os.Lstat(manifestPath)
+			if manifestErr != nil {
+				return apitest.NumericRange{}, fmt.Errorf("inspect assessment manifest: %w", manifestErr)
+			}
+			if manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() {
+				return apitest.NumericRange{}, fmt.Errorf("assessment manifest must be a regular non-symlink file")
+			}
+		}
+		if _, keyErr := assessmentEvidenceKey(); keyErr != nil {
+			return apitest.NumericRange{}, keyErr
+		}
+		if runtimeErr := validateAssessmentRuntimeConfig(fullWorkflowAssessmentConfig(base)); runtimeErr != nil {
+			return apitest.NumericRange{}, runtimeErr
+		}
+	}
 	return idRange, nil
+}
+
+func fullWorkflowAssessmentConfig(base *config.Config) *config.Config {
+	assessmentCfg := cloneWorkflowConfig(base)
+	assessmentCfg.Proxy = "NOPROXY"
+	assessmentCfg.ReplayProxy = ""
+	assessmentCfg.SOCKS5Proxy = ""
+	assessmentCfg.SOCKS5Username = ""
+	assessmentCfg.SOCKS5Password = ""
+	assessmentCfg.Insecure = false
+	return assessmentCfg
 }
 
 func prepareFullWorkflowPaths(directory string) (fullWorkflowPaths, error) {
@@ -240,8 +389,8 @@ func configureCompleteResponseStorage(stageCfg *config.Config) {
 	stageCfg.MaxStoredResponseBytes = stageCfg.MaxResponseBytes
 }
 
-func workflowExcludedMethods(values []string) []string {
-	result := make([]string, 0, len(values)+1)
+func workflowExcludedMethods(values []string, allowPost, allowPatch bool) []string {
+	result := make([]string, 0, len(values)+3)
 	for _, value := range values {
 		method := strings.ToUpper(strings.TrimSpace(value))
 		if method != "" && !slices.Contains(result, method) {
@@ -250,6 +399,12 @@ func workflowExcludedMethods(values []string) []string {
 	}
 	if !slices.Contains(result, "DELETE") {
 		result = append(result, "DELETE")
+	}
+	if !allowPatch && !slices.Contains(result, "PATCH") {
+		result = append(result, "PATCH")
+	}
+	if !allowPost && !slices.Contains(result, "POST") {
+		result = append(result, "POST")
 	}
 	return result
 }
@@ -268,7 +423,9 @@ func wrapWorkflowStageError(stage string, err error) error {
 
 func init() {
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.FullWorkflow, "full-workflow", false, "Run recon, enumeration, bounded exploitation, collection generation, and reporting.")
+	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.SkipBrute, "skip-brute", false, "Skip discovery and treat --url-file as known OpenAPI URLs, or resume from --brute-run.")
 	fullWorkflowCmd.Flags().StringVarP(&fullWorkflowOptions.TargetsFile, "url-file", "U", "", "Authorized base URL targets, one per line.")
+	fullWorkflowCmd.Flags().StringSliceVar(&fullWorkflowOptions.BruteRunIDs, "brute-run", nil, "With --skip-brute, load known specification URLs from stored brute run IDs in --database.")
 	fullWorkflowCmd.Flags().IntVar(&fullWorkflowOptions.Workers, "workers", 20, "Number of target-level brute workers.")
 	fullWorkflowCmd.Flags().StringSliceVar(&fullWorkflowOptions.ExcludeMethods, "exclude", nil, "Additional HTTP methods to exclude; DELETE is always excluded.")
 	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.IDORRange, "idor-range", "1-100", "Inclusive numeric IDOR enumeration range.")
@@ -278,6 +435,11 @@ func init() {
 	fullWorkflowCmd.Flags().StringArrayVar(&fullWorkflowOptions.IdentityHeaders, "identity-header", nil, "Named identity header as NAME=Header: Value; repeatable.")
 	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.KnownUsername, "known-username", "", "Authorized known username for differential checks.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AcceptRisk, "accept-risk", false, "Allow non-DELETE state-changing requests; DELETE remains excluded.")
+	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPost, "allow-post", false, "Include POST operations in the full workflow; requires --accept-risk.")
+	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPatch, "allow-patch", false, "Include PATCH operations in the full workflow; requires --accept-risk.")
 	fullWorkflowCmd.Flags().IntVar(&fullWorkflowOptions.MaxEvidence, "max-evidence", 100, "Maximum proof records embedded per report finding.")
+	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.AssessmentManifest, "assessment-manifest", "", "Append assess plan, run, and reports; input path $workflow.automate resolves to this run's automate.json.")
+	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AutoAssess, "auto-assess", false, "Automatically materialize and run an anonymous, read-only assessment continuation without a manifest file.")
+	fullWorkflowCmd.Flags().IntVar(&fullWorkflowOptions.AssessmentMaxResults, "assessment-max-results", 0, "Maximum rows per assessment report collection; 0 keeps safe defaults.")
 	fullWorkflowCmd.Flags().StringVar(&cfg.ColorMode, "color", config.ColorAuto, "Terminal color mode: auto, always, or never.")
 }

@@ -270,6 +270,48 @@ func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 	}
 }
 
+func TestAutomateToolRequiresExplicitPostAndPatchOptIns(t *testing.T) {
+	var methods []string
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			methods = append(methods, request.Method)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request}, nil
+		})
+		return client, client.InitErr
+	}
+	spec := `{"openapi":"3.1.0","info":{"title":"Methods","version":"1"},"servers":[{"url":"https://api.example.com"}],"paths":{"/widgets":{"get":{"responses":{"200":{"description":"ok"}}},"post":{"responses":{"200":{"description":"ok"}}},"patch":{"responses":{"200":{"description":"ok"}}},"delete":{"responses":{"200":{"description":"ok"}}}}}}`
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowDestructive: true,
+		AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+
+	defaultResult := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": spec}}, "accept_risk": true,
+	})
+	if defaultResult.IsError || !slices.Equal(methods, []string{http.MethodGet}) {
+		t.Fatalf("default result error=%v text=%q methods=%v", defaultResult.IsError, toolText(defaultResult), methods)
+	}
+
+	methods = nil
+	optedIn := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": spec}}, "accept_risk": true,
+		"allow_post": true, "allow_patch": true,
+	})
+	if optedIn.IsError || !slices.Equal(methods, []string{http.MethodGet, http.MethodPost, http.MethodPatch}) {
+		t.Fatalf("opt-in result error=%v text=%q methods=%v", optedIn.IsError, toolText(optedIn), methods)
+	}
+	for _, arguments := range []map[string]any{
+		{"sources": []any{map[string]any{"document": spec}}, "allow_post": true},
+		{"sources": []any{map[string]any{"document": spec}}, "allow_patch": true},
+	} {
+		result := callTool(t, session, "automate_openapi", arguments)
+		if !result.IsError || !strings.Contains(toolText(result), "require accept_risk=true") {
+			t.Fatalf("unsafe opt-in result = error:%v text:%q", result.IsError, toolText(result))
+		}
+	}
+}
+
 func TestServerEnforcesSourceAndNetworkPolicies(t *testing.T) {
 	t.Run("remote host denied without allowlist", func(t *testing.T) {
 		session := connectTestClient(t, Options{Version: "test"})

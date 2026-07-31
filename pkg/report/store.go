@@ -94,7 +94,19 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 			if err != nil {
 				return Dataset{}, fmt.Errorf("decode stored automate failure %d: %w", index+1, err)
 			}
-			failure := Failure{Source: observation.Source, Error: stringMetadata(metadata, "error")}
+			failure := Failure{
+				Source: observation.Source, Error: stringMetadata(metadata, "error"),
+				Coverage: boolMetadata(metadata, "coverage"),
+			}
+			failures[failure.Source+"\x00"+failure.Error] = failure
+		case "automate_coverage_gap":
+			metadata, err := observationMetadata(observation.Metadata)
+			if err != nil {
+				return Dataset{}, fmt.Errorf("decode stored automate coverage gap %d: %w", index+1, err)
+			}
+			failure := automateCoverageFailure(
+				observation.Source, stringMetadata(metadata, "reason"), intMetadata(metadata, "skipped"),
+			)
 			failures[failure.Source+"\x00"+failure.Error] = failure
 		}
 	}
@@ -112,7 +124,7 @@ func DatasetFromStoredResults(observations []store.Observation, storedFindings [
 	}
 	for _, item := range failures {
 		if item.Source != "" {
-			if _, succeeded := successfulSources[item.Source]; succeeded {
+			if _, succeeded := successfulSources[item.Source]; succeeded && !item.Coverage {
 				continue
 			}
 		}
@@ -324,5 +336,26 @@ func decodeMetadata(value any, destination any) error {
 
 func stringMetadata(metadata map[string]any, key string) string {
 	value, _ := metadata[key].(string)
+	return value
+}
+
+func intMetadata(metadata map[string]any, key string) int {
+	switch value := metadata[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, _ := strconv.Atoi(value.String())
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func boolMetadata(metadata map[string]any, key string) bool {
+	value, _ := metadata[key].(bool)
 	return value
 }

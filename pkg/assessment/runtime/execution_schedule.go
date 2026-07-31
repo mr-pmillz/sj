@@ -116,9 +116,17 @@ func (service *Service) executeScheduledNode(
 	}
 	nodeOrigin := proofOrigin(schedule.proofs[nodeID])
 	if reason, unavailable := schedule.unavailableOrigins[nodeOrigin]; unavailable {
-		if err := finishContainedNode(
-			ctx, schedule.resultStore, schedule.assessmentID, nodeID, reason, schedule.lease,
-		); err != nil {
+		var err error
+		if reason == targetOriginRateLimitedReason {
+			err = markRemaining(
+				ctx, schedule.resultStore, schedule.assessmentID, []string{nodeID}, reason, schedule.lease,
+			)
+		} else {
+			err = finishContainedNode(
+				ctx, schedule.resultStore, schedule.assessmentID, nodeID, reason, schedule.lease,
+			)
+		}
+		if err != nil {
 			return scheduledNodeResult{assessment: assessment, err: err}
 		}
 		assessment.status, assessment.message = store.AssessmentFailed, reason
@@ -206,12 +214,24 @@ func handleScheduledNodeResult(
 	}
 	if containedReason != "" {
 		assessment.status, assessment.message = store.AssessmentFailed, containedReason
+		assessment.terminalErr = errors.Join(assessment.terminalErr, &PartialCoverageError{
+			AssessmentID: schedule.assessmentID,
+			Reason:       containedReason,
+		})
 		return scheduledNodeResult{assessment: assessment}
 	}
 	if stopReason == "" {
 		return scheduledNodeResult{assessment: assessment}
 	}
 	assessment.status, assessment.message = store.AssessmentFailed, stopReason
+	if isTargetRateLimitStop(stopReason) && nodeOrigin != "" {
+		schedule.unavailableOrigins[nodeOrigin] = targetOriginRateLimitedReason
+		assessment.terminalErr = errors.Join(assessment.terminalErr, &PartialCoverageError{
+			AssessmentID: schedule.assessmentID,
+			Reason:       stopReason,
+		})
+		return scheduledNodeResult{assessment: assessment}
+	}
 	if err := markRemaining(
 		ctx, schedule.resultStore, schedule.assessmentID, schedule.nodeIDs[index+1:],
 		stopReason, schedule.lease,
@@ -252,11 +272,14 @@ func handleScheduledNodeError(
 	}
 	if containedReason != "" {
 		assessment.status, assessment.message = store.AssessmentFailed, containedReason
-		if schedule.proofs[nodeID].ProxyRequired && errors.Is(executeErr, executor.ErrTransport) &&
-			nodeOrigin != "" {
+		if errors.Is(executeErr, executor.ErrTransport) && nodeOrigin != "" {
 			schedule.unavailableOrigins[nodeOrigin] = targetOriginUnavailableReason
 		}
-		assessment.terminalErr = errors.Join(assessment.terminalErr, executeErr)
+		assessment.terminalErr = errors.Join(assessment.terminalErr, &PartialCoverageError{
+			AssessmentID: schedule.assessmentID,
+			Reason:       containedReason,
+			Cause:        executeErr,
+		})
 		return scheduledNodeResult{assessment: assessment}
 	}
 	assessment = assessmentExecutionResult{

@@ -11,6 +11,8 @@ Use a fresh base such as `targets/results/<assessment-name>/`. The full workflow
 - `report.md` and `report.html`; and
 - immutable command runs in the selected SQLite database.
 
+With `--assessment-manifest`, the same directory also contains `assessment.db`, the materialized manifest, plan/run JSON, JSON/Markdown/HTML/SARIF/JUnit reports, and a Bruno reproduction ZIP. Legacy and assessment-v2 reports are both required because they analyze different evidence models.
+
 Keep captured target data out of commits.
 
 ## End-to-end command
@@ -32,7 +34,13 @@ Keep captured target data out of commits.
   --max-evidence 100
 ```
 
-Add `--accept-risk` only after the user separately authorizes non-DELETE state-changing requests and the affected workflows have suitable test data and cleanup semantics. DELETE remains excluded.
+DELETE remains excluded. PATCH and POST remain excluded from the full workflow unless the operator supplies `--allow-patch` or `--allow-post`, respectively, together with `--accept-risk`, after separately authorizing those requests and confirming suitable test data and cleanup semantics.
+
+To append ownership-backed assessment-v2, use a normal strict assessment manifest with exactly one `kind: sj-results` input whose path is the exact scalar `$workflow.automate`, then add `--assessment-manifest /absolute/path/to/template.yaml`. The workflow reads the template once, validates it before target traffic against a private synthetic input, requires explicit identity and ownership facts, requires every manifest origin in the normalized `--url-file` origin set, pins it, and binds that scalar to its own `automate.json`; zero, duplicate, wrong-kind, or out-of-scope-origin bindings fail closed, and no other values are interpolated. It never invents identity/ownership declarations. Keep `SJ_ASSESSMENT_EVIDENCE_KEY` stable, do not use `--no-database`, and declare assessment proxy/TLS policy in the manifest rather than global transport flags.
+
+For a one-command anonymous continuation, add `--auto-assess`. sj generates and pins the strict manifest internally from the authorized origins, current automate artifact, configured transport, safe budgets, and evidence policy. It creates no identities or owned objects and therefore does not claim cross-identity or ownership-backed coverage. With known specifications, add `--skip-brute --url-file`; to resume discovery evidence from SQLite, add `--skip-brute --brute-run RUN_ID` with the global `--database` path.
+
+For mass target sets, treat 429, advertised depleted capacity, and repeated proven target-origin transport failures as per-origin circuit breakers in brute, automate, and fuzz. A direct transport is target-attributable; a SOCKS transport requires a target-specific reply, while ambiguous proxy failures remain global. Assessment-v2 also isolates rate stops, conservative direct DNS/connection-refused failures, and target failures that a required healthy proxy can prove are origin-local. Preserve workflow-wide failures for invalid policy/configuration, cancellation, shared or unverified transport failure, request-budget exhaustion, and evidence output/database failures. The combined workflow may return success for a typed partial assessment only after the sealed run result and every requested report are durable.
 
 The 1 GiB value is sj's emergency read ceiling, not permission to consume unbounded service resources. Validate `response_truncated=false` for every final automate and fuzz observation.
 

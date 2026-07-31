@@ -129,6 +129,8 @@ type automateInput struct {
 	RequiredOnly         bool           `json:"required_only,omitempty" jsonschema:"Populate only required operation parameters."`
 	RetryOnHint          bool           `json:"retry_on_hint,omitempty" jsonschema:"Retry safe 401 responses that contain structured missing-parameter hints."`
 	AcceptRisk           bool           `json:"accept_risk,omitempty" jsonschema:"Request state-changing methods and dangerous paths. Requires server-side destructive authorization."`
+	AllowPost            bool           `json:"allow_post,omitempty" jsonschema:"Include POST operations for full-workflow automation. Sending them also requires accept_risk=true and server-side destructive authorization."`
+	AllowPatch           bool           `json:"allow_patch,omitempty" jsonschema:"Include PATCH operations. Sending them also requires accept_risk=true and server-side destructive authorization."`
 	Progress             bool           `json:"progress,omitempty" jsonschema:"Write per-operation progress to server stderr during the active scan."`
 	FullURLs             bool           `json:"full_urls,omitempty" jsonschema:"Show complete operation URLs instead of paths in progress output."`
 	ColorMode            string         `json:"color,omitempty" jsonschema:"Progress color mode: auto, always, or never."`
@@ -164,11 +166,14 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 	if input.AcceptRisk && !service.policy.allowDestructive {
 		return nil, automateOutput{}, fmt.Errorf("destructive requests are disabled by the MCP server")
 	}
+	if (input.AllowPost || input.AllowPatch) && !input.AcceptRisk {
+		return nil, automateOutput{}, fmt.Errorf("allow_post and allow_patch require accept_risk=true")
+	}
 	if input.ResponsePreviewBytes < 0 || input.ResponsePreviewBytes > 4096 {
 		return nil, automateOutput{}, fmt.Errorf("response_preview_bytes must be between 0 and 4096")
 	}
 	validationCfg := service.config()
-	validationCfg.ExcludeMethods = append([]string(nil), input.ExcludeMethods...)
+	validationCfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
 	if input.ColorMode != "" {
 		validationCfg.ColorMode = input.ColorMode
 	}
@@ -215,6 +220,7 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 		cfg.RequiredOnly = input.RequiredOnly
 		cfg.RetryOnHint = input.RetryOnHint
 		cfg.AcceptRisk = input.AcceptRisk
+		cfg.AllowPatch = input.AllowPatch
 		cfg.Force = false
 		cfg.ProgressDisplay = input.Progress
 		cfg.FullURLs = input.FullURLs
@@ -224,7 +230,7 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 		cfg.Verbose = input.ResponsePreviewBytes > 0
 		cfg.ResponsePreview = input.ResponsePreviewBytes
 		configureResponseCapture(cfg, input.StoreResponses)
-		cfg.ExcludeMethods = append([]string(nil), input.ExcludeMethods...)
+		cfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
 		applyTarget(cfg, input.Target)
 		if err := scanner.ConfigureTarget(spec, cfg); err != nil {
 			failures = append(failures, newAutomateFailure(sourceLabel, source, err))
@@ -281,6 +287,18 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, automateOutput{}, err
 	}
 	return nil, result, nil
+}
+
+func mcpAutomateExcludedMethods(input automateInput) []string {
+	result := append([]string(nil), input.ExcludeMethods...)
+	if !input.AllowPost {
+		result = append(result, "POST")
+	}
+	if !input.AllowPatch {
+		result = append(result, "PATCH")
+	}
+	result = append(result, "DELETE")
+	return result
 }
 
 type automateOperationIdentity struct {

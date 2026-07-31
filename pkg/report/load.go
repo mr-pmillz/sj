@@ -283,6 +283,33 @@ func (state *loader) parseJSON(data []byte) error {
 				return err
 			}
 		}
+		if coverageRaw, found := object["coverage_gaps"]; found {
+			var gaps []struct {
+				Origin  string `json:"origin"`
+				Reason  string `json:"reason"`
+				Skipped int    `json:"skipped"`
+			}
+			if err := json.Unmarshal(coverageRaw, &gaps); err != nil {
+				return fmt.Errorf("decode automate coverage gaps: %w", err)
+			}
+			for _, gap := range gaps {
+				if err := state.addFailure(automateCoverageFailure(gap.Origin, gap.Reason, gap.Skipped)); err != nil {
+					return err
+				}
+			}
+		}
+		if failuresRaw, found := object["source_failures"]; found {
+			var failures []Failure
+			if err := json.Unmarshal(failuresRaw, &failures); err != nil {
+				return fmt.Errorf("decode automate source failures: %w", err)
+			}
+			for _, failure := range failures {
+				failure.Coverage = true
+				if err := state.addFailure(failure); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	}
 	if raw, exists := object["probes"]; exists {
@@ -350,6 +377,20 @@ func (state *loader) parseJSON(data []byte) error {
 		return nil
 	}
 	return state.parseJSONMap(object)
+}
+
+func automateCoverageFailure(origin, reason string, skipped int) Failure {
+	if skipped < 0 {
+		skipped = 0
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unspecified"
+	}
+	return Failure{
+		Source: origin, Coverage: true,
+		Error: fmt.Sprintf("origin circuit opened (%s); skipped %d remaining request(s)", reason, skipped),
+	}
 }
 
 func (state *loader) parseJSONL(data []byte) error {

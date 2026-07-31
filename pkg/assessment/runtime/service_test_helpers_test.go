@@ -26,7 +26,10 @@ func newService(t *testing.T, client *http.Client) *assessmentruntime.Service {
 
 func newServiceAt(t *testing.T, client *http.Client, now func() time.Time) *assessmentruntime.Service {
 	t.Helper()
-	service, err := assessmentruntime.New(assessmentruntime.Config{Client: client, EvidenceKey: bytes.Repeat([]byte{0x5a}, 32), Now: now})
+	service, err := assessmentruntime.New(assessmentruntime.Config{
+		Client: client, EvidenceKey: bytes.Repeat([]byte{0x5a}, 32), Now: now,
+		DirectTransport: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

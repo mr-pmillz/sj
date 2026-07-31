@@ -24,11 +24,74 @@ var (
 	ErrTargetOriginTransport        = errors.New("target origin transport failed through a verified proxy")
 )
 
+// PartialCoverageError reports target-local coverage loss after the assessment
+// state and evidence were durably finalized. Standalone assess commands keep
+// this as a non-zero result; the combined workflow may suppress it only after
+// every requested report has also been written successfully.
+type PartialCoverageError struct {
+	AssessmentID string
+	Reason       string
+	Cause        error
+}
+
+func (failure *PartialCoverageError) Error() string {
+	if failure == nil {
+		return "assessment completed with partial coverage"
+	}
+	message := "assessment completed with partial coverage"
+	if failure.AssessmentID != "" {
+		message += " (" + failure.AssessmentID + ")"
+	}
+	if failure.Reason != "" {
+		message += ": " + failure.Reason
+	}
+	if failure.Cause != nil {
+		message += ": " + failure.Cause.Error()
+	}
+	return message
+}
+
+func (failure *PartialCoverageError) Unwrap() error {
+	if failure == nil {
+		return nil
+	}
+	return failure.Cause
+}
+
+func IsOnlyPartialCoverageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if _, ok := err.(*PartialCoverageError); ok {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if child != nil && !IsOnlyPartialCoverageError(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return IsOnlyPartialCoverageError(wrapped.Unwrap())
+	}
+	return false
+}
+
 type Config struct {
 	Client         *http.Client
 	EvidenceKey    []byte
 	Now            func() time.Time
 	SOCKSTransport *SOCKSTransportConfig
+	// DirectTransport declares that Client reaches target origins without a
+	// shared intermediary. It enables conservative direct DNS/connection-refused
+	// isolation; callers with custom or ambiguous transports should leave it false.
+	DirectTransport bool
 }
 
 // SOCKSTransportConfig carries an operator-configured SOCKS dialer in memory.
@@ -47,10 +110,11 @@ type configuredSOCKSTransport struct {
 }
 
 type Service struct {
-	client         *http.Client
-	evidenceKey    []byte
-	now            func() time.Time
-	socksTransport *configuredSOCKSTransport
+	client          *http.Client
+	evidenceKey     []byte
+	now             func() time.Time
+	socksTransport  *configuredSOCKSTransport
+	directTransport bool
 }
 
 type PlanRequest struct {
@@ -58,6 +122,9 @@ type PlanRequest struct {
 	DatabasePath string
 	NoDatabase   bool
 	AcceptRisk   bool
+	// AllowNoCandidates permits a durable inventory-only assessment with zero
+	// active request nodes. It is intended for automatic anonymous workflows.
+	AllowNoCandidates bool
 }
 
 type PlanResult struct {
@@ -73,10 +140,11 @@ type PlanResult struct {
 }
 
 type RunRequest struct {
-	ManifestPath string
-	DatabasePath string
-	NoDatabase   bool
-	AcceptRisk   bool
+	ManifestPath      string
+	DatabasePath      string
+	NoDatabase        bool
+	AcceptRisk        bool
+	AllowNoCandidates bool
 }
 
 type RunResult struct {
@@ -144,6 +212,6 @@ func New(config Config) (*Service, error) {
 	}
 	return &Service{
 		client: config.Client, evidenceKey: append([]byte(nil), config.EvidenceKey...),
-		now: config.Now, socksTransport: socksTransport,
+		now: config.Now, socksTransport: socksTransport, directTransport: config.DirectTransport,
 	}, nil
 }

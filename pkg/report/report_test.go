@@ -17,7 +17,7 @@ func TestLoadDeduplicatesEquivalentResultFormats(t *testing.T) {
 	directory := t.TempDir()
 	writeReportFixture(t, directory, "brute.json", `[{"target":"https://api.example","specs_found":[{"url":"https://api.example/openapi.json","content_type":"application/json","openapi_version":"3.1.0"}],"summary":{"urls_tested":10,"specs_found_count":1,"responses_2xx":1,"responses_4xx":9,"errors":0}}]`)
 	writeReportFixture(t, directory, "brute.jsonl", `{"target":"https://api.example","url":"https://api.example/openapi.json","content_type":"application/json","openapi_version":"3.1.0"}`+"\n")
-	writeReportFixture(t, directory, "automate.json", `{"results":[{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/users/1"},{"source":"https://api.example/openapi.json","method":"DELETE","status":204,"target":"/users/1"}]}`)
+	writeReportFixture(t, directory, "automate.json", `{"results":[{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/users/1"},{"source":"https://api.example/openapi.json","method":"DELETE","status":204,"target":"/users/1"}],"source_failures":[{"source":"https://broken.example/openapi.json","error":"invalid specification"}],"coverage_gaps":[{"origin":"https://limited.example","reason":"rate-limited","skipped":3}]}`)
 	writeReportFixture(t, directory, "automate.jsonl", `{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/users/1"}`+"\n"+`{"source":"https://api.example/openapi.json","method":"DELETE","status":204,"target":"/users/1"}`+"\n")
 	writeReportFixture(t, directory, "automate.csv", "source,method,status,target\nhttps://api.example/openapi.json,GET,200,/users/1\nhttps://api.example/openapi.json,DELETE,204,/users/1\n")
 	writeReportFixture(t, directory, "brute.csv", "target,url,content_type,openapi_version,title,description\nhttps://api.example,https://api.example/openapi.json,application/json,3.1.0,Example,\n")
@@ -29,8 +29,11 @@ func TestLoadDeduplicatesEquivalentResultFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dataset.Operations) != 2 || len(dataset.Discoveries) != 1 || len(dataset.Targets) != 1 || len(dataset.Failures) != 1 {
+	if len(dataset.Operations) != 2 || len(dataset.Discoveries) != 1 || len(dataset.Targets) != 1 || len(dataset.Failures) != 3 {
 		t.Fatalf("dataset = %#v", dataset)
+	}
+	if !dataset.Failures[0].Coverage && !dataset.Failures[1].Coverage {
+		t.Fatalf("automate circuit coverage gap was not retained: %#v", dataset.Failures)
 	}
 	if dataset.RawRecords <= len(dataset.Operations)+len(dataset.Discoveries)+len(dataset.Failures) {
 		t.Fatalf("raw records = %d, expected duplicate formats to be counted", dataset.RawRecords)

@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/mr-pmillz/sj/pkg/assessment/executor"
 	"github.com/mr-pmillz/sj/pkg/assessment/inventory"
 	"github.com/mr-pmillz/sj/pkg/assessment/model"
 	"github.com/mr-pmillz/sj/pkg/assessment/planner"
@@ -117,6 +120,48 @@ func TestClientForProofPreservesMatchingConfiguredSOCKSAuthentication(t *testing
 	_, dialErr := configured.DialContext(t.Context(), "tcp", "api.internal:443")
 	if !errors.Is(dialErr, authRejected) || dialCalls != 1 {
 		t.Fatalf("dial error=%v calls=%d, want configured authentication failure", dialErr, dialCalls)
+	}
+}
+
+func TestSOCKSTargetDialErrorClassificationIsConservative(t *testing.T) {
+	proxyAddress := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9000}
+	targetAddress := &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 443}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "target refused",
+			err: &net.OpError{
+				Op: "socks connect", Net: "tcp", Source: proxyAddress,
+				Addr: targetAddress, Err: errors.New("connection refused"),
+			},
+			want: true,
+		},
+		{
+			name: "target host unreachable",
+			err: &net.OpError{
+				Op: "socks connect", Net: "tcp", Source: proxyAddress,
+				Addr: targetAddress, Err: errors.New("host unreachable"),
+			},
+			want: true,
+		},
+		{
+			name: "handshake EOF",
+			err: &net.OpError{
+				Op: "socks connect", Net: "tcp", Source: proxyAddress,
+				Addr: targetAddress, Err: io.EOF,
+			},
+		},
+		{name: "direct refusal", err: &net.OpError{Op: "dial", Net: "tcp", Addr: targetAddress, Err: errors.New("connection refused")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isSOCKSTargetDialError(test.err); got != test.want {
+				t.Fatalf("classification = %t, want %t", got, test.want)
+			}
+		})
 	}
 }
 
@@ -363,6 +408,17 @@ func TestNewRequiresEvidenceKeyAndDefaultsClientAndClock(t *testing.T) {
 	}
 }
 
+func TestDirectTargetFailureIsolationRequiresDeclaredDirectTransport(t *testing.T) {
+	failure := errors.Join(executor.ErrTransport, syscall.ECONNREFUSED)
+	attempt := executor.Attempt{Outcome: executor.OutcomeRetryableNoSideEffect}
+	if isIsolatedTargetTransportFailure(failure, attempt, false, false) {
+		t.Fatal("ambiguous custom transport failure was isolated as target-local")
+	}
+	if !isIsolatedTargetTransportFailure(failure, attempt, false, true) {
+		t.Fatal("declared direct connection refusal was not isolated")
+	}
+}
+
 func TestBudgetLimitsRejectsNegativeByteLimits(t *testing.T) {
 	_, err := budgetLimits(model.NewBudgetLimit(1, -1, 2, 1))
 	if err == nil {
@@ -416,5 +472,18 @@ func TestExecutionSnapshotRejectsCostsOutsideDurableBounds(t *testing.T) {
 	}
 	if _, err := executionSnapshotFromPrepared(prepared); err == nil {
 		t.Fatal("unsigned planner cost outside durable bounds entered the execution snapshot")
+	}
+}
+
+func TestExecutionSnapshotCanonicalizesEmptyCollections(t *testing.T) {
+	snapshot, err := executionSnapshotFromPrepared(preparedPlan{
+		plan:   planner.Plan{Hash: "inventory-only"},
+		proofs: map[string]persistedNode{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Identities == nil || snapshot.Nodes == nil {
+		t.Fatalf("empty signed collections must encode as arrays: identities=%#v nodes=%#v", snapshot.Identities, snapshot.Nodes)
 	}
 }

@@ -14,19 +14,23 @@ import (
 
 func (w *Writer) writeJSON(title, description string, out io.Writer) error {
 	payload := struct {
-		APITitle    string   `json:"apiTitle"`
-		Description string   `json:"description"`
-		Results     []Result `json:"results"`
-	}{title, description, w.Results}
+		APITitle      string          `json:"apiTitle"`
+		Description   string          `json:"description"`
+		Results       []Result        `json:"results"`
+		SourceFailure []SourceFailure `json:"source_failures,omitempty"`
+		Coverage      []CoverageGap   `json:"coverage_gaps,omitempty"`
+	}{title, description, w.Results, w.SourceFailures, w.CoverageGaps}
 	return json.NewEncoder(out).Encode(payload)
 }
 
 func (w *Writer) writeVerboseJSON(title, description string, out io.Writer) error {
 	payload := struct {
-		APITitle    string          `json:"apiTitle"`
-		Description string          `json:"description"`
-		Results     []VerboseResult `json:"results"`
-	}{title, description, w.VerboseResults}
+		APITitle      string          `json:"apiTitle"`
+		Description   string          `json:"description"`
+		Results       []VerboseResult `json:"results"`
+		SourceFailure []SourceFailure `json:"source_failures,omitempty"`
+		Coverage      []CoverageGap   `json:"coverage_gaps,omitempty"`
+	}{title, description, w.VerboseResults, w.SourceFailures, w.CoverageGaps}
 	return json.NewEncoder(out).Encode(payload)
 }
 

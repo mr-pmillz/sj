@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -21,6 +22,18 @@ var bruteCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runBrute(cmd.Context(), cfg)
 	},
+}
+
+type bruteArtifactError struct {
+	err error
+}
+
+func (failure *bruteArtifactError) Error() string {
+	return failure.err.Error()
+}
+
+func (failure *bruteArtifactError) Unwrap() error {
+	return failure.err
 }
 
 func runBrute(ctx context.Context, cfg *config.Config) error {
@@ -59,12 +72,10 @@ func runBrute(ctx context.Context, cfg *config.Config) error {
 		report, err = scanner.RunTargetContext(ctx, targets[0], true)
 		allReports = append(allReports, report)
 	}
-	if err != nil {
-		return resultRun.finish(err)
-	}
-	if err := resultRun.addBruteReports(ctx, allReports); err != nil {
-		return resultRun.finish(err)
-	}
+	scanErr := err
+	persistenceCtx, cancelPersistence := durableResultContext(ctx)
+	storageErr := resultRun.addBruteReports(persistenceCtx, allReports)
+	cancelPersistence()
 	var outputErr error
 	switch {
 	case cfg.BruteAllFormats:
@@ -74,7 +85,12 @@ func runBrute(ctx context.Context, cfg *config.Config) error {
 	case isBatch:
 		brute.PrintBatchSummary(allReports)
 	}
-	return resultRun.finish(outputErr)
+	var partial *brute.PartialBatchError
+	artifactErr := errors.Join(wrapError("store brute results", storageErr), outputErr)
+	if errors.As(scanErr, &partial) && artifactErr != nil {
+		return resultRun.finish(errors.Join(scanErr, &bruteArtifactError{err: artifactErr}))
+	}
+	return resultRun.finish(errors.Join(scanErr, artifactErr))
 }
 
 func bruteTargets(cfg *config.Config) ([]string, error) {

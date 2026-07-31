@@ -23,14 +23,15 @@ import (
 )
 
 const (
-	maximumRequests             = 50_000
-	maximumResponseBytes        = 1 << 30
-	maximumBaselineRequestBytes = 1 * 1024 * 1024
-	defaultResponseBytes        = 1024 * 1024
-	defaultStoredBodySize       = 64 * 1024
-	minimumRequestDelay         = 100 * time.Millisecond
-	maximumRepresentativeURLs   = 3
-	maximumRepresentativeLength = 2048
+	maximumRequests              = 50_000
+	maximumResponseBytes         = 1 << 30
+	maximumBaselineRequestBytes  = 1 * 1024 * 1024
+	defaultResponseBytes         = 1024 * 1024
+	defaultStoredBodySize        = 64 * 1024
+	minimumRequestDelay          = 100 * time.Millisecond
+	maximumRepresentativeURLs    = 3
+	maximumRepresentativeLength  = 2048
+	maximumOriginTransportErrors = 3
 )
 
 var (
@@ -65,40 +66,45 @@ type Identity struct {
 }
 
 type Options struct {
-	MaxRequests            int
-	Delay                  time.Duration
-	AcceptRisk             bool
-	KnownUsername          string
-	Identities             []Identity
-	MaxCasesPerOperation   int
-	IDORRange              *apitest.NumericRange
-	MaxResponseBytes       int64
-	StoreResponses         bool
-	MaxStoredResponseBytes int64
-	Workflows              []Workflow
-	ResponseGuided         bool
-	MaxGuidedRetries       int
-	Progress               *ProgressTracker
+	MaxRequests                int
+	Delay                      time.Duration
+	AcceptRisk                 bool
+	KnownUsername              string
+	Identities                 []Identity
+	MaxCasesPerOperation       int
+	IDORRange                  *apitest.NumericRange
+	MaxResponseBytes           int64
+	StoreResponses             bool
+	MaxStoredResponseBytes     int64
+	Workflows                  []Workflow
+	ResponseGuided             bool
+	MaxGuidedRetries           int
+	Progress                   *ProgressTracker
+	ContinueOnTargetError      bool
+	TargetOriginTransportError func(error) bool
 }
 
 type Summary struct {
-	Operations             int  `json:"operations"`
-	Requests               int  `json:"requests"`
-	Responses2xx           int  `json:"responses_2xx"`
-	Responses3xx           int  `json:"responses_3xx"`
-	Responses4xx           int  `json:"responses_4xx"`
-	Responses5xx           int  `json:"responses_5xx"`
-	TransportErrors        int  `json:"transport_errors"`
-	SkippedUnsafe          int  `json:"skipped_unsafe"`
-	RateLimited            bool `json:"rate_limited"`
-	RequestBudgetHit       bool `json:"request_budget_hit"`
-	SideEffectsVerified    int  `json:"side_effects_verified"`
-	GuidedRetries          int  `json:"guided_retries"`
-	GuidedSuccesses        int  `json:"guided_successes"`
-	UnresolvedHints        int  `json:"unresolved_hints"`
-	QualifiedIDORBaselines int  `json:"qualified_idor_baselines"`
-	RejectedIDORBaselines  int  `json:"rejected_idor_baselines"`
-	SkippedInvalidIDOR     int  `json:"skipped_invalid_idor"`
+	Operations              int  `json:"operations"`
+	Requests                int  `json:"requests"`
+	Responses2xx            int  `json:"responses_2xx"`
+	Responses3xx            int  `json:"responses_3xx"`
+	Responses4xx            int  `json:"responses_4xx"`
+	Responses5xx            int  `json:"responses_5xx"`
+	TransportErrors         int  `json:"transport_errors"`
+	SkippedUnsafe           int  `json:"skipped_unsafe"`
+	RateLimited             bool `json:"rate_limited"`
+	RequestBudgetHit        bool `json:"request_budget_hit"`
+	SideEffectsVerified     int  `json:"side_effects_verified"`
+	GuidedRetries           int  `json:"guided_retries"`
+	GuidedSuccesses         int  `json:"guided_successes"`
+	UnresolvedHints         int  `json:"unresolved_hints"`
+	QualifiedIDORBaselines  int  `json:"qualified_idor_baselines"`
+	RejectedIDORBaselines   int  `json:"rejected_idor_baselines"`
+	SkippedInvalidIDOR      int  `json:"skipped_invalid_idor"`
+	RateLimitedOrigins      int  `json:"rate_limited_origins"`
+	TransportLimitedOrigins int  `json:"transport_limited_origins"`
+	SkippedIsolated         int  `json:"skipped_isolated"`
 }
 
 type PlanSummary struct {
@@ -110,28 +116,29 @@ type PlanSummary struct {
 }
 
 type ProbeResult struct {
-	Method             string   `json:"method"`
-	URL                string   `json:"url"`
-	BaselineURL        string   `json:"baseline_url,omitempty"`
-	Case               string   `json:"case"`
-	Category           string   `json:"category"`
-	Identity           string   `json:"identity"`
-	AuthContext        string   `json:"auth_context"`
-	ContentType        string   `json:"content_type,omitempty"`
-	RequestBody        string   `json:"request_body,omitempty"`
-	Status             int      `json:"status"`
-	ResponseBytes      int      `json:"response_bytes"`
-	ResponseHash       string   `json:"response_hash,omitempty"`
-	ResponseBody       string   `json:"response_body,omitempty"`
-	ResponseTruncated  bool     `json:"response_truncated,omitempty"`
-	RateLimitRemaining *int     `json:"rate_limit_remaining,omitempty"`
-	PIITypes           []string `json:"pii_types,omitempty"`
-	DisclosureTypes    []string `json:"disclosure_types,omitempty"`
-	VerboseError       bool     `json:"verbose_error,omitempty"`
-	Error              string   `json:"error,omitempty"`
-	DurationMillis     int64    `json:"duration_ms"`
-	Guidance           string   `json:"guidance,omitempty"`
-	analysisBody       []byte
+	Method                       string   `json:"method"`
+	URL                          string   `json:"url"`
+	BaselineURL                  string   `json:"baseline_url,omitempty"`
+	Case                         string   `json:"case"`
+	Category                     string   `json:"category"`
+	Identity                     string   `json:"identity"`
+	AuthContext                  string   `json:"auth_context"`
+	ContentType                  string   `json:"content_type,omitempty"`
+	RequestBody                  string   `json:"request_body,omitempty"`
+	Status                       int      `json:"status"`
+	ResponseBytes                int      `json:"response_bytes"`
+	ResponseHash                 string   `json:"response_hash,omitempty"`
+	ResponseBody                 string   `json:"response_body,omitempty"`
+	ResponseTruncated            bool     `json:"response_truncated,omitempty"`
+	RateLimitRemaining           *int     `json:"rate_limit_remaining,omitempty"`
+	PIITypes                     []string `json:"pii_types,omitempty"`
+	DisclosureTypes              []string `json:"disclosure_types,omitempty"`
+	VerboseError                 bool     `json:"verbose_error,omitempty"`
+	Error                        string   `json:"error,omitempty"`
+	DurationMillis               int64    `json:"duration_ms"`
+	Guidance                     string   `json:"guidance,omitempty"`
+	analysisBody                 []byte
+	targetOriginTransportFailure bool
 }
 
 type Finding struct {
@@ -250,8 +257,8 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 	if err := executeProbePlans(ctx, client, &report, state, options, wait); err != nil {
 		return report, err
 	}
-	if !report.Summary.RateLimited && len(options.Workflows) > 0 {
-		if err := executeWorkflows(ctx, client, &report, identities, options, wait); err != nil {
+	if (!report.Summary.RateLimited || options.ContinueOnTargetError) && len(options.Workflows) > 0 {
+		if err := executeWorkflows(ctx, client, &report, state, identities, options, wait); err != nil {
 			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true)
 			return report, err
 		}
@@ -330,12 +337,15 @@ type probeRunState struct {
 	seenPlans          map[string]struct{}
 	unresolvedRoots    map[string]struct{}
 	idorBaselineStates map[string]bool
+	blockedOrigins     map[string]struct{}
+	transportErrors    map[string]int
 }
 
 func newProbeRunState(plans []plannedProbe) *probeRunState {
 	state := &probeRunState{
 		plans: plans, seenPlans: make(map[string]struct{}, len(plans)),
 		unresolvedRoots: make(map[string]struct{}), idorBaselineStates: make(map[string]bool),
+		blockedOrigins: make(map[string]struct{}), transportErrors: make(map[string]int),
 	}
 	for _, plan := range plans {
 		state.seenPlans[plannedProbeFingerprint(plan)] = struct{}{}
@@ -347,6 +357,11 @@ func executeProbePlans(ctx context.Context, client *http.Client, report *Report,
 	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, false)
 	for index := 0; index < len(state.plans); index++ {
 		plan := state.plans[index]
+		if options.ContinueOnTargetError && state.originBlocked(plan.targetURL) {
+			report.Summary.SkippedIsolated++
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+			continue
+		}
 		if plan.requiresValidIDORBaseline && !state.idorBaselineStates[plan.idorBaselineKey] {
 			report.Summary.SkippedInvalidIDOR++
 			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
@@ -375,12 +390,65 @@ func executePlannedProbe(ctx context.Context, client *http.Client, report *Repor
 	recordGuidedResult(report, plan, probe, responseBody)
 	if shouldStopForRateLimit(probe) {
 		report.Summary.RateLimited = true
+		if options.ContinueOnTargetError && state.blockOrigin(plan.targetURL) {
+			report.Summary.RateLimitedOrigins++
+			return false
+		}
 		return true
+	}
+	if options.ContinueOnTargetError && state.recordTransportResult(
+		plan.targetURL, probe.targetOriginTransportFailure,
+	) {
+		report.Summary.TransportLimitedOrigins++
+		return false
 	}
 	if options.ResponseGuided && plan.guidedDepth < options.MaxGuidedRetries {
 		scheduleGuidedRetry(report, state, plan, probe, responseBody, options.MaxRequests)
 	}
 	return false
+}
+
+func (state *probeRunState) originBlocked(rawURL string) bool {
+	origin := fuzzTargetOrigin(rawURL)
+	_, blocked := state.blockedOrigins[origin]
+	return origin != "" && blocked
+}
+
+func (state *probeRunState) blockOrigin(rawURL string) bool {
+	origin := fuzzTargetOrigin(rawURL)
+	if origin == "" {
+		return false
+	}
+	if _, exists := state.blockedOrigins[origin]; exists {
+		return true
+	}
+	state.blockedOrigins[origin] = struct{}{}
+	return true
+}
+
+func (state *probeRunState) recordTransportResult(rawURL string, failed bool) bool {
+	origin := fuzzTargetOrigin(rawURL)
+	if origin == "" {
+		return false
+	}
+	if !failed {
+		state.transportErrors[origin] = 0
+		return false
+	}
+	state.transportErrors[origin]++
+	if state.transportErrors[origin] < maximumOriginTransportErrors {
+		return false
+	}
+	state.blockedOrigins[origin] = struct{}{}
+	return true
+}
+
+func fuzzTargetOrigin(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
 }
 
 func recordIDORBaseline(report *Report, state *probeRunState, plan plannedProbe, probe ProbeResult) {
@@ -533,6 +601,8 @@ func executeProbe(ctx context.Context, client *http.Client, plan plannedProbe, o
 	result.DurationMillis = time.Since(started).Milliseconds()
 	if err != nil {
 		result.Error = "transport error"
+		result.targetOriginTransportFailure = options.TargetOriginTransportError == nil ||
+			options.TargetOriginTransportError(err)
 		return result, nil
 	}
 	result.Status = response.StatusCode

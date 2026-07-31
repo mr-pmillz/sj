@@ -95,7 +95,7 @@ type discoveredProof struct {
 }
 
 func (service *Service) Plan(ctx context.Context, request PlanRequest) (PlanResult, error) {
-	prepared, err := service.prepare(ctx, request.ManifestPath, request.DatabasePath, request.NoDatabase, request.AcceptRisk)
+	prepared, err := service.prepare(ctx, request.ManifestPath, request.DatabasePath, request.NoDatabase, request.AcceptRisk, request.AllowNoCandidates)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -112,7 +112,7 @@ func (prepared preparedPlan) result() PlanResult {
 	}
 }
 
-func (service *Service) prepare(ctx context.Context, manifestPath, databasePath string, noDatabase, acceptRisk bool) (preparedPlan, error) {
+func (service *Service) prepare(ctx context.Context, manifestPath, databasePath string, noDatabase, acceptRisk, allowNoCandidates bool) (preparedPlan, error) {
 	manifestData, err := readRegularBounded(manifestPath, manifest.DefaultMaxManifestBytes)
 	if err != nil {
 		return preparedPlan{}, fmt.Errorf("load assessment manifest: %w", err)
@@ -148,7 +148,10 @@ func (service *Service) prepare(ctx context.Context, manifestPath, databasePath 
 		return preparedPlan{}, err
 	}
 	if len(proofs) == 0 {
-		return preparedPlan{}, ErrNoCandidates
+		if !allowNoCandidates {
+			return preparedPlan{}, ErrNoCandidates
+		}
+		return emptyPreparedPlan(manifestData, loaded, operations, origins, acceptRisk)
 	}
 
 	activePolicy, err := assessmentpolicy.New(assessmentpolicy.Config{
@@ -233,6 +236,40 @@ func (service *Service) prepare(ctx context.Context, manifestPath, databasePath 
 		manifest: loaded, plan: built, proofs: persisted,
 		manifestHash: hashBytes(manifestData), inventoryHash: inventoryHash,
 		policyHash: policyHash, scopeHash: scopeHash, locations: locations,
+	}, nil
+}
+
+func emptyPreparedPlan(
+	manifestData []byte,
+	loaded model.Manifest,
+	operations []inventory.Operation,
+	origins []string,
+	acceptRisk bool,
+) (preparedPlan, error) {
+	inventoryHash, err := hashJSON(operations)
+	if err != nil {
+		return preparedPlan{}, fmt.Errorf("hash assessment inventory: %w", err)
+	}
+	policyHash, err := hashJSON(map[string]any{
+		"origins": origins, "proxy": loaded.Transport().Proxy().URL(),
+		"required": loaded.Transport().Proxy().Required(), "accept_risk": acceptRisk,
+		"inventory_only": true,
+	})
+	if err != nil {
+		return preparedPlan{}, err
+	}
+	scopeHash, err := hashJSON(origins)
+	if err != nil {
+		return preparedPlan{}, err
+	}
+	planHash, err := hashJSON(map[string]any{"version": 1, "mode": "inventory-only", "nodes": 0})
+	if err != nil {
+		return preparedPlan{}, err
+	}
+	return preparedPlan{
+		manifest: loaded, plan: planner.Plan{Hash: planHash}, proofs: map[string]persistedNode{},
+		manifestHash: hashBytes(manifestData), inventoryHash: inventoryHash,
+		policyHash: policyHash, scopeHash: scopeHash,
 	}, nil
 }
 

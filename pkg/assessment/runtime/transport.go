@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/mr-pmillz/sj/pkg/assessment/executor"
 	xproxy "golang.org/x/net/proxy"
@@ -77,7 +78,7 @@ func clientForProof(base *http.Client, proof persistedNode, configuredSOCKS *con
 			return nil, nil, executor.ErrProxyUnavailable
 		}
 		if configuredSOCKS != nil && configuredSOCKS.proxyURL == canonicalProxyURL {
-			transport.DialContext = configuredSOCKS.dialContext
+			transport.DialContext = classifySOCKSTargetDialErrors(configuredSOCKS.dialContext)
 		} else {
 			dialer, dialErr := xproxy.SOCKS5("tcp", address, nil, &net.Dialer{})
 			if dialErr != nil {
@@ -87,7 +88,7 @@ func clientForProof(base *http.Client, proof persistedNode, configuredSOCKS *con
 			if !ok {
 				return nil, nil, executor.ErrProxyUnavailable
 			}
-			transport.DialContext = contextDialer.DialContext
+			transport.DialContext = classifySOCKSTargetDialErrors(contextDialer.DialContext)
 		}
 		transport.Proxy = nil
 		transport.DialTLSContext = nil
@@ -97,6 +98,40 @@ func clientForProof(base *http.Client, proof persistedNode, configuredSOCKS *con
 	}
 	client.Transport = transport
 	return &client, networkProxyVerifier{address: address}, nil
+}
+
+func classifySOCKSTargetDialErrors(
+	dialContext func(context.Context, string, string) (net.Conn, error),
+) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		connection, err := dialContext(ctx, network, address)
+		if err != nil && isSOCKSTargetDialError(err) {
+			return nil, errors.Join(err, ErrTargetOriginTransport)
+		}
+		return connection, err
+	}
+}
+
+func isSOCKSTargetDialError(err error) bool {
+	var operation *net.OpError
+	if !errors.As(err, &operation) ||
+		!strings.HasPrefix(strings.ToLower(operation.Op), "socks ") || operation.Err == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(operation.Err.Error())) {
+	case "network unreachable", "host unreachable", "connection refused", "ttl expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDirectTargetDialError(err error) bool {
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) && dnsError.IsNotFound {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func canonicalSOCKSProxyURL(raw string) (string, error) {

@@ -16,7 +16,7 @@ import (
 )
 
 func (service *Service) Run(ctx context.Context, request RunRequest) (RunResult, error) {
-	prepared, err := service.prepare(ctx, request.ManifestPath, request.DatabasePath, request.NoDatabase, request.AcceptRisk)
+	prepared, err := service.prepare(ctx, request.ManifestPath, request.DatabasePath, request.NoDatabase, request.AcceptRisk, request.AllowNoCandidates)
 	if err != nil {
 		return RunResult{}, err
 	}

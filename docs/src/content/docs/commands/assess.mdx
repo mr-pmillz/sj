@@ -5,6 +5,8 @@ description: Plan, run, resume, and report ownership-backed API authorization as
 
 The `assess` command is sj's manifest-driven assessment lifecycle. It turns an explicit authorization boundary, named identities, owned test objects, expected access rules, and hard traffic budgets into a deterministic plan before any target request is sent.
 
+It does not replace the discovery-oriented `brute`, `automate`, `fuzz`, or legacy `report` commands. For a mass target list, use `run --full-workflow`. To append this lifecycle after that workflow has produced `automate.json`, pass `run --full-workflow --assessment-manifest TEMPLATE`; an exact `$workflow.automate` input path in the template is materialized to the new result file. The combined workflow preserves both the broad legacy report and the signed assessment-v2 reports.
+
 The first executable module is ownership-backed BOLA/IDOR testing for `GET` operations. It discovers object references in path and query parameters and nested JSON bodies, then compares victim-own, attacker-own, cross-owner, anonymous, and nonexistent-object controls twice. A successful response or a changed hash alone is never reported as a confirmed authorization bypass.
 
 ## Prerequisites
@@ -13,7 +15,7 @@ Use only locally materialized OpenAPI files or prior sj result sets. Offline pla
 
 ```bash
 # Generate once, then store this value in your normal secret manager.
-export SJ_ASSESSMENT_EVIDENCE_KEY="$(openssl rand -base64 32)"
+export SJ_ASSESSMENT_EVIDENCE_KEY='load-a-stable-key-from-your-secret-manager'
 
 export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
 export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'

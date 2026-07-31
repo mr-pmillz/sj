@@ -82,7 +82,7 @@ func New(options Options) (*mcp.Server, error) {
 		Version:    options.Version,
 		WebsiteURL: "https://github.com/mr-pmillz/sj",
 	}, &mcp.ServerOptions{
-		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, analyze retained API results, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. Assessment manifests, retained result inputs, and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
+		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, analyze retained API results, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. DELETE is never automated; PATCH requires allow_patch, and batch POST requires allow_post, in addition to risk authorization. Assessment manifests, retained result inputs, and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
 		Logger:       logger,
 		Capabilities: &mcp.ServerCapabilities{},
 	})

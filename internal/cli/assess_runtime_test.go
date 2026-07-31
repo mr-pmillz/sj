@@ -24,13 +24,17 @@ type fakeAssessmentRuntime struct {
 	err           error
 	statusRequest assessmentruntime.StatusRequest
 	reportRequest assessmentruntime.ReportRequest
+	planRequest   assessmentruntime.PlanRequest
+	runRequest    assessmentruntime.RunRequest
 }
 
-func (runtime *fakeAssessmentRuntime) Plan(context.Context, assessmentruntime.PlanRequest) (assessmentruntime.PlanResult, error) {
+func (runtime *fakeAssessmentRuntime) Plan(_ context.Context, request assessmentruntime.PlanRequest) (assessmentruntime.PlanResult, error) {
+	runtime.planRequest = request
 	return runtime.plan, runtime.err
 }
 
-func (runtime *fakeAssessmentRuntime) Run(context.Context, assessmentruntime.RunRequest) (assessmentruntime.RunResult, error) {
+func (runtime *fakeAssessmentRuntime) Run(_ context.Context, request assessmentruntime.RunRequest) (assessmentruntime.RunResult, error) {
+	runtime.runRequest = request
 	return runtime.run, runtime.err
 }
 

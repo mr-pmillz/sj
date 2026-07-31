@@ -36,6 +36,7 @@ func TestDatasetFromStoredObservationsBuildsReportInput(t *testing.T) {
 		{Kind: "automate", Source: "https://api.example/openapi.json", Method: "GET", URL: "https://api.example/users/1", Path: "/users/1", Status: 200, ResponseBody: []byte(`{"email":"person@example.test"}`)},
 		{Kind: "automate_failure", Source: "https://api.example/openapi.json", Metadata: map[string]any{"error": "superseded transient failure"}},
 		{Kind: "automate_failure", Source: "https://api.example/broken.json", Metadata: map[string]any{"error": "path template could not be resolved"}},
+		{Kind: "automate_coverage_gap", Source: "https://limited.example", Metadata: map[string]any{"reason": "rate-limited", "skipped": 4}},
 		{Kind: "brute_summary", Source: "https://api.example", Metadata: map[string]any{
 			"urls_tested": 50, "false_positives_filtered": 10,
 			"waf_challenge_detected": true, "waf_challenge_responses": 3,
@@ -60,8 +61,15 @@ func TestDatasetFromStoredObservationsBuildsReportInput(t *testing.T) {
 	if dataset.RateLimitedTargets != 1 || dataset.UnavailableLimitedTargets != 1 {
 		t.Fatalf("brute response limits = %#v", dataset)
 	}
-	if len(dataset.Failures) != 1 || dataset.Failures[0].Source != "https://api.example/broken.json" || dataset.Failures[0].Error != "path template could not be resolved" {
+	if len(dataset.Failures) != 2 {
 		t.Fatalf("failures = %#v", dataset.Failures)
+	}
+	var foundCoverage bool
+	for _, failure := range dataset.Failures {
+		foundCoverage = foundCoverage || failure.Coverage
+	}
+	if !foundCoverage {
+		t.Fatalf("stored automate coverage gap was lost: %#v", dataset.Failures)
 	}
 }
 

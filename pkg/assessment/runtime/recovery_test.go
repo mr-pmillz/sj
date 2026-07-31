@@ -161,8 +161,9 @@ func TestResumeRetriesOnlyCanceledSafeAttemptAndRunsExecutionSkippedNodes(t *tes
 	close(releaseRetry)
 	outcome := <-resumeDone
 	resumed, err := outcome.result, outcome.err
-	if err != nil {
-		t.Fatal(err)
+	var partial *assessmentruntime.PartialCoverageError
+	if !errors.As(err, &partial) {
+		t.Fatalf("Resume() error = %v, want PartialCoverageError", err)
 	}
 	if resumed.Snapshot.Assessment.Status != store.AssessmentFailed {
 		t.Fatalf("resumed assessment status = %q, want failed because recovered node is inconclusive", resumed.Snapshot.Assessment.Status)
@@ -279,6 +280,10 @@ func TestServiceContainsTargetTransportFailureToItsOriginAfterProxyVerification(
 	if !errors.Is(runErr, executor.ErrTransport) {
 		t.Fatalf("Run() error = %v, want ErrTransport", runErr)
 	}
+	var partial *assessmentruntime.PartialCoverageError
+	if !errors.As(runErr, &partial) {
+		t.Fatalf("Run() error = %v, want PartialCoverageError", runErr)
+	}
 	if result.Snapshot.Assessment.Status != store.AssessmentFailed {
 		t.Fatalf("assessment status = %q, want failed", result.Snapshot.Assessment.Status)
 	}
@@ -291,6 +296,98 @@ func TestServiceContainsTargetTransportFailureToItsOriginAfterProxyVerification(
 	if result.Snapshot.Counts.Planned != 4 || result.Snapshot.Counts.Skipped != 0 ||
 		result.Snapshot.Counts.Executed != 21 {
 		t.Fatalf("isolated transport snapshot counts = %#v", result.Snapshot.Counts)
+	}
+}
+
+func TestServiceContainsRateLimitToItsOriginAndContinuesHealthyOrigins(t *testing.T) {
+	var limitedRequests atomic.Int64
+	limited := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		limitedRequests.Add(1)
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = writer.Write([]byte(strings.Repeat("limited", 32)))
+	}))
+	defer limited.Close()
+
+	var healthyRequests atomic.Int64
+	healthy := newTenantServer(t, false, &healthyRequests, &atomic.Int64{}, nil)
+	defer healthy.Close()
+
+	directory := t.TempDir()
+	limitedSpec := writePathSpec(t, t.TempDir(), limited.URL)
+	healthySpec := writePathSpec(t, t.TempDir(), healthy.URL)
+	manifestPath := writeManifest(t, directory, limited.URL, "rate-origin-isolation", limitedSpec, "", 40)
+	replaceFile(t, manifestPath,
+		fmt.Sprintf(`origins: [%q]`, limited.URL),
+		fmt.Sprintf(`origins: [%q, %q]`, limited.URL, healthy.URL))
+	replaceFile(t, manifestPath,
+		fmt.Sprintf("      baseURL: %q", limited.URL),
+		fmt.Sprintf("      baseURL: %q\n    - name: healthy-source\n      kind: openapi\n      path: %q\n      baseURL: %q", limited.URL, healthySpec, healthy.URL))
+	replaceFile(t, manifestPath, "maxResponseBytes: 1048576", "maxResponseBytes: 128")
+	replaceFile(t, manifestPath, "maxArtifactBytes: 1048576", "maxArtifactBytes: 128")
+
+	result, runErr := newService(t, http.DefaultClient).Run(t.Context(), assessmentruntime.RunRequest{
+		ManifestPath: manifestPath,
+		DatabasePath: filepath.Join(directory, "assessment.db"),
+	})
+	var partial *assessmentruntime.PartialCoverageError
+	if !errors.As(runErr, &partial) {
+		t.Fatalf("Run() error = %v, want PartialCoverageError", runErr)
+	}
+	if limitedRequests.Load() != 1 {
+		t.Fatalf("rate-limited origin requests = %d, want one", limitedRequests.Load())
+	}
+	if healthyRequests.Load() != 20 {
+		t.Fatalf("healthy origin requests = %d, want complete twenty-request matrix", healthyRequests.Load())
+	}
+	if result.Snapshot.Assessment.Status != store.AssessmentFailed ||
+		result.Snapshot.Counts.Planned != 4 || result.Snapshot.Counts.Executed != 21 ||
+		result.Snapshot.Counts.Skipped != 1 {
+		t.Fatalf("rate-isolated assessment = %#v", result.Snapshot)
+	}
+}
+
+func TestServiceContainsDirectConnectionRefusalToItsOrigin(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadURL := "http://" + listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var healthyRequests atomic.Int64
+	healthy := newTenantServer(t, false, &healthyRequests, &atomic.Int64{}, nil)
+	defer healthy.Close()
+
+	directory := t.TempDir()
+	deadSpec := writePathSpec(t, t.TempDir(), deadURL)
+	healthySpec := writePathSpec(t, t.TempDir(), healthy.URL)
+	manifestPath := writeManifest(t, directory, deadURL, "direct-origin-isolation", deadSpec, "", 40)
+	replaceFile(t, manifestPath,
+		fmt.Sprintf(`origins: [%q]`, deadURL),
+		fmt.Sprintf(`origins: [%q, %q]`, deadURL, healthy.URL))
+	replaceFile(t, manifestPath,
+		fmt.Sprintf("      baseURL: %q", deadURL),
+		fmt.Sprintf("      baseURL: %q\n    - name: healthy-source\n      kind: openapi\n      path: %q\n      baseURL: %q", deadURL, healthySpec, healthy.URL))
+
+	result, runErr := newService(t, http.DefaultClient).Run(t.Context(), assessmentruntime.RunRequest{
+		ManifestPath: manifestPath,
+		DatabasePath: filepath.Join(directory, "assessment.db"),
+	})
+	if !errors.Is(runErr, executor.ErrTransport) {
+		t.Fatalf("Run() error = %v, want ErrTransport", runErr)
+	}
+	var partial *assessmentruntime.PartialCoverageError
+	if !errors.As(runErr, &partial) {
+		t.Fatalf("Run() error = %v, want PartialCoverageError", runErr)
+	}
+	if healthyRequests.Load() != 20 {
+		t.Fatalf("healthy origin requests = %d, want complete twenty-request matrix", healthyRequests.Load())
+	}
+	if result.Snapshot.Assessment.Status != store.AssessmentFailed ||
+		result.Snapshot.Counts.Executed != 21 || result.Snapshot.Counts.Skipped != 0 {
+		t.Fatalf("direct-isolated assessment = %#v", result.Snapshot)
 	}
 }
 

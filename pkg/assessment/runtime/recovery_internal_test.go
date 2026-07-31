@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -97,7 +98,7 @@ spec:
 		t.Fatal(err)
 	}
 	databasePath := filepath.Join(directory, "assessment.db")
-	prepared, err := service.prepare(t.Context(), manifestPath, databasePath, false, false)
+	prepared, err := service.prepare(t.Context(), manifestPath, databasePath, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,11 +233,13 @@ func TestRecoveredRetryBudgetExhaustionIsContainedBeforeNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := service.execute(
+	executeErr := service.execute(
 		t.Context(), resultStore, assessment.ID,
 		map[string]persistedNode{nodeID: proof}, nil, 1000, evidencePolicyMetadata{}, nil,
-	); err != nil {
-		t.Fatal(err)
+	)
+	var partial *PartialCoverageError
+	if !errors.As(executeErr, &partial) {
+		t.Fatalf("execute() error = %v, want PartialCoverageError", executeErr)
 	}
 	if transport.calls.Load() != 0 {
 		t.Fatalf("exhausted retry sent %d network requests", transport.calls.Load())

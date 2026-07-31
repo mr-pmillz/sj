@@ -3,6 +3,7 @@ package fuzz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,91 @@ func TestRunStopsBeforeConsumingLastAdvertisedRateLimitRequest(t *testing.T) {
 	}
 	if calls.Load() != 1 || !report.Summary.RateLimited || report.Probes[0].RateLimitRemaining == nil || *report.Probes[0].RateLimitRemaining != 1 {
 		t.Fatalf("calls=%d report=%#v", calls.Load(), report)
+	}
+}
+
+func TestRunIsolatesRateLimitedOriginAndContinuesOtherTargets(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.Host+request.URL.Path)
+		if request.URL.Host == "limited.example" {
+			return fuzzResponse(request, http.StatusTooManyRequests, `{"error":"slow down"}`)
+		}
+		return fuzzResponse(request, http.StatusOK, `{"status":"ok"}`)
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://limited.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://limited.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://healthy.example/c", Target: "/c"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Summary.RateLimited || report.Summary.RateLimitedOrigins != 1 || report.Summary.SkippedIsolated == 0 {
+		t.Fatalf("summary = %#v", report.Summary)
+	}
+	joinedCalls := strings.Join(calls, ",")
+	if strings.Contains(joinedCalls, "limited.example/b") || !strings.Contains(joinedCalls, "healthy.example/c") {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestRunIsolatesRepeatedTransportFailureAndContinuesOtherTargets(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.Host+request.URL.Path)
+		if request.URL.Host == "offline.example" {
+			return nil, fmt.Errorf("target unavailable")
+		}
+		return fuzzResponse(request, http.StatusOK, `{"status":"ok"}`)
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://offline.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://offline.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://offline.example/c", Target: "/c"},
+		{Method: "GET", URL: "https://offline.example/d", Target: "/d"},
+		{Method: "GET", URL: "https://healthy.example/e", Target: "/e"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TransportLimitedOrigins != 1 || report.Summary.SkippedIsolated == 0 {
+		t.Fatalf("summary = %#v", report.Summary)
+	}
+	joinedCalls := strings.Join(calls, ",")
+	if strings.Contains(joinedCalls, "offline.example/d") || !strings.Contains(joinedCalls, "healthy.example/e") {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestRunDoesNotIsolateAmbiguousSharedProxyFailure(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.String())
+		return nil, errors.New("shared proxy unavailable")
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://first.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://first.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://first.example/c", Target: "/c"},
+		{Method: "GET", URL: "https://first.example/d", Target: "/d"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+		TargetOriginTransportError: func(error) bool { return false },
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != len(report.Probes) || report.Summary.TransportLimitedOrigins != 0 ||
+		report.Summary.SkippedIsolated != 0 {
+		t.Fatalf("calls=%d probes=%d summary=%#v", len(calls), len(report.Probes), report.Summary)
 	}
 }
 

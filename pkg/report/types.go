@@ -45,8 +45,9 @@ type Operation struct {
 }
 
 type Failure struct {
-	Source string `json:"source"`
-	Error  string `json:"error"`
+	Source   string `json:"source"`
+	Error    string `json:"error"`
+	Coverage bool   `json:"coverage_gap,omitempty"`
 }
 
 type BruteObservation struct {
