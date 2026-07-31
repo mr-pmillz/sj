@@ -118,7 +118,9 @@ func acquireAssessmentExecutionLease(
 	if err != nil {
 		return nil, err
 	}
-	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	// The heartbeat outlives caller cancellation long enough for fenced terminal
+	// persistence, while retaining request-scoped values and explicit lease ownership.
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.WithoutCancel(ctx))
 	lease := &assessmentExecutionLease{
 		store: resultStore, assessmentID: assessmentID, ownerID: ownerID,
 		cancel: cancelHeartbeat, done: make(chan struct{}), lost: make(chan struct{}),
@@ -136,12 +138,15 @@ func (lease *assessmentExecutionLease) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			renewCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			renewCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			err := lease.store.RenewAssessmentExecutionLease(
 				renewCtx, lease.assessmentID, lease.ownerID, assessmentLeaseTTL,
 			)
 			cancel()
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				lease.mu.Lock()
 				lease.err = fmt.Errorf("heartbeat assessment execution lease: %w", err)
 				lease.mu.Unlock()

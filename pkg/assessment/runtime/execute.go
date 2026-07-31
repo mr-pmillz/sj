@@ -43,6 +43,56 @@ type caseEvidence struct {
 	attemptID string
 }
 
+type assessmentExecutionResult struct {
+	status      string
+	message     string
+	terminalErr error
+}
+
+type executionSchedule struct {
+	resultStore        *store.Store
+	assessmentID       string
+	proofs             map[string]persistedNode
+	bindings           map[string][]identityBinding
+	pacer              *requestPacer
+	retrySources       map[string]*store.AssessmentAttempt
+	evidencePolicy     evidencePolicyMetadata
+	lease              *assessmentExecutionLease
+	nodeIDs            []string
+	nodeState          map[string]store.PlanNode
+	attempts           []store.AssessmentAttempt
+	unavailableOrigins map[string]string
+}
+
+type scheduledNodeResult struct {
+	assessment assessmentExecutionResult
+	skip       bool
+	stop       bool
+	err        error
+}
+
+type nodeCaseResult struct {
+	stopReason      string
+	containedReason string
+	complete        bool
+	err             error
+}
+
+type nodeExecution struct {
+	ctx            context.Context
+	resultStore    *store.Store
+	assessmentID   string
+	nodeID         string
+	proof          persistedNode
+	bindings       map[string][]identityBinding
+	runner         *executor.Executor
+	retrySource    *store.AssessmentAttempt
+	evidencePolicy evidencePolicyMetadata
+	evidenceKey    []byte
+	lease          *assessmentExecutionLease
+	byKind         map[string][]caseEvidence
+}
+
 func (service *Service) execute(
 	ctx context.Context,
 	resultStore *store.Store,
@@ -53,427 +103,35 @@ func (service *Service) execute(
 	evidencePolicy evidencePolicyMetadata,
 	lease *assessmentExecutionLease,
 ) error {
-	var err error
-	if lease == nil {
-		lease, err = acquireAssessmentExecutionLease(ctx, resultStore, assessmentID)
-		if err != nil {
-			return err
-		}
+	acquiredLease, err := ensureAssessmentExecutionLease(ctx, resultStore, assessmentID, lease)
+	if err != nil {
+		return err
 	}
+	lease = acquiredLease
 	defer lease.close()
-	executionCtx, cancelExecution := context.WithCancelCause(ctx)
-	leaseWatchDone := make(chan struct{})
-	go func() {
-		defer close(leaseWatchDone)
-		select {
-		case <-lease.lost:
-			cancelExecution(store.ErrAssessmentExecutionLeaseHeld)
-		case <-executionCtx.Done():
-		}
-	}()
-	defer func() {
-		cancelExecution(nil)
-		<-leaseWatchDone
-	}()
-	ctx = executionCtx
+	executionCtx, stopLeaseWatch := watchAssessmentExecutionLease(ctx, lease)
+	defer stopLeaseWatch()
+
 	pacer, err := newRequestPacer(requestsPerSecond)
 	if err != nil {
 		return fmt.Errorf("configure assessment request pacing: %w", err)
 	}
-	state, err := resultStore.LoadAssessmentState(ctx, assessmentID)
+	state, err := resultStore.LoadAssessmentState(executionCtx, assessmentID)
 	if err != nil {
 		return err
 	}
 	pacer.resumeFromAttempts(state.Attempts)
-	nodeState := make(map[string]store.PlanNode, len(state.PlanNodes))
-	for _, node := range state.PlanNodes {
-		nodeState[node.ID] = node
-	}
-	retrySources := retrySourcesByNode(state.Attempts)
-	nodeIDs := make([]string, 0, len(proofs))
-	for nodeID := range proofs {
-		nodeIDs = append(nodeIDs, nodeID)
-	}
-	sort.Strings(nodeIDs)
-	assessmentStatus := store.AssessmentSucceeded
-	assessmentMessage := ""
-	for _, node := range state.PlanNodes {
-		if node.Status == store.PlanNodeFailed {
-			assessmentStatus, assessmentMessage = store.AssessmentFailed, node.Message
-			break
-		}
-	}
-	var terminalErr error
-	unavailableOrigins := unavailableOriginsFromState(state.Coverage, proofs)
-	for index, nodeID := range nodeIDs {
-		if cause := context.Cause(ctx); errors.Is(
-			cause, store.ErrAssessmentExecutionLeaseHeld,
-		) {
-			return cause
-		}
-		node := nodeState[nodeID]
-		switch node.Status {
-		case store.PlanNodeSucceeded, store.PlanNodeFailed, store.PlanNodeSkipped, store.PlanNodeCanceled:
-			continue
-		case store.PlanNodeRunning:
-			if retrySources[nodeID] == nil && hasAttempt(state.Attempts, nodeID) {
-				message := "interrupted node has durable attempt evidence and was not repeated"
-				if err := resultStore.FinishPlanNodeWithLease(
-					ctx, nodeID, store.PlanNodeFailed, message,
-					assessmentID, lease.ownerID, assessmentLeaseTTL,
-				); err != nil {
-					return err
-				}
-				if err := resultStore.AddCoverageWithLease(ctx, store.AssessmentCoverage{
-					ID: shortHash(assessmentID + nodeID + "interrupted"), AssessmentID: assessmentID,
-					PlanNodeID: nodeID, Dimension: "identity_matrix", Status: "inconclusive", Reason: message,
-				}, lease.ownerID, assessmentLeaseTTL); err != nil {
-					return err
-				}
-				assessmentStatus, assessmentMessage = store.AssessmentFailed, message
-				continue
-			}
-		}
-		if err := ctx.Err(); err != nil {
-			assessmentStatus, assessmentMessage, terminalErr = store.AssessmentCanceled, "assessment canceled", err
-			if markErr := markRemaining(
-				ctx, resultStore, assessmentID, nodeIDs[index:],
-				"assessment canceled", lease,
-			); markErr != nil {
-				return errors.Join(err, markErr)
-			}
-			break
-		}
-		nodeOrigin := proofOrigin(proofs[nodeID])
-		if reason, unavailable := unavailableOrigins[nodeOrigin]; unavailable {
-			if err := finishContainedNode(
-				ctx, resultStore, assessmentID, nodeID, reason, lease,
-			); err != nil {
-				return err
-			}
-			assessmentStatus, assessmentMessage = store.AssessmentFailed, reason
-			continue
-		}
-		stopReason, containedReason, executeErr := service.executeNode(
-			ctx, resultStore, assessmentID, nodeID, proofs[nodeID], bindings,
-			pacer, retrySources[nodeID], evidencePolicy, lease,
-		)
-		if executeErr != nil {
-			if errors.Is(executeErr, store.ErrAssessmentAttemptAlreadyReserved) ||
-				errors.Is(executeErr, store.ErrAssessmentExecutionLeaseHeld) {
-				return executeErr
-			}
-			if cause := context.Cause(ctx); errors.Is(
-				cause, store.ErrAssessmentExecutionLeaseHeld,
-			) {
-				return cause
-			}
-			if ctx.Err() != nil {
-				assessmentStatus, assessmentMessage, terminalErr = store.AssessmentCanceled, "assessment canceled", ctx.Err()
-				if markErr := markRemaining(
-					ctx, resultStore, assessmentID, nodeIDs[index+1:],
-					assessmentMessage, lease,
-				); markErr != nil {
-					return errors.Join(ctx.Err(), markErr)
-				}
-				break
-			}
-			if containedReason != "" {
-				assessmentStatus, assessmentMessage = store.AssessmentFailed, containedReason
-				if proofs[nodeID].ProxyRequired && errors.Is(executeErr, executor.ErrTransport) &&
-					nodeOrigin != "" {
-					unavailableOrigins[nodeOrigin] = targetOriginUnavailableReason
-				}
-				terminalErr = errors.Join(terminalErr, executeErr)
-				continue
-			}
-			assessmentStatus, assessmentMessage, terminalErr = store.AssessmentFailed, executeErr.Error(), executeErr
-			if markErr := markRemaining(
-				ctx, resultStore, assessmentID, nodeIDs[index+1:],
-				assessmentMessage, lease,
-			); markErr != nil {
-				return errors.Join(executeErr, markErr)
-			}
-			break
-		}
-		if containedReason != "" {
-			assessmentStatus, assessmentMessage = store.AssessmentFailed, containedReason
-			continue
-		}
-		if stopReason != "" {
-			assessmentStatus, assessmentMessage = store.AssessmentFailed, stopReason
-			if markErr := markRemaining(
-				ctx, resultStore, assessmentID, nodeIDs[index+1:],
-				stopReason, lease,
-			); markErr != nil {
-				return markErr
-			}
-			break
-		}
-	}
-	if err := lease.ensure(ctx); err != nil {
-		if terminalErr != nil {
-			return errors.Join(terminalErr, err)
-		}
+	schedule := newExecutionSchedule(
+		resultStore, assessmentID, proofs, bindings, pacer, state,
+		evidencePolicy, lease,
+	)
+	result, err := service.executeScheduledNodes(
+		executionCtx, schedule, initialAssessmentExecutionResult(state.PlanNodes),
+	)
+	if err != nil {
 		return err
 	}
-	finalizeCtx, cancel := detachedContext(ctx)
-	defer cancel()
-	if err := resultStore.FinishAssessmentWithLease(
-		finalizeCtx, assessmentID, assessmentStatus, assessmentMessage,
-		lease.ownerID, assessmentLeaseTTL,
-	); err != nil {
-		if terminalErr != nil {
-			return errors.Join(terminalErr, err)
-		}
-		return err
-	}
-	if err := sealAssessmentResultWithLease(
-		finalizeCtx, resultStore, assessmentID, service.evidenceKey, lease,
-	); err != nil {
-		if terminalErr != nil {
-			return errors.Join(terminalErr, err)
-		}
-		return err
-	}
-	return terminalErr
-}
-
-func (service *Service) executeNode(
-	ctx context.Context,
-	resultStore *store.Store,
-	assessmentID, nodeID string,
-	proof persistedNode,
-	bindings map[string][]identityBinding,
-	pacer *requestPacer,
-	retrySource *store.AssessmentAttempt,
-	evidencePolicy evidencePolicyMetadata,
-	lease *assessmentExecutionLease,
-) (string, string, error) {
-	if err := resultStore.StartPlanNodeWithLease(
-		ctx, nodeID, assessmentID, lease.ownerID, assessmentLeaseTTL,
-	); err != nil {
-		return "", "", err
-	}
-	caseMap := make(map[string]persistedCase, len(proof.Cases))
-	for _, matrixCase := range proof.Cases {
-		caseMap[matrixCase.ID] = matrixCase
-	}
-	ledger := &executionLedger{
-		store: resultStore, assessmentID: assessmentID, nodeID: nodeID,
-		cases: caseMap, evidenceKey: service.evidenceKey,
-		retrySource: retrySource, lease: lease,
-	}
-	client, verifier, err := clientForProof(service.client, proof, service.socksTransport)
-	if err != nil {
-		return "", "", err
-	}
-	paceClient(client, pacer, lease.ensure)
-	runner, err := executor.New(executor.Config{
-		Client: client, Ledger: ledger, EvidenceKey: service.evidenceKey, ProxyVerifier: verifier,
-		MaxRequestBytes: proof.MaxRequestBytes, MaxResponseBytes: proof.MaxResponseBytes, MaxAttempts: 1,
-	})
-	if err != nil {
-		return "", "", err
-	}
-	byKind := make(map[string][]caseEvidence)
-	cases, err := executionCases(proof.Cases, retrySource)
-	if err != nil {
-		return "", "", err
-	}
-	for _, matrixCase := range cases {
-		intent := executor.RequestIntent{
-			ID: matrixCase.ID, OperationID: proof.OperationID, Method: matrixCase.Method,
-			URL: matrixCase.URL, Body: append([]byte(nil), matrixCase.Body...),
-			Safety: executor.SafetyS1, Payload: executor.PayloadNormal, RetrySafe: true,
-			Header: http.Header{"Accept": []string{"application/json"}},
-		}
-		if len(matrixCase.Body) > 0 {
-			intent.Header.Set("Content-Type", "application/json")
-		}
-		for _, binding := range bindings[matrixCase.Identity] {
-			intent.Secrets = append(intent.Secrets, executor.SecretBinding{Header: binding.Header, Reference: binding.Reference, Prefix: binding.Prefix})
-		}
-		decision := executor.PolicyDecision{
-			Authorized: true, AllowedOrigins: proof.AllowedOrigins,
-			AllowRedirects: proof.AllowRedirects, MaxRedirects: proof.MaxRedirects,
-			SameOriginOnly: proof.SameOriginOnly, ProxyRequired: proof.ProxyRequired,
-		}
-		result, executeErr := runner.Execute(ctx, intent, decision)
-		if errors.Is(executeErr, store.ErrAssessmentExecutionLeaseHeld) {
-			return "", "", executeErr
-		}
-		if cause := context.Cause(ctx); errors.Is(
-			cause, store.ErrAssessmentExecutionLeaseHeld,
-		) {
-			return "", "", cause
-		}
-		if err := lease.ensure(ctx); err != nil {
-			return "", "", err
-		}
-		if len(result.Attempts) == 0 {
-			if ctx.Err() != nil {
-				status := store.PlanNodeSkipped
-				if retrySource != nil {
-					status = store.PlanNodeCanceled
-				}
-				finishCtx, cancel := detachedContext(ctx)
-				finishErr := resultStore.FinishPlanNodeWithLease(
-					finishCtx, nodeID, status, "assessment canceled",
-					assessmentID, lease.ownerID, assessmentLeaseTTL,
-				)
-				cancel()
-				if finishErr != nil {
-					return "", "", finishErr
-				}
-				return "", "", ctx.Err()
-			}
-			if retrySource != nil && errors.Is(executeErr, store.ErrAssessmentBudgetExceeded) {
-				reason := "retry budget exhausted before network; original proof remains inconclusive"
-				if err := finishContainedNode(
-					ctx, resultStore, assessmentID, nodeID, reason, lease,
-				); err != nil {
-					return "", "", err
-				}
-				return "", reason, nil
-			}
-			if errors.Is(executeErr, store.ErrAssessmentAttemptAlreadyReserved) {
-				return "", "", executeErr
-			}
-			finishCtx, cancel := detachedContext(ctx)
-			finishErr := resultStore.FinishPlanNodeWithLease(
-				finishCtx, nodeID, store.PlanNodeFailed, safeError(executeErr),
-				assessmentID, lease.ownerID, assessmentLeaseTTL,
-			)
-			cancel()
-			if finishErr != nil {
-				return "", "", finishErr
-			}
-			return "", "", executeErr
-		}
-		attempt := result.Attempts[len(result.Attempts)-1]
-		attemptID := string(attempt.Evidence.ReservationToken)
-		if err := finishAttempt(resultStore, ctx, attemptID, attempt, executeErr, lease); err != nil {
-			return "", "", err
-		}
-		if err := persistHTTPExchangeArtifact(
-			resultStore, ctx, assessmentID, attemptID, matrixCase, attempt, result.Response,
-			service.evidenceKey, evidencePolicy, lease,
-		); err != nil {
-			return "", "", err
-		}
-		response := compare.Response{Status: attempt.Evidence.StatusCode}
-		if result.Response != nil {
-			response.Body = append([]byte(nil), result.Response.Body...)
-		}
-		byKind[matrixCase.Kind] = append(byKind[matrixCase.Kind], caseEvidence{response: response, attemptID: attemptID})
-		analysis := compare.Analyze(response)
-		if err := lease.ensure(ctx); err != nil {
-			return "", "", err
-		}
-		if attempt.Evidence.ResponseBodyFingerprint != "" {
-			artifactCtx, cancel := detachedContext(ctx)
-			artifactErr := resultStore.AddArtifactMetadataWithLease(artifactCtx, store.ArtifactMetadata{
-				ID: attemptID + "-semantic", AssessmentID: assessmentID, AttemptID: attemptID,
-				Kind: "semantic-response", ContentType: "application/json", StorageRef: "semantic:" + attemptID,
-				SizeBytes: attempt.Evidence.ResponseBytes, SHA256: attempt.Evidence.ResponseBodyFingerprint,
-				Metadata: mustJSON(map[string]any{"class": analysis.Class, "digest": analysis.Digest, "leaf_count": analysis.LeafCount}),
-			}, lease.ownerID, assessmentLeaseTTL)
-			cancel()
-			if artifactErr != nil {
-				return "", "", artifactErr
-			}
-		}
-		if executeErr != nil {
-			if err := lease.ensure(ctx); err != nil {
-				return "", "", err
-			}
-			status := store.PlanNodeFailed
-			if ctx.Err() != nil {
-				status = store.PlanNodeCanceled
-			}
-			finishCtx, cancel := detachedContext(ctx)
-			finishErr := resultStore.FinishPlanNodeWithLease(
-				finishCtx, nodeID, status, safeError(executeErr),
-				assessmentID, lease.ownerID, assessmentLeaseTTL,
-			)
-			if finishErr != nil {
-				cancel()
-				return "", "", finishErr
-			}
-			if status == store.PlanNodeFailed &&
-				isIsolatedTargetTransportFailure(executeErr, attempt, proof.ProxyRequired) {
-				reason := targetTransportFailureReason
-				coverageErr := resultStore.AddCoverageWithLease(finishCtx, store.AssessmentCoverage{
-					ID: shortHash(assessmentID + nodeID + "target-transport"), AssessmentID: assessmentID,
-					PlanNodeID: nodeID, Dimension: "identity_matrix", Status: "inconclusive",
-					Reason: reason,
-				}, lease.ownerID, assessmentLeaseTTL)
-				cancel()
-				if coverageErr != nil {
-					return "", "", coverageErr
-				}
-				return "", reason, executeErr
-			}
-			cancel()
-			return "", "", executeErr
-		}
-		if result.Stopped {
-			if err := lease.ensure(ctx); err != nil {
-				return "", "", err
-			}
-			reason := string(result.StopReason)
-			if err := resultStore.FinishPlanNodeWithLease(
-				ctx, nodeID, store.PlanNodeFailed, reason,
-				assessmentID, lease.ownerID, assessmentLeaseTTL,
-			); err != nil {
-				return "", "", err
-			}
-			if err := resultStore.AddCoverageWithLease(ctx, store.AssessmentCoverage{
-				ID: shortHash(assessmentID + nodeID + "rate-stop"), AssessmentID: assessmentID,
-				PlanNodeID: nodeID, Dimension: "identity_matrix", Status: "blocked", Reason: reason,
-			}, lease.ownerID, assessmentLeaseTTL); err != nil {
-				return "", "", err
-			}
-			return reason, "", nil
-		}
-		if retrySource != nil {
-			reason := "retry completed without replaying prior proof; original proof remains inconclusive"
-			if err := finishContainedNode(
-				ctx, resultStore, assessmentID, nodeID, reason, lease,
-			); err != nil {
-				return "", "", err
-			}
-			return "", reason, nil
-		}
-	}
-	if err := lease.ensure(ctx); err != nil {
-		return "", "", err
-	}
-	if err := persistEvaluation(
-		ctx, resultStore, assessmentID, nodeID, proof, byKind, lease,
-	); err != nil {
-		if leaseErr := lease.ensure(ctx); leaseErr != nil {
-			return "", "", leaseErr
-		}
-		if finishErr := resultStore.FinishPlanNodeWithLease(
-			ctx, nodeID, store.PlanNodeFailed, safeError(err),
-			assessmentID, lease.ownerID, assessmentLeaseTTL,
-		); finishErr != nil {
-			return "", "", errors.Join(err, finishErr)
-		}
-		return "", "", err
-	}
-	if err := lease.ensure(ctx); err != nil {
-		return "", "", err
-	}
-	if err := resultStore.FinishPlanNodeWithLease(
-		ctx, nodeID, store.PlanNodeSucceeded, "",
-		assessmentID, lease.ownerID, assessmentLeaseTTL,
-	); err != nil {
-		return "", "", err
-	}
-	return "", "", nil
+	return service.finalizeAssessmentExecution(executionCtx, schedule, result)
 }
 
 func finishContainedNode(

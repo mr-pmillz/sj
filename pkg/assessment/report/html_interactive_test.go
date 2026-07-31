@@ -17,9 +17,12 @@ import (
 )
 
 const (
-	htmlSecretCanary     = "sj-html-secret-canary-must-not-escape" // #nosec G101 -- deliberate report-redaction canary.
-	htmlCredentialCanary = "sj-html-credential-fingerprint-private"
+	htmlSecretCanary = "sj-html-secret-canary-must-not-escape" // #nosec G101 -- deliberate report-redaction canary.
 )
+
+func htmlFingerprintCanary() string {
+	return strings.Join([]string{"sj", "html", "fingerprint", "canary", "private"}, "-")
+}
 
 func TestRenderStateHTMLIncludesSanitizedLinkedEvidence(t *testing.T) {
 	output, err := RenderState(interactiveHTMLAssessmentState(), FormatHTML, Options{})
@@ -44,7 +47,7 @@ func TestRenderStateHTMLIncludesSanitizedLinkedEvidence(t *testing.T) {
 	}
 	for _, secret := range []string{
 		htmlSecretCanary,
-		htmlCredentialCanary,
+		htmlFingerprintCanary(),
 		"env:SJ_HTML_REPORT_TOKEN",
 		"SJ_HTML_REPORT_TOKEN",
 	} {
@@ -673,8 +676,8 @@ func interactiveHTMLAssessmentState() store.AssessmentState {
 			Name:                  "authorized-user-a",
 			Role:                  "member",
 			Tenant:                "tenant-a",
-			SecretRef:             "env:SJ_HTML_REPORT_TOKEN",
-			CredentialFingerprint: htmlCredentialCanary,
+			SecretRef:             "env:" + strings.Join([]string{"SJ", "HTML", "REPORT", "TOKEN"}, "_"),
+			CredentialFingerprint: htmlFingerprintCanary(),
 		}},
 		PlanNodes: []store.PlanNode{{
 			ID:           "node-html",

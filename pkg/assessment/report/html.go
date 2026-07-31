@@ -254,7 +254,7 @@ func renderHTML(snapshot Snapshot) ([]byte, error) {
 {{define "coverage"}}<tr><td>{{index . 0}}</td>{{$m := index . 1}}<td>{{$m.Value}}</td><td>{{$m.Planned}}</td><td>{{$m.Executed}}</td><td>{{$m.Skipped}}</td><td>{{$m.Verified}}</td><td>{{$m.Inconclusive}}</td></tr>{{end}}`
 	functions := template.FuncMap{
 		"args":  func(values ...string) []string { return values },
-		"empty": func(value, fallback string) string { return emptyAs(value, fallback) },
+		"empty": emptyAs,
 		"join":  func(values []string) string { return strings.Join(values, ", ") },
 		"pair":  func(dimension string, metric CoverageMetric) []any { return []any{dimension, metric} },
 		"json": func(value any) (template.JS, error) {

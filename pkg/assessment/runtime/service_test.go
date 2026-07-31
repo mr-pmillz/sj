@@ -120,90 +120,167 @@ func TestServicePlansExactPerIdentityMatrixBudgets(t *testing.T) {
 }
 
 func TestServiceRunsAndPersistsOwnershipBackedBOLAMatrix(t *testing.T) {
-	for _, hardened := range []bool{false, true} {
-		name := "vulnerable"
-		wantStatus := "confirmed"
-		if hardened {
-			name = "hardened"
-			wantStatus = "disproved"
-		}
-		t.Run(name, func(t *testing.T) {
-			var requests atomic.Int64
-			var deletes atomic.Int64
-			server := newTenantServer(t, hardened, &requests, &deletes, nil)
-			defer server.Close()
-			directory := t.TempDir()
-			specPath := writePathSpec(t, directory, server.URL)
-			manifestPath := writeManifest(t, directory, server.URL, name, specPath, "", 20)
-			databasePath := filepath.Join(directory, "assessment.db")
-			service := newService(t, server.Client())
-
-			result, err := service.Run(t.Context(), assessmentruntime.RunRequest{ManifestPath: manifestPath, DatabasePath: databasePath})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.AssessmentID == "" || result.Snapshot.Assessment.Status != store.AssessmentSucceeded {
-				t.Fatalf("run result = %#v", result)
-			}
-			if requests.Load() != 20 || deletes.Load() != 0 {
-				t.Fatalf("requests=%d deletes=%d", requests.Load(), deletes.Load())
-			}
-			if len(result.Snapshot.Findings) != 2 {
-				t.Fatalf("findings = %#v", result.Snapshot.Findings)
-			}
-			for _, finding := range result.Snapshot.Findings {
-				if finding.Status != wantStatus {
-					t.Fatalf("finding = %#v, want status %q", finding, wantStatus)
-				}
-			}
-
-			beforeResume := requests.Load()
-			reopened := newService(t, server.Client())
-			resumed, err := reopened.Resume(t.Context(), assessmentruntime.ResumeRequest{AssessmentID: result.AssessmentID, DatabasePath: databasePath})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resumed.Snapshot.Assessment.Status != store.AssessmentSucceeded || requests.Load() != beforeResume {
-				t.Fatalf("resume repeated completed work: result=%#v requests=%d", resumed, requests.Load())
-			}
-
-			status, err := reopened.Status(t.Context(), assessmentruntime.StatusRequest{AssessmentID: result.AssessmentID, DatabasePath: databasePath})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if status.Snapshot.Counts.Planned != 2 || status.Snapshot.Counts.Executed != 20 || status.Snapshot.Counts.Skipped != 0 {
-				t.Fatalf("status snapshot = %#v", status.Snapshot.Counts)
-			}
-			limitedStatus, err := reopened.Status(t.Context(), assessmentruntime.StatusRequest{
-				AssessmentID: result.AssessmentID, DatabasePath: databasePath, MaxResults: 1,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(limitedStatus.Snapshot.Findings) != 1 || !limitedStatus.Snapshot.Truncation.Findings || limitedStatus.Snapshot.Truncation.TotalFindings != 2 {
-				t.Fatalf("limited status findings=%d truncation=%#v", len(limitedStatus.Snapshot.Findings), limitedStatus.Snapshot.Truncation)
-			}
-			report, err := reopened.Report(t.Context(), assessmentruntime.ReportRequest{AssessmentID: result.AssessmentID, DatabasePath: databasePath, Format: assessmentreport.FormatJSON})
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertNoSecrets(t, report, databasePath, "Bearer token-a", "Bearer token-b", "token-a", "token-b")
-			limitedReport, err := reopened.Report(t.Context(), assessmentruntime.ReportRequest{
-				AssessmentID: result.AssessmentID, DatabasePath: databasePath,
-				Format: assessmentreport.FormatJSON, MaxResults: 1,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var limitedSnapshot assessmentreport.Snapshot
-			if err := json.Unmarshal(limitedReport, &limitedSnapshot); err != nil {
-				t.Fatal(err)
-			}
-			if len(limitedSnapshot.Findings) != 1 || !limitedSnapshot.Truncation.Findings || limitedSnapshot.Truncation.TotalFindings != 2 {
-				t.Fatalf("limited report findings=%d truncation=%#v", len(limitedSnapshot.Findings), limitedSnapshot.Truncation)
-			}
-			assertObjectFingerprintsAreKeyed(t, databasePath)
+	tests := []struct {
+		name       string
+		hardened   bool
+		wantStatus string
+	}{
+		{name: "vulnerable", wantStatus: "confirmed"},
+		{name: "hardened", hardened: true, wantStatus: "disproved"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runOwnershipBackedBOLAMatrix(t, test.name, test.hardened, test.wantStatus)
 		})
+	}
+}
+
+func runOwnershipBackedBOLAMatrix(
+	t *testing.T,
+	name string,
+	hardened bool,
+	wantStatus string,
+) {
+	t.Helper()
+	var requests atomic.Int64
+	var deletes atomic.Int64
+	server := newTenantServer(t, hardened, &requests, &deletes, nil)
+	defer server.Close()
+	directory := t.TempDir()
+	manifestPath := writeManifest(
+		t, directory, server.URL, name, writePathSpec(t, directory, server.URL), "", 20,
+	)
+	databasePath := filepath.Join(directory, "assessment.db")
+	service := newService(t, server.Client())
+
+	result, err := service.Run(t.Context(), assessmentruntime.RunRequest{
+		ManifestPath: manifestPath, DatabasePath: databasePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOwnershipRunResult(t, result, requests.Load(), deletes.Load(), wantStatus)
+
+	reopened := newService(t, server.Client())
+	assertCompletedAssessmentDoesNotResume(t, reopened, result, databasePath, requests.Load(), &requests)
+	assertOwnershipStatusAndReports(t, reopened, result.AssessmentID, databasePath)
+	assertObjectFingerprintsAreKeyed(t, databasePath)
+}
+
+func assertOwnershipRunResult(
+	t *testing.T,
+	result assessmentruntime.RunResult,
+	requests, deletes int64,
+	wantStatus string,
+) {
+	t.Helper()
+	if result.AssessmentID == "" || result.Snapshot.Assessment.Status != store.AssessmentSucceeded {
+		t.Fatalf("run result = %#v", result)
+	}
+	if requests != 20 || deletes != 0 {
+		t.Fatalf("requests=%d deletes=%d", requests, deletes)
+	}
+	if len(result.Snapshot.Findings) != 2 {
+		t.Fatalf("findings = %#v", result.Snapshot.Findings)
+	}
+	for _, finding := range result.Snapshot.Findings {
+		if finding.Status != wantStatus {
+			t.Fatalf("finding = %#v, want status %q", finding, wantStatus)
+		}
+	}
+}
+
+func assertCompletedAssessmentDoesNotResume(
+	t *testing.T,
+	service *assessmentruntime.Service,
+	result assessmentruntime.RunResult,
+	databasePath string,
+	beforeResume int64,
+	requests *atomic.Int64,
+) {
+	t.Helper()
+	resumed, err := service.Resume(t.Context(), assessmentruntime.ResumeRequest{
+		AssessmentID: result.AssessmentID, DatabasePath: databasePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Snapshot.Assessment.Status != store.AssessmentSucceeded || requests.Load() != beforeResume {
+		t.Fatalf("resume repeated completed work: result=%#v requests=%d", resumed, requests.Load())
+	}
+}
+
+func assertOwnershipStatusAndReports(
+	t *testing.T,
+	service *assessmentruntime.Service,
+	assessmentID, databasePath string,
+) {
+	t.Helper()
+	status, err := service.Status(t.Context(), assessmentruntime.StatusRequest{
+		AssessmentID: assessmentID, DatabasePath: databasePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Snapshot.Counts.Planned != 2 || status.Snapshot.Counts.Executed != 20 ||
+		status.Snapshot.Counts.Skipped != 0 {
+		t.Fatalf("status snapshot = %#v", status.Snapshot.Counts)
+	}
+	assertLimitedStatus(t, service, assessmentID, databasePath)
+	assertOwnershipReports(t, service, assessmentID, databasePath)
+}
+
+func assertLimitedStatus(
+	t *testing.T,
+	service *assessmentruntime.Service,
+	assessmentID, databasePath string,
+) {
+	t.Helper()
+	limited, err := service.Status(t.Context(), assessmentruntime.StatusRequest{
+		AssessmentID: assessmentID, DatabasePath: databasePath, MaxResults: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited.Snapshot.Findings) != 1 || !limited.Snapshot.Truncation.Findings ||
+		limited.Snapshot.Truncation.TotalFindings != 2 {
+		t.Fatalf(
+			"limited status findings=%d truncation=%#v",
+			len(limited.Snapshot.Findings), limited.Snapshot.Truncation,
+		)
+	}
+}
+
+func assertOwnershipReports(
+	t *testing.T,
+	service *assessmentruntime.Service,
+	assessmentID, databasePath string,
+) {
+	t.Helper()
+	report, err := service.Report(t.Context(), assessmentruntime.ReportRequest{
+		AssessmentID: assessmentID, DatabasePath: databasePath, Format: assessmentreport.FormatJSON,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoSecrets(t, report, databasePath, "Bearer token-a", "Bearer token-b", "token-a", "token-b")
+	limitedReport, err := service.Report(t.Context(), assessmentruntime.ReportRequest{
+		AssessmentID: assessmentID, DatabasePath: databasePath,
+		Format: assessmentreport.FormatJSON, MaxResults: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var limitedSnapshot assessmentreport.Snapshot
+	if err := json.Unmarshal(limitedReport, &limitedSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(limitedSnapshot.Findings) != 1 || !limitedSnapshot.Truncation.Findings ||
+		limitedSnapshot.Truncation.TotalFindings != 2 {
+		t.Fatalf(
+			"limited report findings=%d truncation=%#v",
+			len(limitedSnapshot.Findings), limitedSnapshot.Truncation,
+		)
 	}
 }
 

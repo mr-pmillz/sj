@@ -357,38 +357,14 @@ func classifyDisclosureOperations(operations []Operation) []disclosureClass {
 }
 
 func verboseBackendDisclosureFinding(operations []Operation, classes []disclosureClass, maxEvidence int) []Finding {
-	groups := make(map[string]Operation)
-	for index, operation := range operations {
-		if classes[index] != disclosureBackend {
-			continue
-		}
-		key := normalizedEndpointFamily(operation)
-		if _, exists := groups[key]; !exists {
-			groups[key] = operation
-		}
-	}
-	if len(groups) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	finding := Finding{
+	return disclosureFinding(operations, classes, disclosureBackend, maxEvidence, Finding{
 		ID: "PENTEST-VERBOSE-BACKEND-DISCLOSURE", Severity: SeverityMedium,
 		Title:          "API responses disclose backend implementation or database details",
-		Count:          len(keys),
 		Confidence:     "observed response-body implementation detail",
 		OWASP:          []string{"API8:2023"},
 		Description:    "Response bodies exposed database, framework, driver, filesystem, language, or stack details that can help refine attacks.",
 		Recommendation: "Log detailed errors server-side and return stable, minimal client errors with correlation identifiers.",
-	}
-	for _, key := range keys[:min(len(keys), maxEvidence)] {
-		finding.Evidence = append(finding.Evidence, operationEvidence(groups[key]))
-	}
-	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
-	return []Finding{finding}
+	})
 }
 
 func verboseBackendDisclosure(body string) bool {
@@ -397,9 +373,26 @@ func verboseBackendDisclosure(body string) bool {
 }
 
 func implementationDiagnosticDisclosureFinding(operations []Operation, classes []disclosureClass, maxEvidence int) []Finding {
+	return disclosureFinding(operations, classes, disclosureImplementation, maxEvidence, Finding{
+		ID: "PENTEST-IMPLEMENTATION-DIAGNOSTIC-DISCLOSURE", Severity: SeverityLow,
+		Title:          "API responses expose implementation diagnostics",
+		Confidence:     "observed lower-specificity response-body diagnostic",
+		OWASP:          []string{"API8:2023"},
+		Description:    "Response bodies exposed framework validation schemas, runtime parsing details, or upstream client/library failures. These details are lower impact than database or stack disclosures but can still refine reconnaissance.",
+		Recommendation: "Return stable client-safe errors and keep framework, dependency, and upstream diagnostics in server-side logs.",
+	})
+}
+
+func disclosureFinding(
+	operations []Operation,
+	classes []disclosureClass,
+	wanted disclosureClass,
+	maxEvidence int,
+	finding Finding,
+) []Finding {
 	groups := make(map[string]Operation)
 	for index, operation := range operations {
-		if classes[index] != disclosureImplementation {
+		if classes[index] != wanted {
 			continue
 		}
 		key := normalizedEndpointFamily(operation)
@@ -415,15 +408,7 @@ func implementationDiagnosticDisclosureFinding(operations []Operation, classes [
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	finding := Finding{
-		ID: "PENTEST-IMPLEMENTATION-DIAGNOSTIC-DISCLOSURE", Severity: SeverityLow,
-		Title:          "API responses expose implementation diagnostics",
-		Count:          len(keys),
-		Confidence:     "observed lower-specificity response-body diagnostic",
-		OWASP:          []string{"API8:2023"},
-		Description:    "Response bodies exposed framework validation schemas, runtime parsing details, or upstream client/library failures. These details are lower impact than database or stack disclosures but can still refine reconnaissance.",
-		Recommendation: "Return stable client-safe errors and keep framework, dependency, and upstream diagnostics in server-side logs.",
-	}
+	finding.Count = len(keys)
 	for _, key := range keys[:min(len(keys), maxEvidence)] {
 		finding.Evidence = append(finding.Evidence, operationEvidence(groups[key]))
 	}

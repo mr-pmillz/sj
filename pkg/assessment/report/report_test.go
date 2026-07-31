@@ -166,95 +166,99 @@ func TestFromStateBoundsPlanAndModuleCardinality(t *testing.T) {
 }
 
 func TestResultLimitOptionsApplyOneBoundAcrossSnapshotCollections(t *testing.T) {
-	t.Run("more than default", func(t *testing.T) {
-		state := cardinalityAssessmentState(t, 444)
-		options, err := OptionsForResultLimit(444)
-		if err != nil {
-			t.Fatal(err)
-		}
-		snapshot, err := FromState(state, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(snapshot.Findings) != 444 || snapshot.Truncation.Findings {
-			t.Fatalf("findings = %d, truncation = %#v", len(snapshot.Findings), snapshot.Truncation)
-		}
-		if len(snapshot.Plan.NodeDigests) != 444 || snapshot.Truncation.PlanNodeDigests {
-			t.Fatalf("node digests = %d, truncation = %#v", len(snapshot.Plan.NodeDigests), snapshot.Truncation)
-		}
-		if len(snapshot.Modules) != 444 || snapshot.Truncation.Modules {
-			t.Fatalf("modules = %d, truncation = %#v", len(snapshot.Modules), snapshot.Truncation)
-		}
-		if len(snapshot.Identities) != 444 || snapshot.Truncation.Identities {
-			t.Fatalf("identities = %d, truncation = %#v", len(snapshot.Identities), snapshot.Truncation)
-		}
-		if len(snapshot.Scope.Origins) != 444 || snapshot.Truncation.Origins {
-			t.Fatalf("origins = %d, truncation = %#v", len(snapshot.Scope.Origins), snapshot.Truncation)
-		}
-		if len(snapshot.StopReasons) != 444 || snapshot.Truncation.StopReasons {
-			t.Fatalf("stop reasons = %d, truncation = %#v", len(snapshot.StopReasons), snapshot.Truncation)
-		}
-		if len(snapshot.Coverage.Module) != 444 || len(snapshot.Coverage.Identity) != 444 || len(snapshot.Coverage.Object) != 444 || snapshot.Truncation.Coverage {
-			t.Fatalf("coverage = %#v, truncation = %#v", snapshot.Coverage, snapshot.Truncation)
-		}
-	})
-
-	t.Run("small bound", func(t *testing.T) {
-		state := cardinalityAssessmentState(t, 12)
-		options, err := OptionsForResultLimit(7)
-		if err != nil {
-			t.Fatal(err)
-		}
-		snapshot, err := FromState(state, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(snapshot.Findings) != 7 || !snapshot.Truncation.Findings || snapshot.Truncation.TotalFindings != 12 {
-			t.Fatalf("findings = %d, truncation = %#v", len(snapshot.Findings), snapshot.Truncation)
-		}
-		if len(snapshot.Plan.NodeDigests) != 7 || !snapshot.Truncation.PlanNodeDigests || snapshot.Truncation.TotalPlanNodeDigests != 12 {
-			t.Fatalf("node digests = %d, truncation = %#v", len(snapshot.Plan.NodeDigests), snapshot.Truncation)
-		}
-		if len(snapshot.Modules) != 7 || !snapshot.Truncation.Modules || snapshot.Truncation.TotalModules != 12 {
-			t.Fatalf("modules = %d, truncation = %#v", len(snapshot.Modules), snapshot.Truncation)
-		}
-		if len(snapshot.Identities) != 7 || !snapshot.Truncation.Identities || snapshot.Truncation.TotalIdentities != 12 {
-			t.Fatalf("identities = %d, truncation = %#v", len(snapshot.Identities), snapshot.Truncation)
-		}
-		if len(snapshot.Scope.Origins) != 7 || !snapshot.Truncation.Origins || snapshot.Truncation.TotalOrigins != 12 {
-			t.Fatalf("origins = %d, truncation = %#v", len(snapshot.Scope.Origins), snapshot.Truncation)
-		}
-		if len(snapshot.StopReasons) != 7 || !snapshot.Truncation.StopReasons || snapshot.Truncation.TotalStopReasons != 12 {
-			t.Fatalf("stop reasons = %d, truncation = %#v", len(snapshot.StopReasons), snapshot.Truncation)
-		}
-		if len(snapshot.Coverage.Module) != 7 || len(snapshot.Coverage.Identity) != 7 || len(snapshot.Coverage.Object) != 7 ||
-			!snapshot.Truncation.Coverage || snapshot.Truncation.TotalCoverage != 37 {
-			t.Fatalf("coverage = %#v, truncation = %#v", snapshot.Coverage, snapshot.Truncation)
-		}
-	})
-
-	t.Run("hard safety clamps", func(t *testing.T) {
-		options, err := OptionsForResultLimit(1_000_000)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if options.MaxFindings != hardMaxFindings {
-			t.Fatalf("MaxFindings = %d, want hard clamp %d", options.MaxFindings, hardMaxFindings)
-		}
-		for name, value := range map[string]int{
-			"MaxStopReasons": options.MaxStopReasons,
-			"MaxCoverage":    options.MaxCoverage,
-			"MaxIdentities":  options.MaxIdentities,
-			"MaxOrigins":     options.MaxOrigins,
-		} {
-			if value != hardMaxCollection {
-				t.Fatalf("%s = %d, want hard clamp %d", name, value, hardMaxCollection)
-			}
-		}
-	})
+	t.Run("more than default", testResultLimitAboveDefault)
+	t.Run("small bound", testResultLimitSmallBound)
+	t.Run("hard safety clamps", testResultLimitHardSafetyClamps)
 
 	if _, err := OptionsForResultLimit(-1); err == nil {
 		t.Fatal("negative result limit was accepted")
+	}
+}
+
+func testResultLimitAboveDefault(t *testing.T) {
+	t.Helper()
+	snapshot := snapshotForResultLimit(t, 444, 444)
+	if len(snapshot.Findings) != 444 || snapshot.Truncation.Findings {
+		t.Fatalf("findings = %d, truncation = %#v", len(snapshot.Findings), snapshot.Truncation)
+	}
+	if len(snapshot.Plan.NodeDigests) != 444 || snapshot.Truncation.PlanNodeDigests {
+		t.Fatalf("node digests = %d, truncation = %#v", len(snapshot.Plan.NodeDigests), snapshot.Truncation)
+	}
+	if len(snapshot.Modules) != 444 || snapshot.Truncation.Modules {
+		t.Fatalf("modules = %d, truncation = %#v", len(snapshot.Modules), snapshot.Truncation)
+	}
+	if len(snapshot.Identities) != 444 || snapshot.Truncation.Identities {
+		t.Fatalf("identities = %d, truncation = %#v", len(snapshot.Identities), snapshot.Truncation)
+	}
+	if len(snapshot.Scope.Origins) != 444 || snapshot.Truncation.Origins {
+		t.Fatalf("origins = %d, truncation = %#v", len(snapshot.Scope.Origins), snapshot.Truncation)
+	}
+	if len(snapshot.StopReasons) != 444 || snapshot.Truncation.StopReasons {
+		t.Fatalf("stop reasons = %d, truncation = %#v", len(snapshot.StopReasons), snapshot.Truncation)
+	}
+	if len(snapshot.Coverage.Module) != 444 || len(snapshot.Coverage.Identity) != 444 || len(snapshot.Coverage.Object) != 444 || snapshot.Truncation.Coverage {
+		t.Fatalf("coverage = %#v, truncation = %#v", snapshot.Coverage, snapshot.Truncation)
+	}
+}
+
+func testResultLimitSmallBound(t *testing.T) {
+	t.Helper()
+	snapshot := snapshotForResultLimit(t, 12, 7)
+	if len(snapshot.Findings) != 7 || !snapshot.Truncation.Findings || snapshot.Truncation.TotalFindings != 12 {
+		t.Fatalf("findings = %d, truncation = %#v", len(snapshot.Findings), snapshot.Truncation)
+	}
+	if len(snapshot.Plan.NodeDigests) != 7 || !snapshot.Truncation.PlanNodeDigests || snapshot.Truncation.TotalPlanNodeDigests != 12 {
+		t.Fatalf("node digests = %d, truncation = %#v", len(snapshot.Plan.NodeDigests), snapshot.Truncation)
+	}
+	if len(snapshot.Modules) != 7 || !snapshot.Truncation.Modules || snapshot.Truncation.TotalModules != 12 {
+		t.Fatalf("modules = %d, truncation = %#v", len(snapshot.Modules), snapshot.Truncation)
+	}
+	if len(snapshot.Identities) != 7 || !snapshot.Truncation.Identities || snapshot.Truncation.TotalIdentities != 12 {
+		t.Fatalf("identities = %d, truncation = %#v", len(snapshot.Identities), snapshot.Truncation)
+	}
+	if len(snapshot.Scope.Origins) != 7 || !snapshot.Truncation.Origins || snapshot.Truncation.TotalOrigins != 12 {
+		t.Fatalf("origins = %d, truncation = %#v", len(snapshot.Scope.Origins), snapshot.Truncation)
+	}
+	if len(snapshot.StopReasons) != 7 || !snapshot.Truncation.StopReasons || snapshot.Truncation.TotalStopReasons != 12 {
+		t.Fatalf("stop reasons = %d, truncation = %#v", len(snapshot.StopReasons), snapshot.Truncation)
+	}
+	if len(snapshot.Coverage.Module) != 7 || len(snapshot.Coverage.Identity) != 7 || len(snapshot.Coverage.Object) != 7 ||
+		!snapshot.Truncation.Coverage || snapshot.Truncation.TotalCoverage != 37 {
+		t.Fatalf("coverage = %#v, truncation = %#v", snapshot.Coverage, snapshot.Truncation)
+	}
+}
+
+func snapshotForResultLimit(t *testing.T, total, limit int) Snapshot {
+	t.Helper()
+	options, err := OptionsForResultLimit(limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := FromState(cardinalityAssessmentState(t, total), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func testResultLimitHardSafetyClamps(t *testing.T) {
+	t.Helper()
+	options, err := OptionsForResultLimit(1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.MaxFindings != hardMaxFindings {
+		t.Fatalf("MaxFindings = %d, want hard clamp %d", options.MaxFindings, hardMaxFindings)
+	}
+	for name, value := range map[string]int{
+		"MaxStopReasons": options.MaxStopReasons,
+		"MaxCoverage":    options.MaxCoverage,
+		"MaxIdentities":  options.MaxIdentities,
+		"MaxOrigins":     options.MaxOrigins,
+	} {
+		if value != hardMaxCollection {
+			t.Fatalf("%s = %d, want hard clamp %d", name, value, hardMaxCollection)
+		}
 	}
 }
 

@@ -245,9 +245,7 @@ func writeHTML(report Report, out io.Writer) error {
 			}
 			return item.Target
 		},
-		"severityRank": func(severity Severity) int {
-			return severityRank(severity)
-		},
+		"severityRank": severityRank,
 		"requestLine": func(item Evidence) string {
 			return strings.TrimSpace(item.Method+" "+requestURL(item)) + " HTTP/1.1"
 		},
