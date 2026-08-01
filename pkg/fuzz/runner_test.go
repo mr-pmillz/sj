@@ -2,8 +2,12 @@ package fuzz
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -60,6 +64,91 @@ func TestRunStopsBeforeConsumingLastAdvertisedRateLimitRequest(t *testing.T) {
 	}
 	if calls.Load() != 1 || !report.Summary.RateLimited || report.Probes[0].RateLimitRemaining == nil || *report.Probes[0].RateLimitRemaining != 1 {
 		t.Fatalf("calls=%d report=%#v", calls.Load(), report)
+	}
+}
+
+func TestRunIsolatesRateLimitedOriginAndContinuesOtherTargets(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.Host+request.URL.Path)
+		if request.URL.Host == "limited.example" {
+			return fuzzResponse(request, http.StatusTooManyRequests, `{"error":"slow down"}`)
+		}
+		return fuzzResponse(request, http.StatusOK, `{"status":"ok"}`)
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://limited.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://limited.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://healthy.example/c", Target: "/c"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Summary.RateLimited || report.Summary.RateLimitedOrigins != 1 || report.Summary.SkippedIsolated == 0 {
+		t.Fatalf("summary = %#v", report.Summary)
+	}
+	joinedCalls := strings.Join(calls, ",")
+	if strings.Contains(joinedCalls, "limited.example/b") || !strings.Contains(joinedCalls, "healthy.example/c") {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestRunIsolatesRepeatedTransportFailureAndContinuesOtherTargets(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.Host+request.URL.Path)
+		if request.URL.Host == "offline.example" {
+			return nil, fmt.Errorf("target unavailable")
+		}
+		return fuzzResponse(request, http.StatusOK, `{"status":"ok"}`)
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://offline.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://offline.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://offline.example/c", Target: "/c"},
+		{Method: "GET", URL: "https://offline.example/d", Target: "/d"},
+		{Method: "GET", URL: "https://healthy.example/e", Target: "/e"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TransportLimitedOrigins != 1 || report.Summary.SkippedIsolated == 0 {
+		t.Fatalf("summary = %#v", report.Summary)
+	}
+	joinedCalls := strings.Join(calls, ",")
+	if strings.Contains(joinedCalls, "offline.example/d") || !strings.Contains(joinedCalls, "healthy.example/e") {
+		t.Fatalf("calls = %v", calls)
+	}
+}
+
+func TestRunDoesNotIsolateAmbiguousSharedProxyFailure(t *testing.T) {
+	var calls []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls = append(calls, request.URL.String())
+		return nil, errors.New("shared proxy unavailable")
+	})}
+	operations := []pentestreport.Operation{
+		{Method: "GET", URL: "https://first.example/a", Target: "/a"},
+		{Method: "GET", URL: "https://first.example/b", Target: "/b"},
+		{Method: "GET", URL: "https://first.example/c", Target: "/c"},
+		{Method: "GET", URL: "https://first.example/d", Target: "/d"},
+	}
+	report, err := run(t.Context(), client, operations, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, ContinueOnTargetError: true,
+		TargetOriginTransportError: func(error) bool { return false },
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != len(report.Probes) || report.Summary.TransportLimitedOrigins != 0 ||
+		report.Summary.SkippedIsolated != 0 {
+		t.Fatalf("calls=%d probes=%d summary=%#v", len(calls), len(report.Probes), report.Summary)
 	}
 }
 
@@ -121,7 +210,7 @@ func TestRunRejectsCapturedBaselineAboveSafeReplayCeiling(t *testing.T) {
 
 func TestRunFindsPIIAndVerboseErrorsWithoutCopyingMatchedData(t *testing.T) {
 	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		return fuzzResponse(request, http.StatusInternalServerError, `{"email":"private-person@example.test","error":"stack trace /home/service/main.go:10"}`)
+		return fuzzResponse(request, http.StatusInternalServerError, `{"email":"private-person@customer.co","error":"stack trace /home/service/main.go:10"}`)
 	})}
 	report, err := run(t.Context(), client, []pentestreport.Operation{{Method: "GET", URL: "https://api.example/users/1", Target: "/users/1"}}, Options{MaxRequests: 10, Delay: minimumRequestDelay}, noWait)
 	if err != nil {
@@ -136,6 +225,225 @@ func TestRunFindsPIIAndVerboseErrorsWithoutCopyingMatchedData(t *testing.T) {
 	}
 	if strings.Contains(joined, "private-person") {
 		t.Fatalf("raw PII leaked into findings: %s", joined)
+	}
+}
+
+func TestRunClassifiesSQLAlchemyDatabaseDisclosure(t *testing.T) {
+	const responseBody = `{"detail":"Database failure: (pyodbc.IntegrityError) ('23000', \"[Microsoft][ODBC Driver 17 for SQL Server][SQL Server] Cannot insert NULL into column 'CallbackUrl', table 'tenantdb.dbo.ApiAudit'; constraint 'FK_ApiAudit_Tenant'.\")\n[SQL: EXEC spAuditAdd @payload = ?]\n[parameters: ('omitted',)]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)"}`
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return fuzzResponse(request, http.StatusInternalServerError, responseBody)
+	})}
+	report, err := run(t.Context(), client, []pentestreport.Operation{{
+		Method: http.MethodGet, URL: "https://api.example/audit/1/detail?tenantId=1&locale=en", Target: "/audit/1/detail",
+	}}, Options{MaxRequests: 10, Delay: minimumRequestDelay}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Probes) == 0 || !report.Probes[0].VerboseError {
+		t.Fatalf("probe did not classify database disclosure: %#v", report.Probes)
+	}
+	for _, finding := range report.Findings {
+		if finding.Category == "verbose_error" && strings.Contains(finding.Evidence, "database_driver") && strings.Contains(finding.Evidence, "sql_statement") {
+			return
+		}
+	}
+	t.Fatalf("database disclosure finding missing: %#v", report.Findings)
+}
+
+func TestAnalyzeProbesDetectsStructuredExceptionBacktrace(t *testing.T) {
+	findings := AnalyzeProbes([]ProbeResult{{
+		Method: "POST", URL: "https://api.example/auth", Status: 500,
+		analysisBody: []byte(`{"type":"JOSE_Exception_EncryptionFailed","filename":"C:\\inetpub\\wwwroot\\api\\JWE.php","line_number":166,"backtrace":[{"file":"C:\\inetpub\\wwwroot\\api\\JWE.php","line":39}]}`),
+	}})
+	if len(findings) != 1 || findings[0].Category != "verbose_error" || findings[0].Severity != "medium" || !strings.Contains(findings[0].Evidence, "stack_trace") {
+		t.Fatalf("structured backtrace finding = %#v", findings)
+	}
+}
+
+func TestAnalyzeProbesClassifiesPydanticAndUpstreamDisclosuresAsLowButNotNoneTypeAlone(t *testing.T) {
+	probes := []ProbeResult{
+		{Method: "GET", URL: "https://api.example/schema", Status: 500, analysisBody: []byte(`3 validation errors for RestaurantClosestSchema [type=missing, input_type=dict] https://errors.pydantic.dev/2.10/v/missing`)},
+		{Method: "GET", URL: "https://api.example/upstream", Status: 500, analysisBody: []byte(`HTTPSConnectionPool host=internal: NameResolutionError from urllib3.connection: Name or service not known`)},
+		{Method: "GET", URL: "https://api.example/ambiguous", Status: 500, analysisBody: []byte(`the JSON object must be str, bytes or bytearray, not NoneType`)},
+	}
+	findings := AnalyzeProbes(probes)
+	implementation := make([]Finding, 0)
+	for _, finding := range findings {
+		if finding.Category == "implementation_disclosure" {
+			implementation = append(implementation, finding)
+		}
+	}
+	if len(implementation) != 2 {
+		t.Fatalf("implementation findings = %#v", implementation)
+	}
+	for _, finding := range implementation {
+		if finding.Severity != "low" {
+			t.Fatalf("implementation diagnostic severity = %#v", finding)
+		}
+		if strings.Contains(finding.URL, "/ambiguous") {
+			t.Fatalf("NoneType-only response was promoted: %#v", finding)
+		}
+	}
+}
+
+func TestAnalyzeProbesSuppressesBareGenericServerErrors(t *testing.T) {
+	probes := []ProbeResult{{
+		Method: http.MethodGet, URL: "https://api.example/items/1", Case: "bad_character", Category: "bad_character",
+		Status: http.StatusInternalServerError, ResponseBytes: len(`{"error":"internal server error"}`),
+		analysisBody: []byte(`{"error":"internal server error"}`),
+	}}
+	for _, finding := range AnalyzeProbes(probes) {
+		if finding.Category == "server_error" || finding.Category == "verbose_error" {
+			t.Fatalf("generic 500 became an actionable finding: %#v", finding)
+		}
+	}
+}
+
+func TestAnalyzeProbesSuppressesUncorroboratedDatabaseProductAndSchemaText(t *testing.T) {
+	probes := []ProbeResult{{
+		Method: "GET", URL: "https://api.example/docs", Status: 200,
+		analysisBody: []byte(`Microsoft SQL Server supports table [dbo.docs] and column [title]`),
+	}}
+	if findings := AnalyzeProbes(probes); len(findings) != 0 {
+		t.Fatalf("uncorroborated database documentation was promoted: %#v", findings)
+	}
+}
+
+func TestAnalyzeProbesSuppressesIntendedTokenIssuance(t *testing.T) {
+	probes := []ProbeResult{{
+		Method: "POST", URL: "https://api.example/oauth/token", Status: 200,
+		analysisBody: []byte(`{"access_token":"abcdefghijklmnop","token_type":"Bearer"}`),
+	}}
+	if findings := AnalyzeProbes(probes); len(findings) != 0 {
+		t.Fatalf("intended token issuance was promoted: %#v", findings)
+	}
+}
+
+func TestAnalyzeProbesDoesNotSuppressCredentialLeaksOnNonIssuanceAuthRoutes(t *testing.T) {
+	probes := []ProbeResult{{
+		Method: "GET", URL: "https://api.example/auth/profile", Status: 200,
+		analysisBody: []byte(`{"access_token":"abcdefghijklmnop"}`),
+	}}
+	findings := AnalyzeProbes(probes)
+	if len(findings) != 1 || findings[0].Category != "pii_exposure" {
+		t.Fatalf("credential leak on non-issuance route was suppressed: %#v", findings)
+	}
+}
+
+func TestAnalyzeProbesDeduplicatesDisclosuresByEndpointAndSignature(t *testing.T) {
+	const disclosure = `{"detail":"(pyodbc.IntegrityError) [Microsoft][ODBC Driver 17 for SQL Server][SQL Server] table 'tenantdb.dbo.ApiAudit' column 'CallbackUrl' [SQL: EXEC spAuditAdd @payload = ?] [parameters: ('omitted',)] https://sqlalche.me/e/20/gkpj"}`
+	probes := make([]ProbeResult, 0, 97)
+	for companyID := 1; companyID <= 97; companyID++ {
+		body := []byte(disclosure)
+		probes = append(probes, ProbeResult{
+			Method: http.MethodGet, URL: fmt.Sprintf("https://api.example/audit/1/detail?tenantId=%d&locale=en", companyID),
+			Case: fmt.Sprintf("idor_range:query.tenantId:%d", companyID), Category: "idor_range", Identity: "anonymous",
+			Status: http.StatusInternalServerError, ResponseBytes: len(body), analysisBody: body,
+		})
+	}
+	findings := AnalyzeProbes(probes)
+	var verbose []Finding
+	for _, finding := range findings {
+		if finding.Category == "verbose_error" {
+			verbose = append(verbose, finding)
+		}
+		if finding.Category == "server_error" {
+			t.Fatalf("database disclosure should not also emit generic server_error: %#v", finding)
+		}
+	}
+	if len(verbose) != 1 {
+		t.Fatalf("verbose findings = %#v", verbose)
+	}
+	if !strings.Contains(verbose[0].URL, "/audit/{id}/detail") || !strings.Contains(verbose[0].URL, "tenantId={value}") {
+		t.Fatalf("finding URL was not normalized: %#v", verbose[0])
+	}
+	if !strings.Contains(verbose[0].Evidence, "matching_probes=97") || strings.Count(verbose[0].Evidence, "https://") > 3 {
+		t.Fatalf("finding evidence was not grouped and bounded: %#v", verbose[0])
+	}
+}
+
+func TestAnalyzeProbesDeduplicatesPIIWithoutCopyingMatchedValues(t *testing.T) {
+	const privateEmail = "person@customer.co"
+	const privateToken = "secret-token-value"
+	probes := make([]ProbeResult, 0, 5)
+	for identifier := 1; identifier <= 5; identifier++ {
+		probes = append(probes, ProbeResult{
+			Method: http.MethodGet, URL: fmt.Sprintf("https://api.example/users/%s/%d?q=%s&expand=profile&token=%s", privateEmail, identifier, privateEmail, privateToken),
+			Status: http.StatusOK, Identity: "anonymous", PIITypes: []string{"email"},
+			analysisBody: []byte(`{"email":"` + privateEmail + `"}`),
+		})
+	}
+	findings := AnalyzeProbes(probes)
+	var pii []Finding
+	for _, finding := range findings {
+		if finding.Category == "pii_exposure" {
+			pii = append(pii, finding)
+		}
+	}
+	if len(pii) != 1 {
+		t.Fatalf("PII findings = %#v", pii)
+	}
+	joined := pii[0].URL + " " + pii[0].Evidence
+	if strings.Contains(joined, privateEmail) || strings.Contains(joined, url.QueryEscape(privateEmail)) || strings.Contains(joined, privateToken) || !strings.Contains(pii[0].Evidence, "matching_probes=5") || strings.Count(joined, "https://") > 4 {
+		t.Fatalf("PII evidence leaked or was not bounded: %s", joined)
+	}
+}
+
+func TestExposureAnalysisHelpersHandleStoredAndInvalidInputs(t *testing.T) {
+	if body := probeResponseBody(ProbeResult{ResponseBody: `{"detail":"stored"}`}); string(body) != `{"detail":"stored"}` {
+		t.Fatalf("stored response body = %q", body)
+	}
+	if body := probeResponseBody(ProbeResult{}); body != nil {
+		t.Fatalf("empty response body = %q", body)
+	}
+	if types := detectVerboseDisclosureTypes(nil); types != nil {
+		t.Fatalf("empty disclosure types = %v", types)
+	}
+	if endpoint := normalizedEndpointTemplate("https://api.example/%zz"); endpoint != "<invalid-url>" {
+		t.Fatalf("invalid endpoint template = %q", endpoint)
+	}
+	if representative := safeRepresentativeURL("https://api.example/%zz"); representative != "" {
+		t.Fatalf("invalid representative URL = %q", representative)
+	}
+	longURL := "https://api.example/items?q=" + strings.Repeat("a", maximumRepresentativeLength)
+	if representative := safeRepresentativeURL(longURL); len(representative) != maximumRepresentativeLength+3 || !strings.HasSuffix(representative, "...") {
+		t.Fatalf("long representative URL was not bounded: length=%d", len(representative))
+	}
+	if values := sortedUniqueStrings([]string{" email ", "", "email", "phone"}); strings.Join(values, ",") != "email,phone" {
+		t.Fatalf("sorted unique values = %v", values)
+	}
+}
+
+func TestRunRecordsCredentialPresenceWithoutPersistingCredentialValues(t *testing.T) {
+	const credential = "Bearer private-test-credential"
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return fuzzResponse(request, http.StatusOK, `{"status":"ok"}`)
+	})}
+	report, err := run(t.Context(), client, []pentestreport.Operation{{
+		Method: http.MethodGet, URL: "https://api.example/health", Target: "/health",
+	}}, Options{
+		MaxRequests: 10, Delay: minimumRequestDelay,
+		Identities: []Identity{
+			{Name: "anonymous", Headers: map[string]string{"X-Trace-ID": "trace-only"}},
+			{Name: "api-user", Headers: map[string]string{"Authorization": credential}},
+		},
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := make(map[string]string)
+	for _, probe := range report.Probes {
+		contexts[probe.Identity] = probe.AuthContext
+	}
+	if contexts["anonymous"] != "anonymous" || contexts["api-user"] != "authenticated" {
+		t.Fatalf("auth contexts = %#v", contexts)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), credential) {
+		t.Fatalf("credential value leaked into report: %s", encoded)
 	}
 }
 

@@ -2,9 +2,12 @@ package httpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -107,6 +110,108 @@ func TestMakeRequestRejectsOversizedResponse(t *testing.T) {
 	body, response, status := client.MakeRequest(http.MethodGet, "https://api.example/large", nil)
 	if body != nil || response != "response_too_large" || status != 0 {
 		t.Fatalf("oversized result = (%d bytes, %q, %d), want (nil, response_too_large, 0)", len(body), response, status)
+	}
+}
+
+func TestMakeRequestPreservesRateStatusWhenResponseIsOversized(t *testing.T) {
+	cfg := config.New()
+	cfg.MaxResponseBytes = 4
+	client := testClient(t, cfg)
+	client.HTTP.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Set("RateLimit-Remaining", "0")
+		return response(request, http.StatusTooManyRequests, header, "oversized"), nil
+	})
+
+	body, reason, status, metadata := client.MakeRequestWithMetadataContext(
+		t.Context(), http.MethodGet, "https://api.example.test/items", nil,
+	)
+	if body != nil || reason != "response_too_large" || status != http.StatusTooManyRequests {
+		t.Fatalf("body=%q reason=%q status=%d", body, reason, status)
+	}
+	if !metadata.Sent || metadata.Header.Get("RateLimit-Remaining") != "0" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestMakeRequestClassifiesOnlyProvenTargetOriginTransportFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		configure  func(*config.Config)
+		failure    error
+		trustRoute bool
+		wantTarget bool
+	}{
+		{
+			name: "trusted direct target failure", failure: errors.New("connection refused"),
+			trustRoute: true,
+			wantTarget: true,
+		},
+		{name: "untrusted custom transport", failure: errors.New("connection refused")},
+		{
+			name:       "HTTP proxy failure",
+			configure:  func(cfg *config.Config) { cfg.Proxy = "http://proxy.example.test:8080" },
+			failure:    errors.New("proxy connection refused"),
+			trustRoute: true,
+		},
+		{
+			name:       "ambiguous SOCKS failure",
+			configure:  func(cfg *config.Config) { cfg.SOCKS5Proxy = "socks5h://proxy.example.test:1080" },
+			failure:    errors.New("SOCKS handshake EOF"),
+			trustRoute: true,
+		},
+		{
+			name:       "SOCKS target reply",
+			configure:  func(cfg *config.Config) { cfg.SOCKS5Proxy = "socks5h://proxy.example.test:1080" },
+			failure:    &net.OpError{Op: "socks connect", Err: errors.New("host unreachable")},
+			trustRoute: true,
+			wantTarget: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.New()
+			if test.configure != nil {
+				test.configure(cfg)
+			}
+			client := testClient(t, cfg)
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, test.failure
+			})
+			if test.trustRoute {
+				if err := client.ReplaceHTTPTransport(transport, true); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				client.HTTP.Transport = transport
+			}
+			_, _, status, metadata := client.MakeRequestWithMetadataContext(
+				t.Context(), http.MethodGet, "https://api.example.test/items", nil,
+			)
+			if status != 0 || metadata.TargetOriginFailure != test.wantTarget {
+				t.Fatalf("status=%d metadata=%#v, want target-origin=%t", status, metadata, test.wantTarget)
+			}
+		})
+	}
+}
+
+func TestTrustedReplacementFailsClosedAfterDirectTransportGainsProxy(t *testing.T) {
+	client := testClient(t, config.New())
+	transport := &http.Transport{}
+	if err := client.ReplaceHTTPTransport(transport, true); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("connection refused")
+	if !client.IsTargetOriginTransportError(failure) {
+		t.Fatal("trusted direct replacement was not classified as target-local")
+	}
+	proxyURL, err := url.Parse("http://proxy.example.test:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.Proxy = http.ProxyURL(proxyURL)
+	if client.IsTargetOriginTransportError(failure) {
+		t.Fatal("proxied replacement remained classified as target-local")
 	}
 }
 

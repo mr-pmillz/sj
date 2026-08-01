@@ -24,12 +24,31 @@ func RetryWithHints(client *httpclient.Client, cfg *config.Config, method, targe
 }
 
 func RetryWithHintsContext(ctx context.Context, client *httpclient.Client, cfg *config.Config, method, targetURL, requestBody, previousResponse string, previousStatus int) (string, int) {
+	response, status, _ := RetryWithHintsMetadataContext(
+		ctx, client, cfg, method, targetURL, requestBody,
+		previousResponse, previousStatus, httpclient.ResponseMetadata{},
+	)
+	return response, status
+}
+
+func RetryWithHintsMetadataContext(
+	ctx context.Context,
+	client *httpclient.Client,
+	cfg *config.Config,
+	method, targetURL, requestBody, previousResponse string,
+	previousStatus int,
+	previousMetadata httpclient.ResponseMetadata,
+) (string, int, httpclient.ResponseMetadata) {
 	if !retryableHintMethod(method) {
-		return previousResponse, previousStatus
+		return previousResponse, previousStatus, previousMetadata
 	}
 	response, status := previousResponse, previousStatus
+	metadata := previousMetadata
 	for attempt := 0; attempt < maxHintRetries && status == http.StatusUnauthorized; attempt++ {
 		if ctx.Err() != nil {
+			break
+		}
+		if status == http.StatusTooManyRequests || depletedRateCapacity(metadata.Header) {
 			break
 		}
 		hints := extractMissingParams(response)
@@ -41,13 +60,16 @@ func RetryWithHintsContext(ctx context.Context, client *httpclient.Client, cfg *
 			break
 		}
 		output.PrintInfo("[retry %d] authentication response identified missing parameters %v\n", attempt+1, hints)
-		_, nextResponse, nextStatus := client.MakeRequestContext(ctx, method, updatedURL, bytes.NewReader([]byte(requestBody)))
+		_, nextResponse, nextStatus, nextMetadata := client.MakeRequestWithMetadataContext(
+			ctx, method, updatedURL, bytes.NewReader([]byte(requestBody)),
+		)
 		if nextResponse == response && nextStatus == status {
+			metadata = nextMetadata
 			break
 		}
-		targetURL, response, status = updatedURL, nextResponse, nextStatus
+		targetURL, response, status, metadata = updatedURL, nextResponse, nextStatus, nextMetadata
 	}
-	return response, status
+	return response, status, metadata
 }
 
 func retryableHintMethod(method string) bool {

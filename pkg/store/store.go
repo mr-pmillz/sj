@@ -585,4 +585,195 @@ CREATE INDEX observations_run_kind_idx ON observations(run_id, kind, id);
 CREATE INDEX observations_endpoint_idx ON observations(method, url, status);
 CREATE INDEX observations_source_idx ON observations(source, kind);
 CREATE INDEX findings_run_severity_idx ON findings(run_id, severity, id);
+`, `
+CREATE TABLE assessments (
+    id TEXT PRIMARY KEY,
+    manifest_hash TEXT NOT NULL,
+    inventory_hash TEXT NOT NULL,
+    policy_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'canceled')),
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    message TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json))
+);
+CREATE TABLE scope_snapshots (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    digest TEXT NOT NULL,
+    scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE identity_profiles (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT '',
+    tenant TEXT NOT NULL DEFAULT '',
+    secret_ref TEXT NOT NULL,
+    credential_fingerprint TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    UNIQUE (id, assessment_id)
+);
+CREATE TABLE object_references (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    identity_profile_id TEXT REFERENCES identity_profiles(id),
+    kind TEXT NOT NULL,
+    location TEXT NOT NULL,
+    json_pointer TEXT NOT NULL DEFAULT '',
+    value_fingerprint TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (identity_profile_id, assessment_id) REFERENCES identity_profiles(id, assessment_id)
+);
+CREATE TABLE assessment_plan_nodes (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    module TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    plan_hash TEXT NOT NULL,
+    safety_class TEXT NOT NULL CHECK (safety_class IN ('S0', 'S1', 'S2', 'S3')),
+    status TEXT NOT NULL CHECK (status IN ('planned', 'ready', 'running', 'succeeded', 'failed', 'skipped', 'canceled')),
+    max_requests INTEGER NOT NULL CHECK (max_requests >= 0),
+    max_bytes INTEGER NOT NULL CHECK (max_bytes >= 0),
+    started_at TEXT,
+    completed_at TEXT,
+    message TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    UNIQUE (assessment_id, plan_hash),
+    UNIQUE (id, assessment_id)
+);
+CREATE TABLE budget_reservations (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    plan_node_id TEXT NOT NULL REFERENCES assessment_plan_nodes(id) ON DELETE CASCADE,
+    request_limit INTEGER NOT NULL CHECK (request_limit >= 0),
+    byte_limit INTEGER NOT NULL CHECK (byte_limit >= 0),
+    request_used INTEGER NOT NULL DEFAULT 0 CHECK (request_used >= 0 AND request_used <= request_limit),
+    byte_used INTEGER NOT NULL DEFAULT 0 CHECK (byte_used >= 0 AND byte_used <= byte_limit),
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_node_id, assessment_id) REFERENCES assessment_plan_nodes(id, assessment_id) ON DELETE CASCADE,
+    UNIQUE (plan_node_id)
+);
+CREATE TABLE assessment_attempts (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    plan_node_id TEXT NOT NULL REFERENCES assessment_plan_nodes(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+    retry_of_id TEXT REFERENCES assessment_attempts(id),
+    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'canceled', 'inconclusive')),
+    method TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT '',
+    request_fingerprint TEXT NOT NULL,
+    request_cost INTEGER NOT NULL DEFAULT 0 CHECK (request_cost >= 0),
+    byte_cost INTEGER NOT NULL DEFAULT 0 CHECK (byte_cost >= 0),
+    response_fingerprint TEXT NOT NULL DEFAULT '',
+    http_status INTEGER NOT NULL DEFAULT 0 CHECK (http_status BETWEEN 0 AND 999),
+    error_class TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    UNIQUE (plan_node_id, ordinal),
+    UNIQUE (id, assessment_id),
+    UNIQUE (id, assessment_id, plan_node_id),
+    FOREIGN KEY (plan_node_id, assessment_id) REFERENCES assessment_plan_nodes(id, assessment_id) ON DELETE CASCADE,
+    FOREIGN KEY (retry_of_id, assessment_id, plan_node_id) REFERENCES assessment_attempts(id, assessment_id, plan_node_id)
+);
+CREATE TABLE artifact_metadata (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    attempt_id TEXT REFERENCES assessment_attempts(id),
+    kind TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT '',
+    storage_ref TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    sha256 TEXT NOT NULL,
+    sensitive INTEGER NOT NULL DEFAULT 0 CHECK (sensitive IN (0, 1)),
+    truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (attempt_id, assessment_id) REFERENCES assessment_attempts(id, assessment_id)
+);
+CREATE TABLE assessment_comparisons (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    plan_node_id TEXT NOT NULL REFERENCES assessment_plan_nodes(id) ON DELETE CASCADE,
+    left_attempt_id TEXT NOT NULL REFERENCES assessment_attempts(id),
+    right_attempt_id TEXT NOT NULL REFERENCES assessment_attempts(id),
+    oracle TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json)),
+    created_at TEXT NOT NULL,
+    UNIQUE (id, assessment_id),
+    FOREIGN KEY (plan_node_id, assessment_id) REFERENCES assessment_plan_nodes(id, assessment_id) ON DELETE CASCADE,
+    FOREIGN KEY (left_attempt_id, assessment_id, plan_node_id) REFERENCES assessment_attempts(id, assessment_id, plan_node_id),
+    FOREIGN KEY (right_attempt_id, assessment_id, plan_node_id) REFERENCES assessment_attempts(id, assessment_id, plan_node_id)
+);
+CREATE TABLE findings_v2 (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    plan_node_id TEXT REFERENCES assessment_plan_nodes(id),
+    comparison_id TEXT REFERENCES assessment_comparisons(id),
+    status TEXT NOT NULL CHECK (status IN ('candidate', 'tested', 'confirmed', 'disproved', 'inconclusive')),
+    confidence TEXT NOT NULL CHECK (confidence IN ('heuristic', 'differential', 'ownership-backed', 'side-effect-verified')),
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    method TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(evidence_json)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_node_id, assessment_id) REFERENCES assessment_plan_nodes(id, assessment_id),
+    FOREIGN KEY (comparison_id, assessment_id) REFERENCES assessment_comparisons(id, assessment_id)
+);
+CREATE TABLE assessment_coverage (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    plan_node_id TEXT REFERENCES assessment_plan_nodes(id),
+    dimension TEXT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_node_id, assessment_id) REFERENCES assessment_plan_nodes(id, assessment_id)
+);
+CREATE TABLE evidence_lineage (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    parent_kind TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    child_kind TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (assessment_id, parent_kind, parent_id, child_kind, child_id, relation)
+);
+CREATE INDEX scope_snapshots_assessment_idx ON scope_snapshots(assessment_id, created_at, id);
+CREATE INDEX identity_profiles_assessment_idx ON identity_profiles(assessment_id, id);
+CREATE INDEX object_references_assessment_idx ON object_references(assessment_id, kind, id);
+CREATE INDEX assessment_plan_nodes_assessment_idx ON assessment_plan_nodes(assessment_id, status, id);
+CREATE INDEX budget_reservations_assessment_idx ON budget_reservations(assessment_id, plan_node_id, id);
+CREATE INDEX assessment_attempts_node_idx ON assessment_attempts(plan_node_id, ordinal);
+CREATE INDEX assessment_attempts_assessment_idx ON assessment_attempts(assessment_id, status, id);
+CREATE INDEX artifact_metadata_assessment_idx ON artifact_metadata(assessment_id, attempt_id, id);
+CREATE INDEX assessment_comparisons_assessment_idx ON assessment_comparisons(assessment_id, plan_node_id, id);
+CREATE INDEX findings_v2_assessment_idx ON findings_v2(assessment_id, status, severity, id);
+CREATE INDEX assessment_coverage_assessment_idx ON assessment_coverage(assessment_id, dimension, id);
+CREATE INDEX evidence_lineage_assessment_idx ON evidence_lineage(assessment_id, parent_kind, parent_id, id);
+`, `
+CREATE TABLE assessment_execution_leases (
+    assessment_id TEXT PRIMARY KEY REFERENCES assessments(id) ON DELETE CASCADE,
+    owner_id TEXT NOT NULL,
+    expires_at_unix_nano INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX assessment_execution_leases_expiry_idx
+    ON assessment_execution_leases(expires_at_unix_nano, assessment_id);
 `}

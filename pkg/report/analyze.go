@@ -14,14 +14,17 @@ import (
 )
 
 var (
-	identifierSegment = regexp.MustCompile(`(?i)^(?:\d+|testvalue|[0-9a-f]{8}-[0-9a-f-]{27,})$`)
-	businessFlowPath  = regexp.MustCompile(`(?i)(?:^|[/_-])(checkout|purchase|payment|order|reservation|booking|refund|transfer|withdraw|deposit|invoice|invite|register|signup|cancel|approve|access|auth|account|privilege|bulk|process)(?:$|[/_-])`)
-	ssrfPath          = regexp.MustCompile(`(?i)(?:^|[/_-])(url|uri|webhook|callback|proxy|fetch|import|redirect|remote|download)(?:$|[/_-])`)
-	resourcePath      = regexp.MustCompile(`(?i)(?:^|[/_-])(bulk|batch|export|search|report|upload|download|import|query|list|all)(?:$|[/_-])`)
-	verboseErrorBody  = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|ORA-\d+|syntax error at or near|nonetype|json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\/home\/[^\s]+|C:\\Users\\[^\s]+|\.go:\d+|\.java:\d+)`)
+	identifierSegment            = regexp.MustCompile(`(?i)^(?:\d+|testvalue|[0-9a-f]{8}-[0-9a-f-]{27,})$`)
+	businessFlowPath             = regexp.MustCompile(`(?i)(?:^|[/_-])(checkout|purchase|payment|order|reservation|booking|refund|transfer|withdraw|deposit|invoice|invite|register|signup|cancel|approve|access|auth|account|privilege|bulk|process)(?:$|[/_-])`)
+	ssrfPath                     = regexp.MustCompile(`(?i)(?:^|[/_-])(url|uri|webhook|callback|proxy|fetch|import|redirect|remote|download)(?:$|[/_-])`)
+	resourcePath                 = regexp.MustCompile(`(?i)(?:^|[/_-])(bulk|batch|export|search|report|upload|download|import|query|list|all)(?:$|[/_-])`)
+	verboseErrorBody             = regexp.MustCompile(`(?i)(?:stack trace|traceback|unhandled exception|sqlstate|odbc driver|pyodbc|sqlalchemy|invalid object name|stored procedure|foreign key constraint|ORA-\d+|syntax error at or near|\[SQL:\s|\[(?:parameters?|params):\s)`)
+	verboseStructuredBacktrace   = regexp.MustCompile(`(?i)"backtrace"\s*:\s*\[[\s\S]{0,1000}"(?:file|filename)"\s*:[\s\S]{0,1000}"line(?:_number)?"\s*:\s*\d+`)
+	verboseDBErrorContext        = regexp.MustCompile(`(?is)(?:(?:sql server|microsoft sql|mysql|postgres(?:ql)?|sqlite|oracle).{0,80}(?:error|exception|driver|query failed|syntax error|constraint (?:violation|failed))|(?:error|exception|driver|query failed|syntax error|constraint (?:violation|failed)).{0,80}(?:sql server|microsoft sql|mysql|postgres(?:ql)?|sqlite|oracle))`)
+	implementationDiagnosticBody = regexp.MustCompile(`(?i)(?:errors\.pydantic\.dev|validation errors? for [a-z_][a-z0-9_]*schema|input_type=|\[type=missing|httpsconnectionpool|nameresolutionerror|urllib3\.connection|name or service not known|json:\s*cannot unmarshal|strconv\.parse(?:int|float)|\.go:\d+|\.java:\d+|(?:\bfile\b|\bat\b|stack|traceback)[^\r\n]{0,80}(?:/home/|C:\\Users\\)[^\r\n"']+)`)
 )
 
-const reportMethodology = "This report prioritizes observed HTTP outcomes and heuristic penetration-test candidates. Automate-only candidates are not confirmed vulnerabilities. Imported fuzz findings identify the identity comparisons or explicit workflow read-backs that were actually executed; absence of such evidence must not be treated as proof of authorization or business-logic correctness. sj does not exhaust rate limits or perform denial-of-service testing. Weighted points are triage weights, not CVSS scores or business-risk acceptance decisions."
+const reportMethodology = "This report promotes evidence-backed security findings and suppresses route-name, status-only, and same-identity differential noise. A successful HTTP status alone is not proof of an authorization vulnerability. Authentication is described as unrecorded unless the retained evidence explicitly identifies the credential context. sj does not exhaust rate limits or perform denial-of-service testing. Weighted points are triage weights, not CVSS scores or business-risk acceptance decisions."
 
 func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 	if options.Title == "" {
@@ -52,7 +55,7 @@ func Analyze(dataset Dataset, options AnalyzeOptions) Report {
 func importedFindings(values []ImportedFinding, operations []Operation, maxEvidence int) []Finding {
 	result := make([]Finding, 0, len(values))
 	for _, value := range values {
-		if value.Category == "pii_exposure" && importedPIIDisproved(value, operations) {
+		if suppressImportedFinding(value, operations) {
 			continue
 		}
 		severity := Severity(strings.ToLower(value.Severity))
@@ -80,44 +83,44 @@ func importedFindings(values []ImportedFinding, operations []Operation, maxEvide
 	return result
 }
 
-func importedPIIDisproved(finding ImportedFinding, operations []Operation) bool {
-	foundCapturedResponse := false
-	expectedTypes := importedPIITypes(finding.Evidence)
-	for _, operation := range matchingFindingOperations(finding, operations, len(operations)) {
-		if operation.ResponseBody == "" {
-			continue
+func suppressImportedFinding(finding ImportedFinding, operations []Operation) bool {
+	if strings.EqualFold(finding.Severity, string(SeverityInformational)) {
+		return true
+	}
+	category := strings.ToLower(finding.Category)
+	if category == "pii_exposure" {
+		// PII is promoted only by re-running the current detector against a
+		// retained response body. Type-only legacy summaries cannot provide the
+		// full request/response proof required by the report.
+		return true
+	}
+	if strings.Contains(category, "idor") || strings.Contains(category, "bola") {
+		// Legacy enumeration findings do not contain ownership-backed victim,
+		// attacker, expected-denial, and negative-control proof. The formal BOLA
+		// assessment owns confirmed object-authorization findings.
+		evidence := strings.ToLower(finding.Evidence)
+		return !strings.Contains(evidence, "ownership_verified=true") ||
+			!strings.Contains(evidence, "negative_control=denied")
+	}
+	for _, noisyCategory := range []string{
+		"server_error", "response_guided_success", "input_reflection",
+		"business_workflow_verification", "application_failure", "verbose_error",
+		"implementation_disclosure",
+	} {
+		if category == noisyCategory {
+			return true
 		}
-		foundCapturedResponse = true
-		detectedTypes := scanevidence.DetectPIITypes([]byte(operation.ResponseBody))
-		if len(expectedTypes) == 0 && len(detectedTypes) > 0 {
-			return false
-		}
-		for _, detectedType := range detectedTypes {
-			if _, expected := expectedTypes[detectedType]; expected {
+	}
+	matched := matchingFindingOperations(finding, operations, len(operations))
+	if len(matched) > 0 {
+		for _, operation := range matched {
+			if operationSuccess(operation) {
 				return false
 			}
 		}
+		return true
 	}
-	return foundCapturedResponse
-}
-
-func importedPIITypes(evidence string) map[string]struct{} {
-	const marker = "matched_types="
-	start := strings.Index(evidence, marker)
-	if start < 0 {
-		return nil
-	}
-	value := evidence[start+len(marker):]
-	if end := strings.IndexByte(value, ';'); end >= 0 {
-		value = value[:end]
-	}
-	result := make(map[string]struct{})
-	for _, piiType := range strings.Split(value, ",") {
-		if piiType = strings.TrimSpace(piiType); piiType != "" {
-			result[piiType] = struct{}{}
-		}
-	}
-	return result
+	return false
 }
 
 func matchingFindingOperations(finding ImportedFinding, operations []Operation, limit int) []Operation {
@@ -225,133 +228,12 @@ func analyzeMetrics(dataset Dataset) (Metrics, []HostMetric) {
 }
 
 func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
-	dataset.Operations = baselineOperations(dataset.Operations)
 	var findings []Finding
-	deleteSuccess := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && item.Method == "DELETE" })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-DESTRUCTIVE-SUCCESS", Severity: SeverityCritical, Title: "Successful DELETE responses require authorization validation",
-		Confidence: "observed response; persisted deletion not verified", OWASP: []string{"API1:2023", "API5:2023", "API6:2023"},
-		Description:    "DELETE operations returned a 2xx response during automated testing. This is a critical review candidate because the result may represent object deletion without the intended authorization or workflow controls; the result artifact does not record whether credentials were supplied.",
-		Recommendation: "Verify the affected objects and audit trail, repeat with two identities and an unauthenticated client, and confirm object-level and function-level authorization before accepting the behavior.",
-	}, deleteSuccess, maxEvidence)
-
-	writeSuccess := filterOperations(dataset.Operations, func(item Operation) bool {
-		return operationSuccess(item) && (item.Method == "POST" || item.Method == "PUT" || item.Method == "PATCH")
-	})
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-STATE-CHANGE-CANDIDATE", Severity: SeverityHigh, Title: "State-changing operations returned 2xx",
-		Confidence: "observed response; state transition not verified", OWASP: []string{"API3:2023", "API5:2023", "API6:2023"},
-		Description:    "POST, PUT, or PATCH operations returned successful responses in the test context. Validate that authentication, authorization, field allowlists, and workflow prerequisites were actually enforced.",
-		Recommendation: "Compare pre/post state, test lower-privileged identities, mutate object properties, and exercise workflow steps out of order.",
-	}, writeSuccess, maxEvidence)
-
-	idor := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && hasIdentifier(item.Target) })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-IDOR-CANDIDATE", Severity: SeverityHigh, Title: "IDOR/BOLA review candidates",
-		Confidence: "heuristic candidate; ownership boundary not tested", OWASP: []string{"API1:2023"},
-		Description:    "Successful operations include object-like identifiers in their paths. These routes are candidates for insecure direct object reference and broken object-level authorization testing.",
-		Recommendation: "Replay each request with an object identifier owned by a different test identity and assert denial without disclosing object existence or data.",
-	}, idor, maxEvidence)
-
-	business := filterOperations(dataset.Operations, func(item Operation) bool { return operationSuccess(item) && businessFlowPath.MatchString(item.Target) })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-BUSINESS-FLOW", Severity: SeverityHigh, Title: "Sensitive business-flow review candidates",
-		Confidence: "heuristic candidate; complete workflow not exercised", OWASP: []string{"API5:2023", "API6:2023"},
-		Description:    "Successful endpoints use names associated with account, access, transaction, approval, bulk-processing, or other sensitive business flows.",
-		Recommendation: "Model the expected state machine, then test step skipping, replay, duplicate submission, quantity/value boundaries, race conditions, and role separation.",
-	}, business, maxEvidence)
-
-	readSuccess := filterOperations(dataset.Operations, func(item Operation) bool {
-		return operationSuccess(item) && (item.Method == "GET" || item.Method == "HEAD") && !hasIdentifier(item.Target)
-	})
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-READ-ACCESS", Severity: SeverityMedium, Title: "Readable endpoints returned 2xx",
-		Confidence: "observed response; data sensitivity not assessed", OWASP: []string{"API1:2023", "API2:2023", "API3:2023"},
-		Description:    "Read-oriented operations returned successful responses. Public behavior may be intentional, but response bodies and object-property authorization require review.",
-		Recommendation: "Classify returned data, compare anonymous and authenticated responses, and verify field-level filtering for each role.",
-	}, readSuccess, maxEvidence)
-
-	applicationFailures := filterOperations(dataset.Operations, func(item Operation) bool {
-		return success(item.Status) && responseIndicatesFailure(item.ResponseBody)
-	})
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-APPLICATION-FAILURE", Severity: SeverityMedium, Title: "HTTP success responses contain application failure envelopes",
-		Confidence: "observed application-level failure", OWASP: []string{"API8:2023"},
-		Description:    "The API returned a 2xx HTTP status while its JSON body explicitly reported failure. Clients, monitors, and scanners can misclassify these outcomes, and the body may reveal internal processing details.",
-		Recommendation: "Return an appropriate 4xx/5xx status, a stable machine-readable error code, and a non-sensitive message; verify that no partial side effect occurred.",
-	}, applicationFailures, maxEvidence)
-
-	verboseErrors := filterOperations(dataset.Operations, func(item Operation) bool {
-		return verboseErrorBody.MatchString(item.ResponseBody)
-	})
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-VERBOSE-ERROR", Severity: SeverityMedium, Title: "API responses disclose implementation-oriented error details",
-		Confidence: "observed response-body pattern", OWASP: []string{"API8:2023"},
-		Description:    "Responses include runtime, parser, stack, filesystem, database, or language-specific error details that can help an attacker refine requests.",
-		Recommendation: "Log detailed exceptions server-side and return a stable, minimal client error with a correlation identifier.",
-	}, verboseErrors, maxEvidence)
-
-	serverErrors := filterOperations(dataset.Operations, func(item Operation) bool { return item.Status >= 500 && item.Status < 600 })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-SERVER-ERROR", Severity: SeverityMedium, Title: "Server errors triggered by generated requests",
-		Confidence: "observed response", OWASP: []string{"API4:2023", "API8:2023"},
-		Description:    "Generated requests produced 5xx responses, indicating unhandled inputs, downstream failures, or insufficient defensive error handling.",
-		Recommendation: "Correlate requests with server logs, remove sensitive error detail, add input-boundary tests, and confirm failures do not partially commit state.",
-	}, serverErrors, maxEvidence)
-
-	ssrf := filterOperations(dataset.Operations, func(item Operation) bool { return ssrfPath.MatchString(item.Target) })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-SSRF-CANDIDATE", Severity: SeverityMedium, Title: "SSRF-oriented parameter and route candidates",
-		Confidence: "route-name heuristic; outbound request not verified", OWASP: []string{"API7:2023", "API10:2023"},
-		Description:    "Routes associated with URLs, callbacks, webhooks, proxies, imports, or remote fetches may consume attacker-controlled destinations.",
-		Recommendation: "Use a controlled callback service to test scheme/host validation, redirects, DNS rebinding resistance, private-address blocking, and response handling.",
-	}, ssrf, maxEvidence)
-
-	resource := filterOperations(dataset.Operations, func(item Operation) bool { return resourcePath.MatchString(item.Target) })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-RESOURCE-CANDIDATE", Severity: SeverityLow, Title: "Resource-consumption review candidates",
-		Confidence: "route-name heuristic; limits not exhausted", OWASP: []string{"API4:2023", "API6:2023"},
-		Description:    "Bulk, batch, export, search, upload, download, or list routes can expose cost-amplification and automation abuse risks.",
-		Recommendation: "Test documented and undocumented size, pagination, rate, concurrency, and cost limits in a controlled environment.",
-	}, resource, maxEvidence)
-
-	redirects := filterOperations(dataset.Operations, func(item Operation) bool { return item.Status >= 300 && item.Status < 400 })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-REDIRECT", Severity: SeverityLow, Title: "Redirect responses require destination review",
-		Confidence: "observed response; Location header unavailable", OWASP: []string{"API7:2023", "API8:2023"},
-		Description:    "Redirect responses were observed, but the current result schema does not capture Location headers.",
-		Recommendation: "Inspect redirect destinations and test whether user-controlled values can produce external, credential-bearing, or scheme-relative redirects.",
-	}, redirects, maxEvidence)
-
-	if len(dataset.Failures) > 0 {
-		finding := Finding{ID: "PENTEST-COVERAGE-GAP", Severity: SeverityMedium, Title: "Specifications were not fully exercised", Count: len(dataset.Failures),
-			Confidence: "observed coverage gap", OWASP: []string{"API8:2023", "API9:2023"},
-			Description:    "Specification parsing, target policy, or transport failures prevented complete request generation for some sources.",
-			Recommendation: "Correct malformed contracts, confirm intended server hosts, restore failed sources, and rerun before treating the assessment as complete."}
-		for _, failure := range dataset.Failures[:min(len(dataset.Failures), maxEvidence)] {
-			finding.Evidence = append(finding.Evidence, Evidence{Source: failure.Source, Note: failure.Error})
-		}
-		finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
-		findings = append(findings, finding)
-	}
-	if len(dataset.Discoveries) > 0 {
-		finding := Finding{ID: "PENTEST-API-INVENTORY", Severity: SeverityInformational, Title: "Publicly discoverable API specifications", Count: len(dataset.Discoveries),
-			Confidence: "observed discovery", OWASP: []string{"API9:2023"},
-			Description:    "Swagger/OpenAPI documents were discovered at predictable locations. Exposure may be intentional, but every document should have an owner and lifecycle.",
-			Recommendation: "Inventory each specification, remove obsolete environments and versions, and ensure exposed documentation reveals no internal-only operations or metadata."}
-		for _, discovery := range dataset.Discoveries[:min(len(dataset.Discoveries), maxEvidence)] {
-			finding.Evidence = append(finding.Evidence, Evidence{Source: discovery.Target, Target: discovery.URL, Note: discovery.Version})
-		}
-		finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
-		findings = append(findings, finding)
-	}
-	auth := filterOperations(dataset.Operations, func(item Operation) bool { return item.Status == 401 || item.Status == 403 })
-	findings = appendFinding(findings, Finding{
-		ID: "PENTEST-AUTH-CHALLENGE", Severity: SeverityInformational, Title: "Authentication or authorization challenges observed",
-		Confidence: "observed response", OWASP: []string{"API2:2023", "API5:2023"},
-		Description:    "The API returned 401 or 403 for these operations. This is a useful enforcement signal but does not prove consistent authorization for every identity and object.",
-		Recommendation: "Retest with valid identities across roles and object ownership boundaries, and distinguish authentication failures from authorization failures consistently.",
-	}, auth, maxEvidence)
+	findings = append(findings, persistentModificationFinding(dataset.Operations, maxEvidence)...)
+	disclosureClasses := classifyDisclosureOperations(dataset.Operations)
+	findings = append(findings, verboseBackendDisclosureFinding(dataset.Operations, disclosureClasses, maxEvidence)...)
+	findings = append(findings, implementationDiagnosticDisclosureFinding(dataset.Operations, disclosureClasses, maxEvidence)...)
+	findings = append(findings, sensitiveDataExposureFinding(dataset.Operations, maxEvidence)...)
 	sort.SliceStable(findings, func(i, j int) bool {
 		left, right := severityRank(findings[i].Severity), severityRank(findings[j].Severity)
 		if left != right {
@@ -365,25 +247,275 @@ func analyzeFindings(dataset Dataset, maxEvidence int) []Finding {
 	return findings
 }
 
-func appendFinding(findings []Finding, finding Finding, operations []Operation, maxEvidence int) []Finding {
-	if len(operations) == 0 {
-		return findings
-	}
-	finding.Count = len(operations)
-	for _, operation := range operations[:min(len(operations), maxEvidence)] {
-		finding.Evidence = append(finding.Evidence, operationEvidence(operation))
-	}
-	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
-	return append(findings, finding)
-}
-
 func operationEvidence(operation Operation) Evidence {
-	return Evidence{
+	evidence := Evidence{
+		RunID: operation.RunID, ObservationID: operation.ObservationID, ObservedAt: operation.ObservedAt,
 		Source: operation.Source, Method: operation.Method, Status: operation.Status, Target: operation.Target,
 		URL: operation.URL, ContentType: operation.ContentType, RequestBody: operation.RequestBody,
 		ResponseBody: operation.ResponseBody, ResponseTruncated: operation.ResponseTruncated,
-		Case: operation.Case, Identity: operation.Identity, Guidance: operation.Guidance,
+		Case: operation.Case, Identity: operation.Identity, AuthContext: operation.AuthContext, Guidance: operation.Guidance,
 	}
+	if strings.Contains(strings.ToUpper(operation.RequestBody+operation.ResponseBody), "REDACTED") {
+		evidence.Note = appendEvidenceNote(evidence.Note, "The literal REDACTED placeholder was present in the captured source payload; sj did not alter or conceal this evidence.")
+	}
+	return evidence
+}
+
+func appendEvidenceNote(current, addition string) string {
+	if strings.TrimSpace(current) == "" {
+		return addition
+	}
+	return current + " " + addition
+}
+
+func persistentModificationFinding(operations []Operation, maxEvidence int) []Finding {
+	groups := persistentReadbackGroups(operations)
+	if len(groups) == 0 {
+		return nil
+	}
+	finding := Finding{
+		ID: "PENTEST-PERSISTENT-UNAUTH-WRITE", Severity: SeverityHigh,
+		Title:          "Persistent state modification accepted without recorded authentication",
+		Count:          len(groups),
+		Confidence:     "observed write/readback persistence; authentication context was not recorded",
+		OWASP:          []string{"API5:2023", "API6:2023"},
+		Description:    "A state-changing request returned a substantive response and a later GET returned the same stable submitted marker for the same object. The retained exchange does not prove which credentials, if any, were supplied. If public writes are not intended, this is broken function-level authorization or unrestricted access to a sensitive business flow.",
+		Recommendation: "Confirm the credential context and intended public-write policy, inspect the audit trail, and replay with explicitly anonymous plus lower-privileged identities to verify create, update, and read authorization.",
+	}
+	finding.Evidence = persistentEvidence(operations, groups, maxEvidence)
+	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
+	return []Finding{finding}
+}
+
+func relatedReadback(write, read Operation) bool {
+	writeURL := write.URL
+	if writeURL == "" {
+		writeURL = write.Target
+	}
+	readURL := read.URL
+	if readURL == "" {
+		readURL = read.Target
+	}
+	writeOrigin, writePath := operationOriginPath(writeURL)
+	readOrigin, readPath := operationOriginPath(readURL)
+	if writeOrigin != "" && readOrigin != "" && writeOrigin != readOrigin {
+		return false
+	}
+	writePath = strings.TrimRight(writePath, "/")
+	readPath = strings.TrimRight(readPath, "/")
+	if writePath == "" || readPath == "" {
+		return false
+	}
+	return readPath == writePath || strings.HasPrefix(readPath, writePath+"/") ||
+		strings.TrimRight(parentPath(readPath), "/") == writePath
+}
+
+func operationOriginPath(raw string) (string, string) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", raw
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		if parsed.Path != "" {
+			return "", parsed.Path
+		}
+		return "", raw
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), parsed.Path
+}
+
+type disclosureClass uint8
+
+const (
+	disclosureNone disclosureClass = iota
+	disclosureBackend
+	disclosureImplementation
+)
+
+func classifyDisclosureOperations(operations []Operation) []disclosureClass {
+	classes := make([]disclosureClass, len(operations))
+	cache := make(map[string]disclosureClass)
+	for index, operation := range operations {
+		body := operation.ResponseBody
+		if body == "" {
+			continue
+		}
+		if class, exists := cache[body]; exists {
+			classes[index] = class
+			continue
+		}
+		class := disclosureNone
+		if verboseBackendDisclosure(body) {
+			class = disclosureBackend
+		} else if implementationDiagnosticBody.MatchString(body) {
+			class = disclosureImplementation
+		}
+		cache[body] = class
+		classes[index] = class
+	}
+	return classes
+}
+
+func verboseBackendDisclosureFinding(operations []Operation, classes []disclosureClass, maxEvidence int) []Finding {
+	return disclosureFinding(operations, classes, disclosureBackend, maxEvidence, Finding{
+		ID: "PENTEST-VERBOSE-BACKEND-DISCLOSURE", Severity: SeverityMedium,
+		Title:          "API responses disclose backend implementation or database details",
+		Confidence:     "observed response-body implementation detail",
+		OWASP:          []string{"API8:2023"},
+		Description:    "Response bodies exposed database, framework, driver, filesystem, language, or stack details that can help refine attacks.",
+		Recommendation: "Log detailed errors server-side and return stable, minimal client errors with correlation identifiers.",
+	})
+}
+
+func verboseBackendDisclosure(body string) bool {
+	return verboseErrorBody.MatchString(body) || verboseStructuredBacktrace.MatchString(body) ||
+		verboseDBErrorContext.MatchString(body)
+}
+
+func implementationDiagnosticDisclosureFinding(operations []Operation, classes []disclosureClass, maxEvidence int) []Finding {
+	return disclosureFinding(operations, classes, disclosureImplementation, maxEvidence, Finding{
+		ID: "PENTEST-IMPLEMENTATION-DIAGNOSTIC-DISCLOSURE", Severity: SeverityLow,
+		Title:          "API responses expose implementation diagnostics",
+		Confidence:     "observed lower-specificity response-body diagnostic",
+		OWASP:          []string{"API8:2023"},
+		Description:    "Response bodies exposed framework validation schemas, runtime parsing details, or upstream client/library failures. These details are lower impact than database or stack disclosures but can still refine reconnaissance.",
+		Recommendation: "Return stable client-safe errors and keep framework, dependency, and upstream diagnostics in server-side logs.",
+	})
+}
+
+func disclosureFinding(
+	operations []Operation,
+	classes []disclosureClass,
+	wanted disclosureClass,
+	maxEvidence int,
+	finding Finding,
+) []Finding {
+	groups := make(map[string]Operation)
+	for index, operation := range operations {
+		if classes[index] != wanted {
+			continue
+		}
+		key := normalizedEndpointFamily(operation)
+		if _, exists := groups[key]; !exists {
+			groups[key] = operation
+		}
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	finding.Count = len(keys)
+	for _, key := range keys[:min(len(keys), maxEvidence)] {
+		finding.Evidence = append(finding.Evidence, operationEvidence(groups[key]))
+	}
+	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
+	return []Finding{finding}
+}
+
+func sensitiveDataExposureFinding(operations []Operation, maxEvidence int) []Finding {
+	type piiGroup struct {
+		operation Operation
+		types     map[string]struct{}
+	}
+	groups := make(map[string]*piiGroup)
+	typeCache := make(map[string][]string)
+	high := false
+	for _, operation := range operations {
+		if !operationSuccess(operation) || operation.ResponseBody == "" {
+			continue
+		}
+		types, cached := typeCache[operation.ResponseBody]
+		if !cached {
+			types = scanevidence.DetectPIITypes([]byte(operation.ResponseBody))
+			typeCache[operation.ResponseBody] = types
+		}
+		types = filterReportPIITypes(operation.ResponseBody, types)
+		if len(types) == 0 {
+			continue
+		}
+		if intendedCredentialIssuance(operation, types) {
+			continue
+		}
+		for _, value := range types {
+			if value == "US SSN" || value == "payment card candidate" || value == "JWT" || value == "IBAN" {
+				high = true
+			}
+		}
+		key := normalizedEndpointFamily(operation)
+		group := groups[key]
+		if group == nil {
+			group = &piiGroup{operation: operation, types: make(map[string]struct{})}
+			groups[key] = group
+		}
+		for _, value := range types {
+			group.types[value] = struct{}{}
+		}
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	severity := SeverityMedium
+	if high {
+		severity = SeverityHigh
+	}
+	finding := Finding{
+		ID: "PENTEST-SENSITIVE-DATA-EXPOSURE", Severity: severity,
+		Title:          "API responses contain sensitive data patterns",
+		Count:          len(groups),
+		Confidence:     "observed type-only sensitive data detector",
+		OWASP:          []string{"API3:2023"},
+		Description:    "Successful API responses matched sensitive-data detectors. Matched values are intentionally not copied into the finding metadata.",
+		Recommendation: "Verify whether each returned field is necessary for the caller and enforce object-property authorization plus response schemas.",
+	}
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys[:min(len(keys), maxEvidence)] {
+		group := groups[key]
+		types := make([]string, 0, len(group.types))
+		for value := range group.types {
+			types = append(types, value)
+		}
+		sort.Strings(types)
+		evidence := operationEvidence(group.operation)
+		evidence.Note = appendEvidenceNote(evidence.Note, "matched_types="+strings.Join(types, ","))
+		finding.Evidence = append(finding.Evidence, evidence)
+	}
+	finding.WeightedPoints = severityWeight(finding.Severity) * finding.Count
+	return []Finding{finding}
+}
+
+func intendedCredentialIssuance(operation Operation, types []string) bool {
+	_, path := operation.operationOriginAndPath()
+	return scanevidence.IntendedCredentialIssuance(operation.Method, path, operation.Status, []byte(operation.ResponseBody), types)
+}
+
+func filterReportPIITypes(body string, types []string) []string {
+	if len(types) != 1 || types[0] != "email" {
+		return types
+	}
+	lower := strings.ToLower(body)
+	for _, reserved := range []string{"@example.test", "@sj.invalid"} {
+		if strings.Contains(lower, reserved) {
+			return nil
+		}
+	}
+	return types
+}
+
+func parentPath(path string) string {
+	path = strings.TrimRight(path, "/")
+	index := strings.LastIndex(path, "/")
+	if index <= 0 {
+		return "/"
+	}
+	return path[:index]
 }
 
 func filterOperations(operations []Operation, include func(Operation) bool) []Operation {

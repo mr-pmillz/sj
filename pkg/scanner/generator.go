@@ -40,10 +40,40 @@ func GenerateRequestsIntoWriterE(body []byte, client *httpclient.Client, cfg *co
 // GenerateRequestsIntoWriterContextE plans and executes one specification
 // without finalizing the writer, and stops promptly when ctx is canceled.
 func GenerateRequestsIntoWriterContextE(ctx context.Context, body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
-	return generateRequestsIntoWriterContextE(ctx, body, client, cfg, writer, resolver)
+	return generateRequestsIntoWriterContextWithCircuitE(
+		ctx, body, client, cfg, writer, resolver, NewTargetCircuit(),
+	)
 }
 
 func generateRequestsIntoWriterContextE(ctx context.Context, body []byte, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver) error {
+	return generateRequestsIntoWriterContextWithCircuitE(
+		ctx, body, client, cfg, writer, resolver, NewTargetCircuit(),
+	)
+}
+
+func GenerateRequestsIntoWriterWithCircuitContextE(
+	ctx context.Context,
+	body []byte,
+	client *httpclient.Client,
+	cfg *config.Config,
+	writer *output.Writer,
+	resolver *openapi.Resolver,
+	circuit *TargetCircuit,
+) error {
+	return generateRequestsIntoWriterContextWithCircuitE(
+		ctx, body, client, cfg, writer, resolver, circuit,
+	)
+}
+
+func generateRequestsIntoWriterContextWithCircuitE(
+	ctx context.Context,
+	body []byte,
+	client *httpclient.Client,
+	cfg *config.Config,
+	writer *output.Writer,
+	resolver *openapi.Resolver,
+	circuit *TargetCircuit,
+) error {
 	if openapi.LooksLikeJSSpec(body, cfg.SwaggerURL, cfg.LocalFile, cfg.Format) {
 		if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
 			body = extracted
@@ -65,7 +95,7 @@ func generateRequestsIntoWriterContextE(ctx context.Context, body []byte, client
 	if cfg.Mode != config.ModeEndpoints {
 		openapi.PrintSpecInfo(spec, writer, cfg)
 	}
-	return buildRequestsFromPathsContextE(ctx, spec, client, cfg, writer, resolver, false)
+	return buildRequestsFromPathsContextWithCircuitE(ctx, spec, client, cfg, writer, resolver, false, circuit)
 }
 
 func ConfigureTarget(spec map[string]any, cfg *config.Config) error {

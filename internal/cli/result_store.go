@@ -21,6 +21,22 @@ type resultRun struct {
 	run   store.Run
 }
 
+type resultPersistenceError struct {
+	err error
+}
+
+func durableResultContext(commandCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(commandCtx), 5*time.Second)
+}
+
+func (failure *resultPersistenceError) Error() string {
+	return failure.err.Error()
+}
+
+func (failure *resultPersistenceError) Unwrap() error {
+	return failure.err
+}
+
 func beginResultRun(ctx context.Context, cfg *config.Config, command string, metadata any) (*resultRun, error) {
 	if cfg.NoDatabase || strings.TrimSpace(cfg.DatabasePath) == "" {
 		return nil, nil
@@ -57,28 +73,42 @@ func (run *resultRun) finish(commandErr error) error {
 	if finishErr == nil && closeErr == nil {
 		output.PrintInfo("Stored %s run %s in %s\n", run.run.Command, run.run.ID, run.store.Path())
 	}
-	return errors.Join(commandErr, finishErr, closeErr)
+	persistenceErr := errors.Join(finishErr, closeErr)
+	if persistenceErr == nil {
+		return commandErr
+	}
+	return errors.Join(commandErr, &resultPersistenceError{err: persistenceErr})
 }
 
-func (run *resultRun) addAutomateResults(ctx context.Context, writer *output.Writer, failures []error) error {
+func (run *resultRun) addAutomateResults(ctx context.Context, writer *output.Writer) error {
 	if run == nil {
 		return nil
 	}
-	observations := make([]store.Observation, 0, len(writer.Results)+len(writer.VerboseResults)+len(failures))
+	observations := make([]store.Observation, 0, len(writer.Results)+len(writer.VerboseResults)+len(writer.SourceFailures)+len(writer.CoverageGaps))
+	authContext := requestAuthContext(writer.Cfg.Headers)
 	for _, result := range writer.Results {
-		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, ""))
+		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, "", authContext))
 	}
 	for _, result := range writer.VerboseResults {
-		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, result.Preview))
+		observations = append(observations, automateObservation(result.Source, result.Method, result.URL, result.Target, result.Status, result.ContentType, result.RequestBody, result.ResponseBody, result.ResponseTruncated, result.Preview, authContext))
 	}
-	for _, failure := range failures {
-		observations = append(observations, store.Observation{Kind: "automate_failure", Metadata: map[string]any{"error": failure.Error()}})
+	for _, failure := range writer.SourceFailures {
+		observations = append(observations, store.Observation{
+			Kind: "automate_failure", Source: failure.Source,
+			Metadata: map[string]any{"error": failure.Error, "coverage": true},
+		})
+	}
+	for _, gap := range writer.CoverageGaps {
+		observations = append(observations, store.Observation{
+			Kind: "automate_coverage_gap", Source: gap.Origin,
+			Metadata: map[string]any{"reason": gap.Reason, "skipped": gap.Skipped},
+		})
 	}
 	return run.store.AddObservations(ctx, run.run.ID, observations)
 }
 
-func automateObservation(source, method, targetURL, path string, status int, contentType, requestBody, responseBody string, truncated bool, preview string) store.Observation {
-	metadata := map[string]any{}
+func automateObservation(source, method, targetURL, path string, status int, contentType, requestBody, responseBody string, truncated bool, preview, authContext string) store.Observation {
+	metadata := map[string]any{"auth_context": authContext}
 	if preview != "" {
 		metadata["preview"] = preview
 	}
@@ -87,6 +117,19 @@ func automateObservation(source, method, targetURL, path string, status int, con
 		Status: status, ContentType: contentType, RequestBody: []byte(requestBody),
 		ResponseBody: []byte(responseBody), ResponseTruncated: truncated, Metadata: metadata,
 	}
+}
+
+func requestAuthContext(headers []string) string {
+	for _, header := range headers {
+		name, _, _ := strings.Cut(header, ":")
+		normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), "-", ""))
+		if normalized == "authorization" || normalized == "cookie" || normalized == "xapikey" ||
+			strings.Contains(normalized, "accesstoken") || strings.Contains(normalized, "authtoken") ||
+			strings.Contains(normalized, "apikey") {
+			return "authenticated"
+		}
+	}
+	return "anonymous"
 }
 
 func (run *resultRun) addBruteReports(ctx context.Context, reports []brute.Report) error {
@@ -223,7 +266,7 @@ func (run *resultRun) addFuzzReport(ctx context.Context, report fuzz.Report) err
 			Kind: "fuzz_probe", Method: probe.Method, URL: probe.URL, Status: probe.Status,
 			ContentType: probe.ContentType, RequestBody: []byte(probe.RequestBody), ResponseBody: []byte(probe.ResponseBody),
 			ResponseTruncated: probe.ResponseTruncated,
-			Metadata:          map[string]any{"baseline_url": probe.BaselineURL, "case": probe.Case, "category": probe.Category, "identity": probe.Identity, "response_bytes": probe.ResponseBytes, "response_hash": probe.ResponseHash, "rate_limit_remaining": probe.RateLimitRemaining, "pii_types": probe.PIITypes, "verbose_error": probe.VerboseError, "guidance": probe.Guidance, "error": probe.Error, "duration_ms": probe.DurationMillis},
+			Metadata:          map[string]any{"baseline_url": probe.BaselineURL, "case": probe.Case, "category": probe.Category, "identity": probe.Identity, "auth_context": probe.AuthContext, "response_bytes": probe.ResponseBytes, "response_hash": probe.ResponseHash, "rate_limit_remaining": probe.RateLimitRemaining, "pii_types": probe.PIITypes, "verbose_error": probe.VerboseError, "guidance": probe.Guidance, "error": probe.Error, "duration_ms": probe.DurationMillis},
 		})
 	}
 	if err := run.store.AddObservations(ctx, run.run.ID, observations); err != nil {

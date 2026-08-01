@@ -12,6 +12,14 @@ func loadSpec(ctx context.Context, cfg *config.Config, client *httpclient.Client
 	return specsource.Load(ctx, cfg, client)
 }
 
+func loadSpecWithMetadata(
+	ctx context.Context,
+	cfg *config.Config,
+	client *httpclient.Client,
+) ([]byte, int, httpclient.ResponseMetadata, error) {
+	return specsource.LoadWithMetadata(ctx, cfg, client)
+}
+
 func newHTTPClient(cfg *config.Config) (*httpclient.Client, error) {
 	client := httpclient.NewClient(cfg)
 	if client.InitErr != nil {

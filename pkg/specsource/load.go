@@ -15,45 +15,57 @@ import (
 // Load reads the single source configured in cfg and updates SpecBaseDir for
 // confined local reference resolution.
 func Load(ctx context.Context, cfg *config.Config, client *httpclient.Client) ([]byte, error) {
+	body, _, _, err := LoadWithMetadata(ctx, cfg, client)
+	return body, err
+}
+
+// LoadWithMetadata returns the HTTP outcome for remote specifications so batch
+// callers can enforce one origin-level rate and transport circuit across both
+// specification fetches and generated operation requests.
+func LoadWithMetadata(
+	ctx context.Context,
+	cfg *config.Config,
+	client *httpclient.Client,
+) ([]byte, int, httpclient.ResponseMetadata, error) {
 	if err := Validate(cfg); err != nil {
-		return nil, err
+		return nil, 0, httpclient.ResponseMetadata{}, err
 	}
 	if cfg.SwaggerURL != "" {
 		cfg.SpecBaseDir = ""
-		body, status, err := client.FetchSpec(ctx, cfg.SwaggerURL)
+		body, status, metadata, err := client.FetchSpecWithMetadata(ctx, cfg.SwaggerURL)
 		if err != nil {
-			return nil, fmt.Errorf("fetch specification: %w", err)
+			return nil, status, metadata, fmt.Errorf("fetch specification: %w", err)
 		}
 		if status < 200 || status >= 300 {
-			return nil, fmt.Errorf("fetch specification: server returned HTTP %d", status)
+			return nil, status, metadata, fmt.Errorf("fetch specification: server returned HTTP %d", status)
 		}
 		if int64(len(body)) > cfg.MaxSpecBytes {
-			return nil, fmt.Errorf("specification exceeds %d-byte limit", cfg.MaxSpecBytes)
+			return nil, status, metadata, fmt.Errorf("specification exceeds %d-byte limit", cfg.MaxSpecBytes)
 		}
-		return body, nil
+		return body, status, metadata, nil
 	}
 
 	absPath, err := filepath.Abs(cfg.LocalFile)
 	if err != nil {
-		return nil, fmt.Errorf("resolve specification path: %w", err)
+		return nil, 0, httpclient.ResponseMetadata{}, fmt.Errorf("resolve specification path: %w", err)
 	}
 	file, err := os.Open(absPath)
 	if err != nil {
-		return nil, fmt.Errorf("open specification: %w", err)
+		return nil, 0, httpclient.ResponseMetadata{}, fmt.Errorf("open specification: %w", err)
 	}
 	body, readErr := io.ReadAll(io.LimitReader(file, cfg.MaxSpecBytes+1))
 	closeErr := file.Close()
 	if readErr != nil {
-		return nil, fmt.Errorf("read specification: %w", readErr)
+		return nil, 0, httpclient.ResponseMetadata{}, fmt.Errorf("read specification: %w", readErr)
 	}
 	if closeErr != nil {
-		return nil, fmt.Errorf("close specification: %w", closeErr)
+		return nil, 0, httpclient.ResponseMetadata{}, fmt.Errorf("close specification: %w", closeErr)
 	}
 	if int64(len(body)) > cfg.MaxSpecBytes {
-		return nil, fmt.Errorf("specification exceeds %d-byte limit", cfg.MaxSpecBytes)
+		return nil, 0, httpclient.ResponseMetadata{}, fmt.Errorf("specification exceeds %d-byte limit", cfg.MaxSpecBytes)
 	}
 	cfg.SpecBaseDir = filepath.Dir(absPath)
-	return body, nil
+	return body, 0, httpclient.ResponseMetadata{}, nil
 }
 
 // Validate requires exactly one configured remote or local source.

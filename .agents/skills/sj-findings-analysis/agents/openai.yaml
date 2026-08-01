@@ -1,0 +1,3 @@
+display_name: SJ Findings Analysis
+short_description: Validate sj scan evidence and separate real API findings from false positives.
+default_prompt: Review sj scan artifacts, identify legitimate API security findings, suppress obvious false positives, and explain the request/response evidence and detector improvements.

@@ -72,6 +72,7 @@ type Config struct {
 	ColorMode        string
 
 	AcceptRisk             bool
+	AllowPatch             bool
 	GetAccessibleEndpoints bool
 	RetryOnHint            bool
 	RequiredOnly           bool

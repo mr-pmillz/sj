@@ -21,10 +21,33 @@ import (
 const defaultMaxResponseBodyBytes int64 = 10 * 1024 * 1024
 
 type Client struct {
-	HTTP    *http.Client
-	Replay  *http.Client
-	Cfg     *config.Config
-	InitErr error
+	HTTP            *http.Client
+	Replay          *http.Client
+	Cfg             *config.Config
+	InitErr         error
+	routeTransport  http.RoundTripper
+	configuredRoute bool
+}
+
+type managedRoundTripper struct {
+	next http.RoundTripper
+}
+
+func (transport *managedRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport.next.RoundTrip(request)
+}
+
+func (transport *managedRoundTripper) CloseIdleConnections() {
+	if closer, ok := transport.next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+type ResponseMetadata struct {
+	Header              http.Header
+	Sent                bool
+	Failure             string
+	TargetOriginFailure bool
 }
 
 func NewClient(cfg *config.Config) *Client {
@@ -71,6 +94,8 @@ func NewClient(cfg *config.Config) *Client {
 	}
 
 	c.HTTP = httpClient
+	c.routeTransport = transport
+	c.configuredRoute = true
 
 	if cfg.ReplayProxy != "" {
 		rt := http.DefaultTransport.(*http.Transport).Clone()
@@ -203,37 +228,71 @@ func (c *Client) MakeRequestContext(ctx context.Context, method, target string, 
 	return c.makeRequest(ctx, true, method, target, reqData, c.responseLimit())
 }
 
+func (c *Client) MakeRequestWithMetadataContext(
+	ctx context.Context,
+	method, target string,
+	reqData io.Reader,
+) ([]byte, string, int, ResponseMetadata) {
+	return c.makeRequestWithMetadata(ctx, true, method, target, reqData, c.responseLimit())
+}
+
 func (c *Client) FetchSpec(ctx context.Context, target string) ([]byte, int, error) {
-	body, reason, status := c.makeRequest(ctx, false, http.MethodGet, target, nil, c.specLimit())
-	if status == 0 {
+	body, status, _, err := c.FetchSpecWithMetadata(ctx, target)
+	return body, status, err
+}
+
+func (c *Client) FetchSpecWithMetadata(
+	ctx context.Context,
+	target string,
+) ([]byte, int, ResponseMetadata, error) {
+	body, reason, status, metadata := c.makeRequestWithMetadata(
+		ctx, false, http.MethodGet, target, nil, c.specLimit(),
+	)
+	if status == 0 || reason == "response_too_large" || reason == "read_error" {
 		if reason == "" {
 			reason = "request failed"
 		}
-		return nil, 0, errors.New(reason)
+		return nil, status, metadata, errors.New(reason)
 	}
-	return body, status, nil
+	return body, status, metadata, nil
 }
 
 func (c *Client) makeRequest(ctx context.Context, enforceSafety bool, method, target string, reqData io.Reader, bodyLimit int64) ([]byte, string, int) {
+	body, reason, status, metadata := c.makeRequestWithMetadata(
+		ctx, enforceSafety, method, target, reqData, bodyLimit,
+	)
+	if metadata.Failure != "" {
+		status = 0
+	}
+	return body, reason, status
+}
+
+func (c *Client) makeRequestWithMetadata(
+	ctx context.Context,
+	enforceSafety bool,
+	method, target string,
+	reqData io.Reader,
+	bodyLimit int64,
+) ([]byte, string, int, ResponseMetadata) {
 	if c.InitErr != nil {
-		return nil, "configuration_error", 0
+		return nil, "configuration_error", 0, ResponseMetadata{}
 	}
 	u, err := url.Parse(target)
 	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
-		return nil, "", 0
+		return nil, "", 0, ResponseMetadata{}
 	}
 
 	endpoint := strings.ToLower(u.EscapedPath() + "?" + u.RawQuery)
 	if enforceSafety && c.Cfg.Mode == config.ModeAutomate && !c.Cfg.Force {
 		if !c.Cfg.AcceptRisk && isUnsafeMethod(method) {
-			return nil, "skipped", 1
+			return nil, "skipped", 1, ResponseMetadata{}
 		}
 		safeWords := make(map[string]struct{}, len(c.Cfg.SafeWords))
 		for _, word := range c.Cfg.SafeWords {
 			safeWords[strings.ToLower(strings.TrimSpace(word))] = struct{}{}
 		}
 		if containsDangerousKeyword(endpoint, safeWords) && !c.Cfg.AcceptRisk {
-			return nil, "skipped", 1
+			return nil, "skipped", 1, ResponseMetadata{}
 		}
 	}
 
@@ -242,7 +301,7 @@ func (c *Client) makeRequest(ctx context.Context, enforceSafety bool, method, ta
 
 	req, err := http.NewRequestWithContext(ctx, method, target, reqData)
 	if err != nil {
-		return nil, "", 0
+		return nil, "", 0, ResponseMetadata{}
 	}
 
 	accept, ct := c.applyHeaders(req)
@@ -253,36 +312,127 @@ func (c *Client) makeRequest(ctx context.Context, enforceSafety bool, method, ta
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	metadata := ResponseMetadata{Sent: true}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		metadata.TargetOriginFailure = c.IsTargetOriginTransportError(err)
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, "", 0
+			return nil, "", 0, metadata
 		}
 		errStr := fmt.Sprint(err)
 		if (strings.Contains(errStr, "tls") || strings.Contains(errStr, "x509")) && !strings.Contains(errStr, "user canceled") {
-			return nil, "tls_error", 0
+			return nil, "tls_error", 0, metadata
 		}
 		if strings.Contains(errStr, "tcp") && strings.Contains(errStr, "no such host") {
-			return nil, "no_such_host", 0
+			return nil, "no_such_host", 0, metadata
 		}
 		if strings.Contains(errStr, "user canceled") {
-			return nil, "skipped", 1
+			return nil, "skipped", 1, metadata
 		}
-		return nil, "", 0
+		return nil, "", 0, metadata
 	}
+	metadata.Header = resp.Header.Clone()
 	bodyBytes, err := readBoundedBody(resp.Body, bodyLimit)
 	closeErr := resp.Body.Close()
 	if err != nil {
 		if errors.Is(err, errResponseTooLarge) {
-			return nil, "response_too_large", 0
+			metadata.Failure = "response_too_large"
+			return nil, "response_too_large", resp.StatusCode, metadata
 		}
-		return nil, "read_error", 0
+		metadata.Failure = "read_error"
+		return nil, "read_error", resp.StatusCode, metadata
 	}
 	if closeErr != nil {
-		return nil, "read_error", 0
+		metadata.Failure = "read_error"
+		return nil, "read_error", resp.StatusCode, metadata
 	}
 	bodyString := string(bodyBytes)
-	return bodyBytes, bodyString, resp.StatusCode
+	return bodyBytes, bodyString, resp.StatusCode, metadata
+}
+
+// IsTargetOriginTransportError returns true only when a transport failure can
+// safely be attributed to the requested origin rather than shared proxy
+// infrastructure. Direct connections have no shared intermediary. SOCKS
+// connections require a target-specific SOCKS reply; ambiguous handshake and
+// proxy-dial failures remain global.
+func (c *Client) IsTargetOriginTransportError(err error) bool {
+	if err == nil || c == nil || c.Cfg == nil {
+		return false
+	}
+	if c.HTTP == nil {
+		return false
+	}
+	if !c.usesConfiguredRoute() || !c.configuredRoute {
+		return false
+	}
+	if c.Cfg.Proxy != "" && c.Cfg.Proxy != "NOPROXY" {
+		return false
+	}
+	if c.Cfg.SOCKS5Proxy == "" {
+		return true
+	}
+	var operation *net.OpError
+	if !errors.As(err, &operation) || operation.Err == nil ||
+		!strings.HasPrefix(strings.ToLower(operation.Op), "socks ") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(operation.Err.Error())) {
+	case "network unreachable", "host unreachable", "connection refused", "ttl expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) usesConfiguredRoute() bool {
+	switch expected := c.routeTransport.(type) {
+	case *http.Transport:
+		current, ok := c.HTTP.Transport.(*http.Transport)
+		if !ok || current != expected {
+			return false
+		}
+		if c.Cfg.SOCKS5Proxy == "" && (c.Cfg.Proxy == "" || c.Cfg.Proxy == "NOPROXY") &&
+			current.Proxy != nil {
+			return false
+		}
+		return true
+	case *managedRoundTripper:
+		current, ok := c.HTTP.Transport.(*managedRoundTripper)
+		if !ok || current != expected {
+			return false
+		}
+		if c.Cfg.SOCKS5Proxy == "" && (c.Cfg.Proxy == "" || c.Cfg.Proxy == "NOPROXY") {
+			if transport, isHTTPTransport := expected.next.(*http.Transport); isHTTPTransport &&
+				transport.Proxy != nil {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// ReplaceHTTPTransport installs a custom primary transport. Target-local
+// failure isolation remains disabled unless configuredRoute is true, which is
+// appropriate only when the caller knows the replacement follows Cfg's direct
+// or SOCKS route and is not a shared/ambiguous intermediary. Call this before
+// issuing requests; transport replacement is not safe during concurrent use.
+func (c *Client) ReplaceHTTPTransport(
+	transport http.RoundTripper,
+	configuredRoute bool,
+) error {
+	if c == nil || c.HTTP == nil {
+		return errors.New("HTTP client is not initialized")
+	}
+	if transport == nil {
+		return errors.New("HTTP transport is required")
+	}
+	managed := &managedRoundTripper{next: transport}
+	c.HTTP.Transport = managed
+	c.routeTransport = managed
+	c.configuredRoute = configuredRoute
+	return nil
 }
 
 func containsDangerousKeyword(endpoint string, safeWords map[string]struct{}) bool {
@@ -396,34 +546,44 @@ func (c *Client) BruteFetch(target string) ([]byte, string, int) {
 }
 
 func (c *Client) BruteFetchContext(ctx context.Context, target string) ([]byte, string, int) {
+	body, contentType, status, _ := c.BruteFetchWithMetadataContext(ctx, target)
+	return body, contentType, status
+}
+
+func (c *Client) BruteFetchWithMetadataContext(
+	ctx context.Context,
+	target string,
+) ([]byte, string, int, ResponseMetadata) {
 	if c.InitErr != nil {
-		return nil, "", 0
+		return nil, "", 0, ResponseMetadata{}
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.Cfg.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
-		return nil, "", 0
+		return nil, "", 0, ResponseMetadata{}
 	}
 
 	c.applyHeaders(req)
 	req.Header.Set("Accept", "application/json, application/yaml, text/html, */*")
 
+	metadata := ResponseMetadata{Sent: true}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, "", 0
+		return nil, "", 0, metadata
 	}
+	metadata.Header = resp.Header.Clone()
 	bodyBytes, err := readBoundedBody(resp.Body, c.responseLimit())
 	closeErr := resp.Body.Close()
 	if err != nil {
-		return nil, resp.Header.Get("Content-Type"), resp.StatusCode
+		return nil, resp.Header.Get("Content-Type"), resp.StatusCode, metadata
 	}
 	if closeErr != nil {
-		return nil, resp.Header.Get("Content-Type"), 0
+		return nil, resp.Header.Get("Content-Type"), resp.StatusCode, metadata
 	}
 
-	return bodyBytes, resp.Header.Get("Content-Type"), resp.StatusCode
+	return bodyBytes, resp.Header.Get("Content-Type"), resp.StatusCode, metadata
 }
 
 var DangerousStrings = []string{

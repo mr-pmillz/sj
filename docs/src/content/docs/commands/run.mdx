@@ -3,7 +3,11 @@ title: run
 description: Execute the full authorized API assessment workflow.
 ---
 
-`run --full-workflow` chains OpenAPI recon, endpoint enumeration, bounded numeric IDOR testing, Bruno collection generation, SQLite evidence storage, and Markdown/HTML reporting.
+`run --full-workflow` is the URL-file orchestration command for mass authorized testing. It chains OpenAPI recon, endpoint enumeration, bounded numeric IDOR testing, Bruno collection generation, SQLite evidence storage, and legacy Markdown/HTML reporting. The individual `brute`, `automate`, `fuzz`, `collection`, and `report` commands remain supported for stage-level execution and recovery.
+
+When discovery has already been completed, add `--skip-brute` and provide known OpenAPI document URLs through `--url-file`. To resume from retained discovery evidence instead, combine `--skip-brute --brute-run RUN_ID` with the global `--database PATH`; `--brute-run` is repeatable. Both modes create a fresh output directory and new downstream run records without altering the retained brute run.
+
+Add `--auto-assess` to materialize and execute the strict assessment continuation automatically. This mode does not require an uploaded manifest: it pins the exact origins, current automate artifact, transport, bounded budgets, evidence policy, and read-only BOLA module. It deliberately creates no identities or owned objects, so the resulting assessment is anonymous/public-control coverage and cannot make ownership-backed authorization claims. Use `--assessment-manifest` instead when explicit identities, ownership facts, or workflows are available.
 
 ```bash
 sj --socks5-proxy socks5://127.0.0.1:9000 \
@@ -18,10 +22,83 @@ sj --socks5-proxy socks5://127.0.0.1:9000 \
   --max-evidence 100
 ```
 
-The output directory must not already exist. Brute defaults to 20 configurable target-level workers; active fuzzing remains sequential and paced. DELETE is always excluded. Non-DELETE state-changing methods still require a separate `--accept-risk` decision. Automate and fuzz progress is enabled for the workflow; fuzz progress uses immutable atomic, body-free snapshots and renders only to stderr.
+The output directory must not already exist. Brute defaults to 20 configurable target-level workers; active fuzzing remains sequential and paced. DELETE is always excluded. PATCH and POST are excluded by default and require `--allow-patch` or `--allow-post`, respectively, together with `--accept-risk`. Automate and fuzz progress is enabled for the workflow; fuzz progress uses immutable atomic, body-free snapshots and renders only to stderr.
+
+```bash
+SJ_ASSESSMENT_EVIDENCE_KEY=... ./bin/sj \
+  --socks5-proxy socks5://127.0.0.1:9000 \
+  --database targets/results/full-workflow.db \
+  -o targets/results/full-workflow \
+  run --full-workflow --skip-brute \
+  --url-file targets/known-openapi-urls.txt \
+  --auto-assess
+```
+
+Mass-target execution is failure-isolated by exact origin. Brute contains HTTP 429, advertised depleted-capacity, repeated transport, WAF, and uniform-unavailable stops to the target being scanned. Automate shares one circuit across remote specification fetches and generated operation requests, opening it after a 429, a remaining-capacity value of one or less, or three consecutive proven target-origin transport failures. Direct transports are target-attributable; SOCKS transports require a target-specific reply such as host-unreachable or connection-refused. Ambiguous HTTP/SOCKS proxy failures are not converted into per-origin coverage gaps. Local safety skips do not reset a target failure sequence, and a depleted response is never retried or replayed. Full-workflow fuzz applies the same classification to generated probes and business workflows. Healthy origins continue in deterministic order; invalid configuration, cancellation, a global proxy failure, an exhausted workflow-wide request budget, or an artifact/database failure remains a command-level error.
 
 The fuzz stage enables response-guided repair with at most two chained retries per deterministic probe. The preflight reserves the worst-case retry budget before it sends traffic. Structured validation requirements can be repaired; credential requirements, file uploads, and ambiguous backend exceptions remain unresolved unless the operator supplies the required authorized identity or test data.
 
 Numeric IDOR enumeration is additionally gated by a live per-identity baseline. Only current 2xx, non-failure, substantive JSON data responses release numeric mutations; invalid, catch-all, or trivial baselines are recorded and skipped.
 
-Automate and fuzz response capture is enabled automatically using the configured response read ceiling, and SQLite storage remains enabled by default. If active fuzzing stops on a rate-limit signal, already captured evidence is still used to generate the Bruno collection and reports, and the command returns a partial-coverage error.
+Automate and fuzz response capture is enabled automatically using the configured response read ceiling, and SQLite storage remains enabled by default. An isolated target rate or transport stop is recorded in the retained corpus without aborting healthy targets. Automate JSON and SQLite retain the affected origin, circuit reason, and skipped count, and the legacy report imports those records as explicit coverage gaps. Already captured evidence is still used to generate the Bruno collection and reports. A workflow-wide request-budget stop or persistence failure still returns an error after safe report generation.
+
+## Append assessment-v2 verification
+
+The broad workflow and manifest-driven `assess` lifecycle answer different questions. Legacy `report` analyzes discovery, endpoint, fuzz, disclosure, PII, and response evidence from result files or run IDs. `assess report` renders a signed persisted assessment ID and can make higher-confidence BOLA decisions because the manifest declares identities, owned objects, and expected access. Keep both outputs.
+
+Supply `--assessment-manifest` to append the complete assessment lifecycle after the legacy report:
+
+```bash
+export SJ_ASSESSMENT_EVIDENCE_KEY='load-a-stable-key-from-your-secret-manager'
+export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
+export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'
+
+sj --database targets/results/authorized-qa.db \
+  -o targets/results/full-workflow-with-assessment \
+  run --full-workflow \
+  --url-file targets/unique-base-urls.txt \
+  --workers 20 --exclude DELETE \
+  --idor-range 1-100 --max-cases 4096 \
+  --max-fuzz-requests 20000 --delay 500ms \
+  --assessment-manifest assessment-template.yaml \
+  --assessment-max-results 1000
+```
+
+The resulting stage order is:
+
+```text
+brute -> automate -> fuzz -> collection -> legacy report
+      -> assess plan -> assess run -> assess reports
+```
+
+The manifest is a normal strict assessment manifest. To consume this workflow's automatically generated enumeration corpus without hard-coding the output directory, use the exact reserved scalar as an `sj-results` input:
+
+```yaml
+spec:
+  inputs:
+    - name: workflow-enumeration
+      kind: sj-results
+      path: $workflow.automate
+      modules: [bola]
+```
+
+The template must contain exactly one `kind: sj-results` input whose `spec.inputs[].path` is `$workflow.automate`. Zero, duplicate, or wrong-kind bindings fail closed, and similarly named values elsewhere are not interpolated. Before target traffic, sj reads the source template once, validates its complete strict schema against a private synthetic input, requires explicit identities and owned objects, and requires every exact manifest origin to appear in the normalized `--url-file` origin set. It then writes the pinned materialized document as `assessment-manifest.yaml`. Changes to the source template after that preflight cannot alter the assessment. The materialized document is the manifest hashed, signed, and executed by assessment-v2.
+
+The template must explicitly provide exact origins, secret references, identities, owned objects, expected-access rules, modules, budgets, evidence policy, and an execution window. Those are authorization facts rather than recon facts, so sj never guesses them. Once that reusable server-controlled profile exists, the command above automates all remaining manifest binding, plan, run, persistence, and report operations in one invocation.
+
+Assessment-enabled workflows add these owner-only artifacts:
+
+- `assessment.db`
+- `assessment-manifest.yaml`
+- `assessment-plan.json`
+- `assessment-run.json`
+- `assessment-report.json`
+- `assessment-report.md`
+- `assessment-report.html`
+- `assessment-report.sarif.json`
+- `assessment-report.junit.xml`
+- `assessment-reproduction.zip`
+
+The assessment option fails before target traffic when combined with `--no-database`, when `SJ_ASSESSMENT_EVIDENCE_KEY` is missing or invalid, when the manifest lacks authorization facts, when a manifest origin falls outside `--url-file`, or when global HTTP proxy, SOCKS5, replay-proxy, or insecure-TLS overrides are present. Assessment transport is declared only by the manifest; no root transport option is silently copied into its signed authority boundary. Assessment execution isolates 429, depleted-capacity, conservative direct DNS-not-found/connection-refused failures, and target failures proven by a required healthy proxy to their exact origin so other manifest origins complete. If that is the only error, the combined workflow returns success only after its run result and every report are durably written; the report still labels the affected proofs failed/inconclusive. Shared proxy failures, direct unclassified transport failures, and report/database failures remain fatal. A global earlier-stage failure skips assessment requests while the captured legacy evidence is still reported.
+
+For controllers such as CASM, keep the legacy-only `run --full-workflow` profile for simple target lists. Enable the assessment continuation only through a server-controlled manifest/profile, a secret-backed stable evidence key, and persisted output storage. Do not accept arbitrary credential-bearing manifest text from an untrusted job request.

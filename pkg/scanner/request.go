@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -23,6 +24,84 @@ import (
 
 var standardOperations = []string{
 	"get", "head", "options", "query", "post", "put", "patch", "delete", "trace",
+}
+
+const maximumConsecutiveOriginTransportErrors = 3
+
+type TargetCircuit struct {
+	blocked           map[string]string
+	transportFailures map[string]int
+	skipped           map[string]int
+}
+
+func NewTargetCircuit() *TargetCircuit {
+	return &TargetCircuit{
+		blocked: make(map[string]string), transportFailures: make(map[string]int),
+		skipped: make(map[string]int),
+	}
+}
+
+type TargetCoverageGap struct {
+	Origin  string
+	Reason  string
+	Skipped int
+}
+
+func (circuit *TargetCircuit) BlockedOrigins() map[string]string {
+	result := make(map[string]string, len(circuit.blocked))
+	for origin, reason := range circuit.blocked {
+		result[origin] = reason
+	}
+	return result
+}
+
+func (circuit *TargetCircuit) Allow(rawURL string) bool {
+	origin := requestPlanOrigin(rawURL)
+	if origin == "" {
+		return true
+	}
+	if _, blocked := circuit.blocked[origin]; !blocked {
+		return true
+	}
+	circuit.skipped[origin]++
+	return false
+}
+
+func (circuit *TargetCircuit) Observe(
+	rawURL string,
+	status int,
+	metadata httpclient.ResponseMetadata,
+) {
+	origin := requestPlanOrigin(rawURL)
+	if origin == "" {
+		return
+	}
+	switch {
+	case status == http.StatusTooManyRequests || depletedRateCapacity(metadata.Header):
+		circuit.blocked[origin] = "rate-limited"
+	case status == 0 && metadata.TargetOriginFailure:
+		circuit.transportFailures[origin]++
+		if circuit.transportFailures[origin] >= maximumConsecutiveOriginTransportErrors {
+			circuit.blocked[origin] = "transport-unavailable"
+		}
+	case status >= 100 && metadata.Sent:
+		circuit.transportFailures[origin] = 0
+	}
+}
+
+func (circuit *TargetCircuit) CoverageGaps() []TargetCoverageGap {
+	origins := make([]string, 0, len(circuit.blocked))
+	for origin := range circuit.blocked {
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	result := make([]TargetCoverageGap, 0, len(origins))
+	for _, origin := range origins {
+		result = append(result, TargetCoverageGap{
+			Origin: origin, Reason: circuit.blocked[origin], Skipped: circuit.skipped[origin],
+		})
+	}
+	return result
 }
 
 type RequestPlan struct {
@@ -49,6 +128,21 @@ func buildRequestsFromPathsE(spec map[string]any, client *httpclient.Client, cfg
 }
 
 func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, client *httpclient.Client, cfg *config.Config, writer *output.Writer, resolver *openapi.Resolver, finalize bool) error {
+	return buildRequestsFromPathsContextWithCircuitE(
+		ctx, spec, client, cfg, writer, resolver, finalize, NewTargetCircuit(),
+	)
+}
+
+func buildRequestsFromPathsContextWithCircuitE(
+	ctx context.Context,
+	spec map[string]any,
+	client *httpclient.Client,
+	cfg *config.Config,
+	writer *output.Writer,
+	resolver *openapi.Resolver,
+	finalize bool,
+	circuit *TargetCircuit,
+) error {
 	if cfg.Mode == config.ModeEndpoints {
 		paths, err := endpointPaths(spec, cfg.BasePath)
 		if err != nil {
@@ -70,7 +164,7 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 
 	switch cfg.Mode {
 	case config.ModeAutomate:
-		if err := ExecuteRequestPlansContextE(ctx, plans, client, cfg, writer); err != nil {
+		if err := ExecuteRequestPlansWithCircuitContextE(ctx, plans, client, cfg, writer, circuit); err != nil {
 			return err
 		}
 	case config.ModePrepare:
@@ -101,15 +195,57 @@ func buildRequestsFromPathsContextE(ctx context.Context, spec map[string]any, cl
 // records their results without finalizing output. Callers can enforce policy
 // and result limits before any network side effect occurs.
 func ExecuteRequestPlansContextE(ctx context.Context, plans []RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) error {
+	return ExecuteRequestPlansWithCircuitContextE(
+		ctx, plans, client, cfg, writer, NewTargetCircuit(),
+	)
+}
+
+func ExecuteRequestPlansWithCircuitContextE(
+	ctx context.Context,
+	plans []RequestPlan,
+	client *httpclient.Client,
+	cfg *config.Config,
+	writer *output.Writer,
+	circuit *TargetCircuit,
+) error {
+	if circuit == nil {
+		return errors.New("target circuit is required")
+	}
 	for _, plan := range plans {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("request execution canceled: %w", err)
 		}
-		if err := executePlanContext(ctx, plan, client, cfg, writer); err != nil {
+		if !circuit.Allow(plan.URL) {
+			continue
+		}
+		status, metadata, err := executePlanResultContext(ctx, plan, client, cfg, writer)
+		if err != nil {
 			return err
 		}
+		circuit.Observe(plan.URL, status, metadata)
 	}
 	return nil
+}
+
+func requestPlanOrigin(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+}
+
+func depletedRateCapacity(header http.Header) bool {
+	for _, name := range []string{"RateLimit-Remaining", "X-RateLimit-Remaining"} {
+		for _, raw := range header.Values(name) {
+			value := strings.TrimSpace(strings.SplitN(raw, ",", 2)[0])
+			remaining, err := strconv.Atoi(value)
+			if err == nil && remaining <= 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func endpointPaths(spec map[string]any, basePath string) ([]string, error) {
@@ -172,6 +308,12 @@ func BuildRequestPlans(spec map[string]any, cfg *config.Config, resolver *openap
 		operations := pathOperations(pathItem)
 		for _, operation := range operations {
 			supportedOperations++
+			if strings.EqualFold(operation.method, http.MethodDelete) {
+				continue
+			}
+			if strings.EqualFold(operation.method, http.MethodPatch) && !cfg.AllowPatch {
+				continue
+			}
 			if _, excluded := excludedMethods[strings.ToUpper(operation.method)]; excluded {
 				continue
 			}
@@ -1027,26 +1169,34 @@ func executePlan(plan RequestPlan, client *httpclient.Client, cfg *config.Config
 }
 
 func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) error {
+	_, _, err := executePlanResultContext(ctx, plan, client, cfg, writer)
+	return err
+}
+
+func executePlanResultContext(ctx context.Context, plan RequestPlan, client *httpclient.Client, cfg *config.Config, writer *output.Writer) (int, httpclient.ResponseMetadata, error) {
 	userHeaders := cfg.Headers
 	cfg.Headers = plan.Headers
-	_, response, status := client.MakeRequestContext(ctx, plan.Method, plan.URL, bytes.NewReader(plan.Body))
+	_, response, status, metadata := client.MakeRequestWithMetadataContext(ctx, plan.Method, plan.URL, bytes.NewReader(plan.Body))
 	if err := ctx.Err(); err != nil {
 		cfg.Headers = userHeaders
-		return fmt.Errorf("execute %s %s: %w", plan.Method, plan.Path, err)
+		return status, metadata, fmt.Errorf("execute %s %s: %w", plan.Method, plan.Path, err)
 	}
 
-	if cfg.RetryOnHint && status == http.StatusUnauthorized {
-		response, status = RetryWithHintsContext(ctx, client, cfg, plan.Method, plan.URL, string(plan.Body), response, status)
+	if cfg.RetryOnHint && metadata.Failure == "" && status == http.StatusUnauthorized {
+		response, status, metadata = RetryWithHintsMetadataContext(
+			ctx, client, cfg, plan.Method, plan.URL, string(plan.Body), response, status, metadata,
+		)
 		if err := ctx.Err(); err != nil {
 			cfg.Headers = userHeaders
-			return fmt.Errorf("retry %s %s: %w", plan.Method, plan.Path, err)
+			return status, metadata, fmt.Errorf("retry %s %s: %w", plan.Method, plan.Path, err)
 		}
 	}
-	if client.Replay != nil && status >= 100 {
+	if client.Replay != nil && metadata.Failure == "" && status >= 100 &&
+		status != http.StatusTooManyRequests && !depletedRateCapacity(metadata.Header) {
 		client.ReplayRequestContext(ctx, plan.Method, plan.URL, bytes.NewReader(plan.Body))
 		if err := ctx.Err(); err != nil {
 			cfg.Headers = userHeaders
-			return fmt.Errorf("replay %s %s: %w", plan.Method, plan.Path, err)
+			return status, metadata, fmt.Errorf("replay %s %s: %w", plan.Method, plan.Path, err)
 		}
 	}
 	cfg.Headers = userHeaders
@@ -1055,35 +1205,39 @@ func executePlanContext(ctx context.Context, plan RequestPlan, client *httpclien
 	contentType := configuredContentType(plan.Headers)
 	storedResponse, responseTruncated := storedResponseEvidence(response, cfg)
 	storedRequestBody := redactedRequestBody(plan.Body, contentType)
+	observedStatus := status
+	if metadata.Failure != "" {
+		observedStatus = 0
+	}
 	if cfg.Verbose {
 		writer.AddVerboseResult(output.VerboseResult{
-			Source: source, Method: plan.Method, Preview: preview, Status: status, Target: plan.Path,
+			Source: source, Method: plan.Method, Preview: preview, Status: observedStatus, Target: plan.Path,
 			URL: plan.URL, ContentType: contentType, RequestBody: storedRequestBody,
 			ResponseBody: storedResponse, ResponseTruncated: responseTruncated, Curl: redactedCurlCommand(plan),
 		})
 	} else {
 		writer.AddResult(output.Result{
-			Source: source, Method: plan.Method, Status: status, Target: plan.Path,
+			Source: source, Method: plan.Method, Status: observedStatus, Target: plan.Path,
 			URL: plan.URL, ContentType: contentType, RequestBody: storedRequestBody,
 			ResponseBody: storedResponse, ResponseTruncated: responseTruncated,
 		})
 	}
 
-	accessible := status >= 200 && status < 300
+	accessible := observedStatus >= 200 && observedStatus < 300
 	if cfg.GetAccessibleEndpoints && !accessible {
-		return nil
+		return status, metadata, nil
 	}
 	if accessible && cfg.GetAccessibleEndpoints {
 		writer.AccessibleEndpoints = append(writer.AccessibleEndpoints, plan.Path)
 	}
 	if strings.EqualFold(cfg.OutputFormat, "console") {
 		if err := writer.WriteLogE(status, operationDisplayTarget(plan, cfg), plan.Method, preview); err != nil {
-			return fmt.Errorf("write result for %s %s: %w", plan.Method, plan.Path, err)
+			return status, metadata, fmt.Errorf("write result for %s %s: %w", plan.Method, plan.Path, err)
 		}
 	} else if cfg.ProgressDisplay {
 		output.LogProgressWithColor(status, operationDisplayTarget(plan, cfg), plan.Method, preview, cfg.ColorMode)
 	}
-	return nil
+	return status, metadata, nil
 }
 
 func storedResponseEvidence(response string, cfg *config.Config) (string, bool) {

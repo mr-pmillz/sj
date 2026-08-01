@@ -25,3 +25,14 @@ type VerboseResult struct {
 	ResponseTruncated bool   `json:"response_truncated,omitempty"`
 	Curl              string `json:"curl"`
 }
+
+type CoverageGap struct {
+	Origin  string `json:"origin"`
+	Reason  string `json:"reason"`
+	Skipped int    `json:"skipped"`
+}
+
+type SourceFailure struct {
+	Source string `json:"source"`
+	Error  string `json:"error"`
+}

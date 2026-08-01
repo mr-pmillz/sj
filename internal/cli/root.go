@@ -54,6 +54,9 @@ $ sj collection -I targets/results -o bruno-api-pentest
 Run bounded, paced active testing against interesting endpoints:
 $ sj fuzz -I targets/results --scope interesting
 
+Plan an ownership-backed authorization assessment without target traffic:
+$ sj assess plan --manifest assessment.yaml
+
 SQLite result storage is enabled by default; use --no-database for an ephemeral run.`,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -87,6 +90,7 @@ func init() {
 	rootCmd.AddCommand(collectionCmd)
 	rootCmd.AddCommand(fuzzCmd)
 	rootCmd.AddCommand(fullWorkflowCmd)
+	rootCmd.AddCommand(assessCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&cfg.UserAgent, "agent", "A", "", "Set the User-Agent string. Random by default.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.BasePath, "base-path", "b", "", "Set the API base path if not defined in the definition file (i.e. /V2/).")

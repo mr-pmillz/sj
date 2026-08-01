@@ -6,6 +6,7 @@ import (
 
 	"github.com/mr-pmillz/sj/pkg/bruno"
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -65,7 +66,7 @@ func runCollection(ctx context.Context, cfg *config.Config, options collectionCL
 	if err := resultRun.addArtifact(ctx, "bruno_collection", "", summary.OutputDirectory, summary); err != nil {
 		return fmt.Errorf("store collection result: %w", err)
 	}
-	fmt.Printf("Generated Bruno collection at %s (%d baseline, %d enumeration, %d error probes, %d identity comparisons)\n", summary.OutputDirectory, summary.BaselineRequests, summary.EnumerationRequests, summary.ErrorProbeRequests, summary.IdentityRequests)
+	output.PrintInfo("Generated Bruno collection at %s (%d baseline, %d enumeration, %d error probes, %d identity comparisons)\n", summary.OutputDirectory, summary.BaselineRequests, summary.EnumerationRequests, summary.ErrorProbeRequests, summary.IdentityRequests)
 	return nil
 }
 

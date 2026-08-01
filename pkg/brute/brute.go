@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,8 +26,25 @@ import (
 )
 
 type Scanner struct {
-	Client *httpclient.Client
-	Cfg    *config.Config
+	Client    *httpclient.Client
+	Cfg       *config.Config
+	runTarget func(context.Context, string, bool) (Report, error)
+}
+
+type PartialBatchError struct {
+	failures []error
+}
+
+func NewPartialBatchError(failures ...error) *PartialBatchError {
+	return &PartialBatchError{failures: append([]error(nil), failures...)}
+}
+
+func (failure *PartialBatchError) Error() string {
+	return fmt.Sprintf("%d target scans failed after isolated execution: %v", len(failure.failures), errors.Join(failure.failures...))
+}
+
+func (failure *PartialBatchError) Unwrap() []error {
+	return append([]error(nil), failure.failures...)
 }
 
 const maxConsecutiveTransportErrors = 3
@@ -59,34 +77,24 @@ func (s *Scanner) RunTargetsContext(ctx context.Context, targets []string, worke
 	}
 	workers = min(workers, len(targets))
 	s.Cfg.BruteWorkers = workers
-	batchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	type targetJob struct {
 		index int
 		url   string
 	}
 	jobs := make(chan targetJob)
 	reports := make([]Report, len(targets))
-	var firstErr error
-	var errOnce sync.Once
-	recordError := func(index int, err error) {
-		errOnce.Do(func() {
-			firstErr = fmt.Errorf("scan target %d: %w", index+1, err)
-			cancel()
-		})
-	}
+	targetErrors := make([]error, len(targets))
 	var wait sync.WaitGroup
 	wait.Add(workers)
 	for range workers {
 		go func() {
 			defer wait.Done()
 			for job := range jobs {
-				report, err := s.RunTargetContext(batchCtx, job.url, false)
-				if err != nil {
-					recordError(job.index, err)
-					return
-				}
+				report, err := s.runTargetContext(ctx, job.url, false)
 				reports[job.index] = report
+				if err != nil {
+					targetErrors[job.index] = fmt.Errorf("scan target %d: %w", job.index+1, err)
+				}
 			}
 		}()
 	}
@@ -95,19 +103,32 @@ dispatchLoop:
 	for index, target := range targets {
 		select {
 		case jobs <- targetJob{index: index, url: target}:
-		case <-batchCtx.Done():
+		case <-ctx.Done():
 			break dispatchLoop
 		}
 	}
 	close(jobs)
 	wait.Wait()
-	if firstErr != nil {
-		return reports, firstErr
-	}
 	if err := ctx.Err(); err != nil {
-		return reports, fmt.Errorf("scan target batch: %w", err)
+		return reports, errors.Join(fmt.Errorf("scan target batch: %w", err), errors.Join(targetErrors...))
+	}
+	failures := make([]error, 0)
+	for _, targetErr := range targetErrors {
+		if targetErr != nil {
+			failures = append(failures, targetErr)
+		}
+	}
+	if len(failures) > 0 {
+		return reports, NewPartialBatchError(failures...)
 	}
 	return reports, nil
+}
+
+func (s *Scanner) runTargetContext(ctx context.Context, targetURL string, dumpSpec bool) (Report, error) {
+	if s.runTarget != nil {
+		return s.runTarget(ctx, targetURL, dumpSpec)
+	}
+	return s.RunTargetContext(ctx, targetURL, dumpSpec)
 }
 
 func (s *Scanner) RunTarget(targetURL string, dumpSpec bool) Report {
@@ -412,7 +433,7 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 	state.known[candidate.url] = true
 	targetURL := candidate.url
 	state.summary.URLsTested++
-	body, contentType, status := s.Client.BruteFetchContext(ctx, targetURL)
+	body, contentType, status, metadata := s.Client.BruteFetchWithMetadataContext(ctx, targetURL)
 	if status == 0 {
 		state.resetUnavailableSequence()
 		state.recordWAFChallengeLimit(false)
@@ -423,17 +444,17 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 	state.consecutiveTransportErrors = 0
 	countStatus(&state.summary, status)
 	if len(body) == 0 {
-		state.recordResponseLimit(status, contentType, body, false)
+		state.recordResponseLimit(status, contentType, body, false, metadata.Header)
 		state.recordWAFChallengeLimit(false)
 		return
 	}
 	if status < 200 || status >= 300 {
 		challenge := recordWAFChallenge(body, contentType, status, &state.summary)
-		state.recordResponseLimit(status, contentType, body, challenge)
+		state.recordResponseLimit(status, contentType, body, challenge, metadata.Header)
 		state.recordWAFChallengeLimit(challenge)
 		return
 	}
-	state.recordResponseLimit(status, contentType, body, false)
+	state.recordResponseLimit(status, contentType, body, false, metadata.Header)
 
 	matchCount := len(state.matches)
 	if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
@@ -542,8 +563,14 @@ func (state *scanState) recordWAFChallengeLimit(challenge bool) {
 	}
 }
 
-func (state *scanState) recordResponseLimit(status int, contentType string, body []byte, wafChallenge bool) {
-	if status == http.StatusTooManyRequests {
+func (state *scanState) recordResponseLimit(
+	status int,
+	contentType string,
+	body []byte,
+	wafChallenge bool,
+	header http.Header,
+) {
+	if status == http.StatusTooManyRequests || bruteRateCapacityDepleted(header) {
 		state.summary.RateLimitReached = true
 		state.resetUnavailableSequence()
 		return
@@ -566,6 +593,20 @@ func (state *scanState) recordResponseLimit(status int, contentType string, body
 	if state.consecutiveUnavailable >= maxConsecutiveUnavailable {
 		state.summary.UnavailableLimitReached = true
 	}
+}
+
+func bruteRateCapacityDepleted(header http.Header) bool {
+	for _, name := range []string{"RateLimit-Remaining", "X-RateLimit-Remaining"} {
+		for _, raw := range header.Values(name) {
+			field, _, _ := strings.Cut(strings.TrimSpace(raw), ";")
+			field, _, _ = strings.Cut(field, ",")
+			remaining, err := strconv.ParseInt(strings.TrimSpace(field), 10, 64)
+			if err == nil && remaining <= 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (state *scanState) resetUnavailableSequence() {
