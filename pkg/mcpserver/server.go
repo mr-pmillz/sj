@@ -41,6 +41,7 @@ type Options struct {
 	MaxResults            int
 	MaxOutputBytes        int64
 	MaxConcurrent         int
+	FullWorkflowRunner    FullWorkflowRunner
 
 	clientFactory     httpClientFactory
 	assessmentFactory assessmentRuntimeFactory
@@ -72,6 +73,7 @@ func New(options Options) (*mcp.Server, error) {
 		base: base, policy: policy, newClient: options.clientFactory,
 		newAssessment: options.assessmentFactory,
 		assessmentKey: append([]byte(nil), options.AssessmentEvidenceKey...),
+		fullWorkflow:  options.FullWorkflowRunner,
 		slots:         make(chan struct{}, options.MaxConcurrent),
 	}
 
@@ -82,7 +84,7 @@ func New(options Options) (*mcp.Server, error) {
 		Version:    options.Version,
 		WebsiteURL: "https://github.com/mr-pmillz/sj",
 	}, &mcp.ServerOptions{
-		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, analyze retained API results, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. Batch automate calls can consume batch brute reports directly. DELETE is never automated; PATCH requires allow_patch, and batch POST requires allow_post, in addition to risk authorization. Assessment manifests, retained result inputs, and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
+		Instructions: "Use sj to audit, convert, plan, discover, brute-force, automate, run the complete API assessment workflow, analyze retained API results, and run persisted authorization-assessment lifecycles for Swagger/OpenAPI documents. The native run_full_workflow tool accepts target or specification URL arrays and writes a root-confined artifact set without requiring an uploaded assessment manifest. DELETE is never automated; PATCH requires allow_patch, and full-workflow POST requires allow_post, in addition to risk authorization. Assessment manifests, retained result inputs, full-workflow outputs, and their local references are confined to operator-configured roots. Active scanning, assessment execution, and destructive risk acceptance require separate server-side opt-ins. Network, database, and local-file access are constrained by the server operator.",
 		Logger:       logger,
 		Capabilities: &mcp.ServerCapabilities{},
 	})
@@ -240,6 +242,12 @@ func registerTools(server *mcp.Server, service *service) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
 	}, service.automate)
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "run_full_workflow",
+		Title:       "Run the complete API assessment workflow",
+		Description: "Run discovery or consume known OpenAPI URLs, scan documented operations, fuzz bounded read-oriented ID candidates, generate reproduction collections and reports, and automatically run anonymous assessment-v2 in one native call. Uses only server-configured proxy, database, evidence key, host allowlist, and artifact roots.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &openWorld, DestructiveHint: &destructive, IdempotentHint: false},
+	}, service.runFullWorkflow)
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "assess_plan",
 		Title:       "Plan an authorization assessment",
 		Description: "Validate a root-confined local assessment manifest and build its deterministic request and evidence plan without sending target requests.",
@@ -290,6 +298,7 @@ type service struct {
 	newClient     httpClientFactory
 	newAssessment assessmentRuntimeFactory
 	assessmentKey []byte
+	fullWorkflow  FullWorkflowRunner
 	slots         chan struct{}
 }
 

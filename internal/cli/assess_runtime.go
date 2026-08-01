@@ -42,18 +42,25 @@ func newDefaultAssessmentLifecycle(commandConfig *config.Config) assessmentLifec
 }
 
 func newAssessmentRuntime(commandConfig *config.Config, requireStableKey bool) (assessmentRuntime, error) {
+	key, err := runtimeEvidenceKey(requireStableKey)
+	if err != nil {
+		return nil, err
+	}
+	return newAssessmentRuntimeWithEvidenceKey(commandConfig, key)
+}
+
+func newAssessmentRuntimeWithEvidenceKey(commandConfig *config.Config, key []byte) (assessmentRuntime, error) {
 	if err := validateAssessmentRuntimeConfig(commandConfig); err != nil {
 		return nil, err
 	}
-	key, err := runtimeEvidenceKey(requireStableKey)
-	if err != nil {
+	if _, err := validateDecodedAssessmentKey(key); err != nil {
 		return nil, err
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	return assessmentruntime.New(assessmentruntime.Config{
 		Client:          &http.Client{Transport: transport, Timeout: commandConfig.Timeout},
-		EvidenceKey:     key,
+		EvidenceKey:     append([]byte(nil), key...),
 		DirectTransport: true,
 	})
 }

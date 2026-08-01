@@ -20,26 +20,28 @@ import (
 const fullWorkflowMaximumFuzzRequests = 50_000
 
 type fullWorkflowCLIOptions struct {
-	FullWorkflow         bool
-	SkipBrute            bool
-	TargetsFile          string
-	BruteRunIDs          []string
-	OutputDirectory      string
-	Workers              int
-	ExcludeMethods       []string
-	IDORRange            string
-	MaxFuzzRequests      int
-	MaxCases             int
-	Delay                time.Duration
-	IdentityHeaders      []string
-	KnownUsername        string
-	AcceptRisk           bool
-	AllowPost            bool
-	AllowPatch           bool
-	MaxEvidence          int
-	AssessmentManifest   string
-	AutoAssess           bool
-	AssessmentMaxResults int
+	FullWorkflow          bool
+	SkipBrute             bool
+	TargetsFile           string
+	BruteRunIDs           []string
+	OutputDirectory       string
+	Workers               int
+	ExcludeMethods        []string
+	IDORRange             string
+	MaxFuzzRequests       int
+	MaxCases              int
+	Delay                 time.Duration
+	IdentityHeaders       []string
+	KnownUsername         string
+	AcceptRisk            bool
+	AllowPost             bool
+	AllowPatch            bool
+	MaxEvidence           int
+	AssessmentManifest    string
+	AutoAssess            bool
+	AssessmentMaxResults  int
+	AssessmentEvidenceKey []byte
+	ProtocolSafeOutput    bool
 }
 
 var fullWorkflowOptions = fullWorkflowCLIOptions{
@@ -140,6 +142,9 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		bruteCfg.BruteWorkers = options.Workers
 		bruteCfg.BruteAllFormats = true
 		bruteCfg.BruteOutputFormat = "console"
+		if options.ProtocolSafeOutput {
+			bruteCfg.BruteOutputFormat = "json"
+		}
 		bruteCfg.Outfile = paths.bruteBase
 		bruteErr = stages.brute(ctx, bruteCfg)
 		if bruteErr != nil && !regularFileExists(paths.bruteJSON) {
@@ -166,6 +171,9 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	automateCfg.SwaggerURL = ""
 	automateCfg.OutputAllFormats = true
 	automateCfg.OutputFormat = "console"
+	if options.ProtocolSafeOutput {
+		automateCfg.OutputFormat = "json"
+	}
 	automateCfg.Outfile = paths.automateBase
 	automateCfg.AcceptRisk = options.AcceptRisk
 	automateCfg.AllowPatch = options.AllowPatch
@@ -333,7 +341,11 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 				return apitest.NumericRange{}, fmt.Errorf("assessment manifest must be a regular non-symlink file")
 			}
 		}
-		if _, keyErr := assessmentEvidenceKey(); keyErr != nil {
+		if len(options.AssessmentEvidenceKey) > 0 {
+			if _, keyErr := validateDecodedAssessmentKey(options.AssessmentEvidenceKey); keyErr != nil {
+				return apitest.NumericRange{}, keyErr
+			}
+		} else if _, keyErr := assessmentEvidenceKey(); keyErr != nil {
 			return apitest.NumericRange{}, keyErr
 		}
 		if runtimeErr := validateAssessmentRuntimeConfig(fullWorkflowAssessmentConfig(base)); runtimeErr != nil {

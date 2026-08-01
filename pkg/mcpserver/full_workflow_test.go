@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -125,3 +128,120 @@ func TestRunFullWorkflowToolFailsClosedBeforeNativeRunner(t *testing.T) {
 	}
 }
 
+func TestValidateFullWorkflowSourceModes(t *testing.T) {
+	service := &service{
+		base:   config.New(),
+		policy: policy{hosts: []hostRule{{host: "api.example.com"}}},
+	}
+	tests := []struct {
+		name  string
+		input fullWorkflowInput
+		want  string
+	}{
+		{name: "targets", input: fullWorkflowInput{Targets: []string{"https://api.example.com"}}},
+		{name: "stored brute", input: fullWorkflowInput{SkipBrute: true, BruteRunIDs: []string{"run-1"}}},
+		{name: "spec and brute conflict", input: fullWorkflowInput{SkipBrute: true, SpecURLs: []string{"https://api.example.com/openapi.json"}, BruteRunIDs: []string{"run-1"}}, want: "mutually exclusive"},
+		{name: "brute id line break", input: fullWorkflowInput{SkipBrute: true, BruteRunIDs: []string{"run-1\nbad"}}, want: "without line breaks"},
+		{name: "spec without skip", input: fullWorkflowInput{Targets: []string{"https://api.example.com"}, SpecURLs: []string{"https://api.example.com/openapi.json"}}, want: "require skip_brute"},
+		{name: "skip without input", input: fullWorkflowInput{SkipBrute: true}, want: "requires spec_urls or brute_run_ids"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := service.validateFullWorkflowSources(test.input)
+			if test.want == "" && err != nil {
+				t.Fatal(err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+	service.base.MaxCandidates = 1
+	if err := service.validateFullWorkflowSources(fullWorkflowInput{Targets: []string{"https://api.example.com", "https://api.example.com/v2"}}); err == nil || !strings.Contains(err.Error(), "exceeds server limit") {
+		t.Fatalf("source limit error = %v", err)
+	}
+}
+
+func TestRunFullWorkflowReturnsTypedPartialFailureAndBoundsOutput(t *testing.T) {
+	newOptions := func(root string, runner FullWorkflowRunner) Options {
+		commandConfig := config.New()
+		commandConfig.DatabasePath = filepath.Join(root, "results.db")
+		return Options{
+			Version: "test", Config: commandConfig, AllowedHosts: []string{"api.example.com"},
+			AssessmentRoots: []string{root}, AssessmentEvidenceKey: bytes.Repeat([]byte{0x53}, 32),
+			AllowActive: true, FullWorkflowRunner: runner,
+		}
+	}
+	arguments := func(root, name string) map[string]any {
+		return map[string]any{
+			"skip_brute": true, "spec_urls": []string{"https://api.example.com/openapi.json"},
+			"output_directory": filepath.Join(root, name),
+		}
+	}
+
+	t.Run("runner unavailable", func(t *testing.T) {
+		root := t.TempDir()
+		session := connectTestClient(t, newOptions(root, nil))
+		result := callTool(t, session, "run_full_workflow", arguments(root, "unavailable"))
+		if !result.IsError || !strings.Contains(toolText(result), "runner is unavailable") {
+			t.Fatalf("result = error:%v text:%q", result.IsError, toolText(result))
+		}
+	})
+
+	t.Run("partial failure", func(t *testing.T) {
+		root := t.TempDir()
+		runner := func(_ context.Context, _ *config.Config, request FullWorkflowRequest) (FullWorkflowOutput, error) {
+			return FullWorkflowOutput{OutputDirectory: request.OutputDirectory, Artifacts: []string{"automate.json"}}, errors.New("fuzz stopped")
+		}
+		session := connectTestClient(t, newOptions(root, runner))
+		result := callTool(t, session, "run_full_workflow", arguments(root, "partial"))
+		if !result.IsError || !strings.Contains(toolText(result), "fuzz stopped") {
+			t.Fatalf("result = error:%v text:%q", result.IsError, toolText(result))
+		}
+		var output FullWorkflowOutput
+		decodeStructured(t, result, &output)
+		if output.Completed || len(output.Artifacts) != 1 {
+			t.Fatalf("partial output = %#v", output)
+		}
+	})
+
+	t.Run("output bounded", func(t *testing.T) {
+		root := t.TempDir()
+		runner := func(_ context.Context, _ *config.Config, request FullWorkflowRequest) (FullWorkflowOutput, error) {
+			artifacts := make([]string, 100)
+			for index := range artifacts {
+				artifacts[index] = fmt.Sprintf("%040d.json", index)
+			}
+			return FullWorkflowOutput{OutputDirectory: request.OutputDirectory, Artifacts: artifacts}, nil
+		}
+		options := newOptions(root, runner)
+		options.MaxOutputBytes = 512
+		session := connectTestClient(t, options)
+		result := callTool(t, session, "run_full_workflow", arguments(root, "large"))
+		if !result.IsError || !strings.Contains(toolText(result), "output exceeds") {
+			t.Fatalf("result = error:%v text:%q", result.IsError, toolText(result))
+		}
+	})
+}
+
+func TestFullWorkflowOutputPathPolicy(t *testing.T) {
+	root := t.TempDir()
+	configured, err := newPolicy(Options{AssessmentRoots: []string{root}, MaxResults: 1, MaxOutputBytes: 1, MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configured.checkAssessmentOutputDirectoryPath("relative"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative path error = %v", err)
+	}
+	existing := filepath.Join(root, "existing")
+	if err := os.Mkdir(existing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configured.checkAssessmentOutputDirectoryPath(existing); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("existing path error = %v", err)
+	}
+	withoutRoots := policy{}
+	if _, err := withoutRoots.checkAssessmentOutputDirectoryPath(filepath.Join(root, "run")); err == nil || !strings.Contains(err.Error(), "assessment root") {
+		t.Fatalf("missing root error = %v", err)
+	}
+}

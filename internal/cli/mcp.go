@@ -51,6 +51,7 @@ Remote hosts, local files, active scanning, and potentially destructive requests
 			MaxResults:            mcpMaxResults,
 			MaxOutputBytes:        mcpMaxOutputBytes,
 			MaxConcurrent:         mcpMaxConcurrent,
+			FullWorkflowRunner:    newMCPFullWorkflowRunner(assessmentEvidenceKey),
 		})
 		if err != nil {
 			return fmt.Errorf("configure MCP server: %w", err)
@@ -75,7 +76,7 @@ func init() {
 	mcpCmd.Flags().BoolVar(&mcpAllowLocalFiles, "allow-local-files", false, "Allow general MCP document tools to read local specification files.")
 	mcpCmd.Flags().BoolVar(&mcpAllowActive, "allow-active", false, "Allow MCP tools to send bounded discovery, API scan, and assessment requests.")
 	mcpCmd.Flags().BoolVar(&mcpAllowDestructive, "allow-destructive", false, "Allow scan and assessment calls with accept_risk=true; requires --allow-active.")
-	mcpCmd.Flags().StringArrayVar(&mcpAssessmentRoots, "assessment-root", nil, "Authorize and confine only assessment manifests, local inputs, database files, and file secret references to this canonical directory; repeatable.")
+	mcpCmd.Flags().StringArrayVar(&mcpAssessmentRoots, "assessment-root", nil, "Authorize and confine assessment inputs, databases, and full-workflow artifact directories to this canonical directory; repeatable.")
 	mcpCmd.Flags().StringVar(&mcpAssessmentKey, "assessment-evidence-key-file", "", "Read the stable assessment evidence key from a bounded, non-symlink 0600 file.")
 	mcpCmd.Flags().IntVar(&mcpMaxResults, "max-results", 1_000, "Maximum findings, operations, or discovery results returned by one MCP call.")
 	mcpCmd.Flags().Int64Var(&mcpMaxOutputBytes, "max-output-bytes", 1<<20, "Maximum encoded structured output size returned by one MCP call.")

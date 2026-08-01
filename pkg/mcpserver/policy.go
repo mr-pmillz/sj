@@ -212,6 +212,29 @@ func (policy policy) checkAssessmentDatabasePath(raw string) (string, error) {
 	return filepath.Join(parent, filepath.Base(cleaned)), nil
 }
 
+func (policy policy) checkAssessmentOutputDirectoryPath(raw string) (string, error) {
+	if len(policy.assessmentRoots) == 0 {
+		return "", fmt.Errorf("full-workflow output requires at least one operator-configured assessment root")
+	}
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("full-workflow output_directory must be an absolute path")
+	}
+	cleaned := filepath.Clean(raw)
+	if _, err := os.Lstat(cleaned); err == nil {
+		return "", fmt.Errorf("full-workflow output_directory already exists")
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect full-workflow output_directory: %w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(cleaned))
+	if err != nil {
+		return "", fmt.Errorf("resolve full-workflow output parent: %w", err)
+	}
+	if !policy.assessmentPathWithinRoot(parent) {
+		return "", fmt.Errorf("full-workflow output_directory is outside the operator-configured assessment roots")
+	}
+	return filepath.Join(parent, filepath.Base(cleaned)), nil
+}
+
 func (policy policy) assessmentPathWithinRoot(canonical string) bool {
 	_, found := policy.assessmentRootForPath(canonical)
 	return found

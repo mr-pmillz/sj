@@ -45,6 +45,7 @@ Point an MCP client at the absolute path to the `sj` binary:
 | `discover_openapi` | Probes common definition paths when active access is enabled. |
 | `brute_openapi` | Probes a target batch with bounded target-level workers and returns structured discovery reports. |
 | `automate_openapi` | Consumes explicit sources or brute reports, deduplicates identical operation plans, and sends a policy-checked batch. |
+| `run_full_workflow` | Runs discovery or known specifications through automation, bounded fuzzing, collection/report generation, and automatic anonymous assessment in one native MCP call. |
 | `assess_plan` | Validates a confined local assessment manifest and returns its deterministic offline plan. |
 | `assess_run` | Executes a manifest-backed assessment and persists signed evidence in the operator-configured database. |
 | `assess_resume` | Resumes a persisted assessment after rechecking server authority and signed lifecycle state. |
@@ -54,6 +55,26 @@ Point an MCP client at the absolute path to the `sj` binary:
 Each document tool accepts exactly one source: inline `document`, allowlisted `url`, or an enabled `local_file`.
 
 `automate_openapi` supports case-insensitive `exclude_methods`, complete `store_responses` capture up to the server emergency ceiling, `full_urls` progress output, and `color` values of `auto`, `always`, or `never`. State-changing plans additionally require `accept_risk=true` and the server-side destructive gate.
+
+`run_full_workflow` is the native one-call path for local automation. It accepts `targets` for discovery, or `skip_brute=true` with either `spec_urls` or persisted `brute_run_ids`. The caller supplies a new absolute `output_directory` beneath an `--assessment-root`; the tool uses only the server-configured database, HTTP/SOCKS transport, host allowlist, evidence key, and response ceilings. It internally materializes URL arrays into an owner-only temporary file, invokes the same in-process orchestrator as `sj run --full-workflow`, then removes that file. The response contains artifact names and lifecycle identifiers rather than captured response bodies.
+
+Automatic anonymous assessment is enabled by default and does not invent identities, owned objects, or expected access. Set `skip_assessment=true` only when testing the legacy stages. DELETE remains disabled. PATCH and POST each require their own `allow_patch` or `allow_post` input plus `accept_risk=true` and the server's `--allow-destructive` gate.
+
+Example call arguments for known specifications:
+
+```json
+{
+  "skip_brute": true,
+  "spec_urls": [
+    "https://api.example.com/openapi.json"
+  ],
+  "output_directory": "/absolute/path/to/authorized-assessment/smoke-001",
+  "idor_range": "1-10",
+  "max_cases": 64,
+  "max_fuzz_requests": 2000,
+  "delay_ms": 100
+}
+```
 
 Assessment tools never accept a database path from the MCP caller. They use only the global `--database` selected by the server operator. The database must already be a regular non-symlink file under an assessment root, or its canonical existing parent must be under a root when SQLite will create it. Persisted assessment tools reject `--no-database`.
 
@@ -87,7 +108,7 @@ The default server permits only passive operations on inline documents. Enable a
 | `--allow-local-files` | false | Permit general document tools to read local specification files. This does not control assessment roots. |
 | `--allow-active` | false | Permit bounded scanning and definition discovery. |
 | `--allow-destructive` | false | Permit scan, automate, assessment run, and assessment resume calls with `accept_risk=true`; requires active access. |
-| `--assessment-root DIR` | none | Authorize and confine only assessment manifests, local inputs, file secret references, and the assessment database to a canonical directory. Repeatable and independent of general local-file access. |
+| `--assessment-root DIR` | none | Authorize and confine assessment manifests, local inputs, file secret references, databases, and full-workflow artifact directories to a canonical directory. Repeatable and independent of general local-file access. |
 | `--assessment-evidence-key-file FILE` | none | Load a stable evidence integrity key from a bounded, regular non-symlink `0600` file. The decoded base64 or hexadecimal key must contain at least 32 bytes. |
 | `--max-results N` | `1000` | Bound findings, operations, and returned discovery rows per call; discovery reports indicate truncation. |
 | `--max-output-bytes N` | `1048576` | Bound encoded structured output per call. |
@@ -95,6 +116,8 @@ The default server permits only passive operations on inline documents. Enable a
 | `--max-concurrent N` | `4` | Bound concurrently executing tool calls across one server process. |
 
 `assess_run` and `assess_resume` require `--allow-active`. Their `accept_risk=true` input additionally requires `--allow-destructive`; passive planning, status, and reporting do not. If an active assessment stops after creating durable state, the MCP result remains an error while preserving the structured partial snapshot and `assessment_id` for status or resume.
+
+`run_full_workflow` also requires `--allow-active`, a persistent server database beneath an assessment root, and a stable assessment evidence key unless `skip_assessment=true`. Its `output_directory` must not already exist. The MCP caller cannot override the database, proxy, TLS policy, evidence key, or filesystem roots.
 
 `--assessment-root` does not enable the general `local_file` document source. That separate surface remains denied unless the operator explicitly supplies `--allow-local-files`; an assessment root therefore cannot be used to read arbitrary local JSON or YAML through audit or conversion tools.
 

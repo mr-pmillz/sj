@@ -24,6 +24,9 @@ func TestExecuteMCPFullWorkflowMaterializesURLsAndReturnsDurableArtifacts(t *tes
 
 	stages := fullWorkflowStages{
 		automate: func(_ context.Context, stageConfig *config.Config) error {
+			if stageConfig.OutputFormat != "json" {
+				t.Fatalf("MCP automate output format = %q, want protocol-safe json", stageConfig.OutputFormat)
+			}
 			contents, err := os.ReadFile(stageConfig.AutomateURLFile)
 			if err != nil {
 				return err

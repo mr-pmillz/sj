@@ -39,7 +39,7 @@ Prefer `sj run --full-workflow` for a new end-to-end assessment. It chains brute
 
 Use `--skip-brute --url-file` for known specification URLs, or `--skip-brute --brute-run` with the configured database to resume from retained brute evidence. Use `--auto-assess` when the caller needs a one-command assessment continuation without a manifest file. Automatic assessment must remain anonymous/public-control only: materialize no identities, owned objects, or ownership expectations, and never describe its results as ownership-backed authorization verification.
 
-Use the sj MCP server for brute and automate when it is configured for the session and exposes those tools. Use the CLI for a stage the server does not expose, while preserving the same proxy, target scope, database, exclusions, and output conventions.
+Use the sj MCP server's native `run_full_workflow` tool for a one-call local workflow when it is configured for the session. It accepts target URL arrays, or known specification URLs/stored brute run IDs with `skip_brute`, and defaults to automatic anonymous assessment. The server operator retains authority over the proxy, database, evidence key, allowed hosts, and artifact roots. Use individual MCP tools or the CLI only when intentionally testing a stage in isolation.
 
 Apply these invariants:
 
