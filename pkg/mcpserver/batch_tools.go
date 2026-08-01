@@ -160,112 +160,18 @@ type preparedAutomateScan struct {
 const maxAutomateFailureCharacters = 512
 
 func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, input automateInput) (*mcp.CallToolResult, automateOutput, error) {
-	if !service.policy.allowActive {
-		return nil, automateOutput{}, fmt.Errorf("active tools are disabled by the MCP server")
-	}
-	if input.AcceptRisk && !service.policy.allowDestructive {
-		return nil, automateOutput{}, fmt.Errorf("destructive requests are disabled by the MCP server")
-	}
-	if (input.AllowPost || input.AllowPatch) && !input.AcceptRisk {
-		return nil, automateOutput{}, fmt.Errorf("allow_post and allow_patch require accept_risk=true")
-	}
-	if input.ResponsePreviewBytes < 0 || input.ResponsePreviewBytes > 4096 {
-		return nil, automateOutput{}, fmt.Errorf("response_preview_bytes must be between 0 and 4096")
-	}
-	validationCfg := service.config()
-	validationCfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
-	if input.ColorMode != "" {
-		validationCfg.ColorMode = input.ColorMode
-	}
-	if err := validationCfg.Validate(); err != nil {
-		return nil, automateOutput{}, fmt.Errorf("invalid automate options: %w", err)
-	}
-	sources, err := service.automateSources(input)
+	sources, err := service.validateAutomateRequest(input)
 	if err != nil {
 		return nil, automateOutput{}, err
 	}
-	if input.Target != "" {
-		if err := service.policy.checkURL("operation target override", input.Target); err != nil {
-			return nil, automateOutput{}, err
-		}
-	}
-	for _, source := range sources {
-		if err := service.validateSource(source); err != nil {
-			return nil, automateOutput{}, err
-		}
-	}
-
 	release, err := service.acquire(ctx, "OpenAPI batch scan")
 	if err != nil {
 		return nil, automateOutput{}, err
 	}
 	defer release()
-	prepared := make([]preparedAutomateScan, 0, len(sources))
-	failures := make([]automateFailure, 0)
-	totalPlans := 0
-	plannedOperations := make(map[automateOperationIdentity]struct{})
-	for index, source := range sources {
-		sourceLabel := mcpInputSourceLabel(source, index)
-		spec, cfg, resolver, err := service.parseSource(ctx, source)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, automateOutput{}, err
-			}
-			failures = append(failures, newAutomateFailure(sourceLabel, source, err))
-			continue
-		}
-		cfg.Mode = config.ModeAutomate
-		cfg.OutputFormat = "json"
-		cfg.Outfile = ""
-		cfg.RequiredOnly = input.RequiredOnly
-		cfg.RetryOnHint = input.RetryOnHint
-		cfg.AcceptRisk = input.AcceptRisk
-		cfg.AllowPatch = input.AllowPatch
-		cfg.Force = false
-		cfg.ProgressDisplay = input.Progress
-		cfg.FullURLs = input.FullURLs
-		if input.ColorMode != "" {
-			cfg.ColorMode = input.ColorMode
-		}
-		cfg.Verbose = input.ResponsePreviewBytes > 0
-		cfg.ResponsePreview = input.ResponsePreviewBytes
-		configureResponseCapture(cfg, input.StoreResponses)
-		cfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
-		applyTarget(cfg, input.Target)
-		if err := scanner.ConfigureTarget(spec, cfg); err != nil {
-			failures = append(failures, newAutomateFailure(sourceLabel, source, err))
-			continue
-		}
-		plans, err := scanner.BuildRequestPlans(spec, cfg, resolver)
-		if err != nil {
-			failures = append(failures, newAutomateFailure(sourceLabel, source, err))
-			continue
-		}
-		var operationPolicyErr error
-		for _, plan := range plans {
-			if err := service.policy.checkURL("operation target", plan.URL); err != nil {
-				operationPolicyErr = err
-				break
-			}
-		}
-		if operationPolicyErr != nil {
-			failures = append(failures, newAutomateFailure(sourceLabel, source, operationPolicyErr))
-			continue
-		}
-		plans = uniqueAutomatePlans(plans, plannedOperations)
-		if len(plans) == 0 {
-			continue
-		}
-		totalPlans += len(plans)
-		if totalPlans > service.policy.maxResults {
-			return nil, automateOutput{}, fmt.Errorf("planned operation count %d exceeds MCP result limit %d", totalPlans, service.policy.maxResults)
-		}
-		client, err := service.newClient(cfg)
-		if err != nil {
-			failures = append(failures, newAutomateFailure(sourceLabel, source, fmt.Errorf("initialize HTTP client: %w", err)))
-			continue
-		}
-		prepared = append(prepared, preparedAutomateScan{cfg: cfg, client: client, plans: plans, sourceLabel: sourceLabel})
+	prepared, failures, err := service.prepareAutomateScans(ctx, input, sources)
+	if err != nil {
+		return nil, automateOutput{}, err
 	}
 	if err := service.preflightAutomateOutput(prepared, failures, len(sources), input.ResponsePreviewBytes); err != nil {
 		return nil, automateOutput{}, err
@@ -274,19 +180,174 @@ func (service *service) automate(ctx context.Context, _ *mcp.CallToolRequest, in
 	writerCfg := service.config()
 	writerCfg.Verbose = input.ResponsePreviewBytes > 0
 	writer := output.NewWriter(writerCfg)
-	for _, scan := range prepared {
-		if err := scanner.ExecuteRequestPlansContextE(ctx, scan.plans, scan.client, scan.cfg, writer); err != nil {
-			if ctx.Err() != nil {
-				return nil, automateOutput{}, err
-			}
-			failures = append(failures, newAutomateFailure(scan.sourceLabel, sourceInput{URL: scan.cfg.SwaggerURL, LocalFile: scan.cfg.LocalFile}, err))
-		}
+	failures, err = executeAutomateScans(ctx, prepared, writer, failures)
+	if err != nil {
+		return nil, automateOutput{}, err
 	}
 	result := automateOutput{Sources: len(sources), Results: scanResults(writer), Failures: failures}
 	if err := service.ensureOutputSize(result); err != nil {
 		return nil, automateOutput{}, err
 	}
 	return nil, result, nil
+}
+
+func (service *service) validateAutomateRequest(input automateInput) ([]sourceInput, error) {
+	if !service.policy.allowActive {
+		return nil, fmt.Errorf("active tools are disabled by the MCP server")
+	}
+	if input.AcceptRisk && !service.policy.allowDestructive {
+		return nil, fmt.Errorf("destructive requests are disabled by the MCP server")
+	}
+	if (input.AllowPost || input.AllowPatch) && !input.AcceptRisk {
+		return nil, fmt.Errorf("allow_post and allow_patch require accept_risk=true")
+	}
+	if input.ResponsePreviewBytes < 0 || input.ResponsePreviewBytes > 4096 {
+		return nil, fmt.Errorf("response_preview_bytes must be between 0 and 4096")
+	}
+	validationCfg := service.config()
+	validationCfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
+	if input.ColorMode != "" {
+		validationCfg.ColorMode = input.ColorMode
+	}
+	if err := validationCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid automate options: %w", err)
+	}
+	sources, err := service.automateSources(input)
+	if err != nil {
+		return nil, err
+	}
+	if input.Target != "" {
+		if err := service.policy.checkURL("operation target override", input.Target); err != nil {
+			return nil, err
+		}
+	}
+	for _, source := range sources {
+		if err := service.validateSource(source); err != nil {
+			return nil, err
+		}
+	}
+	return sources, nil
+}
+
+func (service *service) prepareAutomateScans(
+	ctx context.Context,
+	input automateInput,
+	sources []sourceInput,
+) ([]preparedAutomateScan, []automateFailure, error) {
+	prepared := make([]preparedAutomateScan, 0, len(sources))
+	failures := make([]automateFailure, 0)
+	totalPlans := 0
+	plannedOperations := make(map[automateOperationIdentity]struct{})
+	for index, source := range sources {
+		scan, failure, err := service.prepareAutomateScan(ctx, input, source, index, plannedOperations)
+		if err != nil {
+			return nil, nil, err
+		}
+		if failure != nil {
+			failures = append(failures, *failure)
+			continue
+		}
+		if len(scan.plans) == 0 {
+			continue
+		}
+		totalPlans += len(scan.plans)
+		if totalPlans > service.policy.maxResults {
+			return nil, nil, fmt.Errorf("planned operation count %d exceeds MCP result limit %d", totalPlans, service.policy.maxResults)
+		}
+		client, err := service.newClient(scan.cfg)
+		if err != nil {
+			failures = append(failures, newAutomateFailure(scan.sourceLabel, source, fmt.Errorf("initialize HTTP client: %w", err)))
+			continue
+		}
+		scan.client = client
+		prepared = append(prepared, scan)
+	}
+	return prepared, failures, nil
+}
+
+func (service *service) prepareAutomateScan(
+	ctx context.Context,
+	input automateInput,
+	source sourceInput,
+	index int,
+	plannedOperations map[automateOperationIdentity]struct{},
+) (preparedAutomateScan, *automateFailure, error) {
+	sourceLabel := mcpInputSourceLabel(source, index)
+	spec, cfg, resolver, err := service.parseSource(ctx, source)
+	if err != nil {
+		if ctx.Err() != nil {
+			return preparedAutomateScan{}, nil, err
+		}
+		return failedAutomateScan(sourceLabel, source, err)
+	}
+	configureMCPAutomateScan(cfg, input)
+	if err := scanner.ConfigureTarget(spec, cfg); err != nil {
+		return failedAutomateScan(sourceLabel, source, err)
+	}
+	plans, err := scanner.BuildRequestPlans(spec, cfg, resolver)
+	if err != nil {
+		return failedAutomateScan(sourceLabel, source, err)
+	}
+	if err := service.validateAutomatePlanTargets(plans); err != nil {
+		return failedAutomateScan(sourceLabel, source, err)
+	}
+	plans = uniqueAutomatePlans(plans, plannedOperations)
+	if len(plans) == 0 {
+		return preparedAutomateScan{}, nil, nil
+	}
+	return preparedAutomateScan{cfg: cfg, plans: plans, sourceLabel: sourceLabel}, nil, nil
+}
+
+func configureMCPAutomateScan(cfg *config.Config, input automateInput) {
+	cfg.Mode = config.ModeAutomate
+	cfg.OutputFormat = "json"
+	cfg.Outfile = ""
+	cfg.RequiredOnly = input.RequiredOnly
+	cfg.RetryOnHint = input.RetryOnHint
+	cfg.AcceptRisk = input.AcceptRisk
+	cfg.AllowPatch = input.AllowPatch
+	cfg.Force = false
+	cfg.ProgressDisplay = input.Progress
+	cfg.FullURLs = input.FullURLs
+	if input.ColorMode != "" {
+		cfg.ColorMode = input.ColorMode
+	}
+	cfg.Verbose = input.ResponsePreviewBytes > 0
+	cfg.ResponsePreview = input.ResponsePreviewBytes
+	configureResponseCapture(cfg, input.StoreResponses)
+	cfg.ExcludeMethods = mcpAutomateExcludedMethods(input)
+	applyTarget(cfg, input.Target)
+}
+
+func (service *service) validateAutomatePlanTargets(plans []scanner.RequestPlan) error {
+	for _, plan := range plans {
+		if err := service.policy.checkURL("operation target", plan.URL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func failedAutomateScan(label string, source sourceInput, err error) (preparedAutomateScan, *automateFailure, error) {
+	failure := newAutomateFailure(label, source, err)
+	return preparedAutomateScan{}, &failure, nil
+}
+
+func executeAutomateScans(
+	ctx context.Context,
+	prepared []preparedAutomateScan,
+	writer *output.Writer,
+	failures []automateFailure,
+) ([]automateFailure, error) {
+	for _, scan := range prepared {
+		if err := scanner.ExecuteRequestPlansContextE(ctx, scan.plans, scan.client, scan.cfg, writer); err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			failures = append(failures, newAutomateFailure(scan.sourceLabel, sourceInput{URL: scan.cfg.SwaggerURL, LocalFile: scan.cfg.LocalFile}, err))
+		}
+	}
+	return failures, nil
 }
 
 func mcpAutomateExcludedMethods(input automateInput) []string {

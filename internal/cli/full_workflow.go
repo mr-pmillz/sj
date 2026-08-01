@@ -228,11 +228,12 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 
 	var assessmentErr error
 	if assessmentEnabled {
-		if automateContinuationErr != nil || fuzzErr != nil {
+		switch {
+		case automateContinuationErr != nil || fuzzErr != nil:
 			assessmentErr = errors.New("skipped because an earlier active stage did not complete")
-		} else if stages.assessment == nil {
+		case stages.assessment == nil:
 			assessmentErr = errors.New("assessment stage is not configured")
-		} else {
+		default:
 			assessmentErr = stages.assessment(ctx, fullWorkflowAssessmentConfig(base), assessmentRequest)
 		}
 	}
@@ -275,28 +276,46 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 	if base == nil {
 		return apitest.NumericRange{}, fmt.Errorf("full workflow configuration is required")
 	}
+	if err := validateFullWorkflowSources(base, options); err != nil {
+		return apitest.NumericRange{}, err
+	}
+	idRange, err := validateFullWorkflowLimits(options)
+	if err != nil {
+		return apitest.NumericRange{}, err
+	}
+	if err := validateFullWorkflowAssessmentOptions(base, options); err != nil {
+		return apitest.NumericRange{}, err
+	}
+	return idRange, nil
+}
+
+func validateFullWorkflowSources(base *config.Config, options fullWorkflowCLIOptions) error {
 	if options.SkipBrute && len(options.BruteRunIDs) > 0 {
 		if strings.TrimSpace(options.TargetsFile) != "" {
-			return apitest.NumericRange{}, fmt.Errorf("--url-file and --brute-run are mutually exclusive with --skip-brute")
+			return fmt.Errorf("--url-file and --brute-run are mutually exclusive with --skip-brute")
 		}
 		if base.NoDatabase || strings.TrimSpace(base.DatabasePath) == "" {
-			return apitest.NumericRange{}, fmt.Errorf("--brute-run requires a supplied result database")
+			return fmt.Errorf("--brute-run requires a supplied result database")
 		}
 	} else {
 		if strings.TrimSpace(options.TargetsFile) == "" {
-			return apitest.NumericRange{}, fmt.Errorf("full workflow requires --url-file")
+			return fmt.Errorf("full workflow requires --url-file")
 		}
 		info, err := os.Stat(options.TargetsFile)
 		if err != nil {
-			return apitest.NumericRange{}, fmt.Errorf("inspect full workflow target file: %w", err)
+			return fmt.Errorf("inspect full workflow target file: %w", err)
 		}
 		if !info.Mode().IsRegular() {
-			return apitest.NumericRange{}, fmt.Errorf("full workflow target file must be a regular file")
+			return fmt.Errorf("full workflow target file must be a regular file")
 		}
 	}
 	if !options.SkipBrute && len(options.BruteRunIDs) > 0 {
-		return apitest.NumericRange{}, fmt.Errorf("--brute-run requires --skip-brute")
+		return fmt.Errorf("--brute-run requires --skip-brute")
 	}
+	return nil
+}
+
+func validateFullWorkflowLimits(options fullWorkflowCLIOptions) (apitest.NumericRange, error) {
 	if strings.TrimSpace(options.OutputDirectory) == "" {
 		return apitest.NumericRange{}, fmt.Errorf("full workflow requires --outfile as a new output directory")
 	}
@@ -322,37 +341,48 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 	if options.AssessmentMaxResults < 0 {
 		return apitest.NumericRange{}, fmt.Errorf("--assessment-max-results must not be negative")
 	}
+	return idRange, nil
+}
+
+func validateFullWorkflowAssessmentOptions(base *config.Config, options fullWorkflowCLIOptions) error {
 	if options.AutoAssess && strings.TrimSpace(options.AssessmentManifest) != "" {
-		return apitest.NumericRange{}, fmt.Errorf("--auto-assess and --assessment-manifest are mutually exclusive")
+		return fmt.Errorf("--auto-assess and --assessment-manifest are mutually exclusive")
 	}
 	if (options.AllowPost || options.AllowPatch) && !options.AcceptRisk {
-		return apitest.NumericRange{}, fmt.Errorf("--allow-post and --allow-patch require --accept-risk")
+		return fmt.Errorf("--allow-post and --allow-patch require --accept-risk")
 	}
-	if options.AutoAssess || strings.TrimSpace(options.AssessmentManifest) != "" {
-		if base.NoDatabase {
-			return apitest.NumericRange{}, fmt.Errorf("assessment continuation cannot be combined with --no-database")
-		}
-		if manifestPath := strings.TrimSpace(options.AssessmentManifest); manifestPath != "" {
-			manifestInfo, manifestErr := os.Lstat(manifestPath)
-			if manifestErr != nil {
-				return apitest.NumericRange{}, fmt.Errorf("inspect assessment manifest: %w", manifestErr)
-			}
-			if manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() {
-				return apitest.NumericRange{}, fmt.Errorf("assessment manifest must be a regular non-symlink file")
-			}
-		}
-		if len(options.AssessmentEvidenceKey) > 0 {
-			if _, keyErr := validateDecodedAssessmentKey(options.AssessmentEvidenceKey); keyErr != nil {
-				return apitest.NumericRange{}, keyErr
-			}
-		} else if _, keyErr := assessmentEvidenceKey(); keyErr != nil {
-			return apitest.NumericRange{}, keyErr
-		}
-		if runtimeErr := validateAssessmentRuntimeConfig(fullWorkflowAssessmentConfig(base)); runtimeErr != nil {
-			return apitest.NumericRange{}, runtimeErr
-		}
+	if !options.AutoAssess && strings.TrimSpace(options.AssessmentManifest) == "" {
+		return nil
 	}
-	return idRange, nil
+	if base.NoDatabase {
+		return fmt.Errorf("assessment continuation cannot be combined with --no-database")
+	}
+	if err := validateFullWorkflowManifestFile(options.AssessmentManifest); err != nil {
+		return err
+	}
+	if len(options.AssessmentEvidenceKey) > 0 {
+		if _, err := validateDecodedAssessmentKey(options.AssessmentEvidenceKey); err != nil {
+			return err
+		}
+	} else if _, err := assessmentEvidenceKey(); err != nil {
+		return err
+	}
+	return validateAssessmentRuntimeConfig(fullWorkflowAssessmentConfig(base))
+}
+
+func validateFullWorkflowManifestFile(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect assessment manifest: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("assessment manifest must be a regular non-symlink file")
+	}
+	return nil
 }
 
 func fullWorkflowAssessmentConfig(base *config.Config) *config.Config {

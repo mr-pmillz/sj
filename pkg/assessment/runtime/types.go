@@ -62,9 +62,6 @@ func IsOnlyPartialCoverageError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if _, ok := err.(*PartialCoverageError); ok {
-		return true
-	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		children := joined.Unwrap()
 		if len(children) == 0 {
@@ -77,10 +74,29 @@ func IsOnlyPartialCoverageError(err error) bool {
 		}
 		return true
 	}
+	if isDirectPartialCoverageError(err) {
+		return true
+	}
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 		return IsOnlyPartialCoverageError(wrapped.Unwrap())
 	}
 	return false
+}
+
+// isDirectPartialCoverageError distinguishes an error that itself matches
+// PartialCoverageError from a wrapper whose child contains the match. This
+// preserves the all-branches requirement for wrapped errors.Join trees.
+func isDirectPartialCoverageError(err error) bool {
+	var matched *PartialCoverageError
+	if !errors.As(err, &matched) {
+		return false
+	}
+	child := errors.Unwrap(err)
+	if child == nil {
+		return true
+	}
+	var childMatch *PartialCoverageError
+	return !errors.As(child, &childMatch) || childMatch != matched
 }
 
 type Config struct {

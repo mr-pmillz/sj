@@ -46,6 +46,69 @@ func TestLoadDeduplicatesEquivalentResultFormats(t *testing.T) {
 	}
 }
 
+func TestLoadRecognizesStructuredJSONEnvelopes(t *testing.T) {
+	tests := []struct {
+		name       string
+		content    string
+		wantKind   string
+		wantAssert func(*testing.T, Dataset)
+	}{
+		{
+			name: "automate",
+			content: `{"results":[{"source":"https://api.example/openapi.json","method":"GET","status":200,"target":"/health"}],` +
+				`"coverage_gaps":[{"origin":"https://api.example","reason":"rate-limited","skipped":2}],` +
+				`"source_failures":[{"source":"https://broken.example/openapi.json","error":"invalid specification"}]}`,
+			wantKind: "automate-json",
+			wantAssert: func(t *testing.T, dataset Dataset) {
+				t.Helper()
+				if len(dataset.Operations) != 1 || len(dataset.Failures) != 2 {
+					t.Fatalf("automate dataset = %#v", dataset)
+				}
+			},
+		},
+		{
+			name: "fuzz",
+			content: `{"probes":[{"method":"GET","url":"https://api.example/items/1","baseline_url":"https://api.example/items/testvalue",` +
+				`"case":"idor_range:path:1:1","category":"idor","identity":"anonymous","status":200,"content_type":"application/json"}],` +
+				`"findings":[{"severity":"high","category":"authorization","title":"Differential response","method":"GET","url":"https://api.example/items/1"}]}`,
+			wantKind: "fuzz-json",
+			wantAssert: func(t *testing.T, dataset Dataset) {
+				t.Helper()
+				if len(dataset.Operations) != 1 || dataset.Operations[0].Origin != "fuzz" || len(dataset.ImportedFindings) != 1 {
+					t.Fatalf("fuzz dataset = %#v", dataset)
+				}
+			},
+		},
+		{
+			name: "brute",
+			content: `{"reports":[{"target":"https://api.example","specs_found":[{"url":"https://api.example/openapi.json",` +
+				`"openapi_version":"3.1.0"}],"summary":{"urls_tested":1,"specs_found_count":1}}]}`,
+			wantKind: "brute-json",
+			wantAssert: func(t *testing.T, dataset Dataset) {
+				t.Helper()
+				if len(dataset.Targets) != 1 || len(dataset.Discoveries) != 1 || dataset.BruteURLsTested != 1 {
+					t.Fatalf("brute dataset = %#v", dataset)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := writeReportFixture(t, directory, test.name+".json", test.content)
+			dataset, err := Load([]string{path}, DefaultLoadOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(dataset.Files) != 1 || dataset.Files[0].Kind != test.wantKind {
+				t.Fatalf("input files = %#v, want kind %q", dataset.Files, test.wantKind)
+			}
+			test.wantAssert(t, dataset)
+		})
+	}
+}
+
 func TestLoadAndRenderPreservesWAFChallengeCoverage(t *testing.T) {
 	directory := t.TempDir()
 	path := writeReportFixture(t, directory, "brute.json", `{"target":"https://api.example","specs_found":[],"summary":{"urls_tested":3,"responses_4xx":3,"waf_challenge_detected":true,"waf_challenge_responses":3,"waf_challenge_limit_reached":true,"references_rejected":2,"references_skipped":4,"rate_limit_reached":true,"unavailable_limit_reached":true}}`)

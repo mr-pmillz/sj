@@ -47,26 +47,9 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid automate configuration: %w", err)
 	}
-
-	ofmt := strings.ToLower(cfg.OutputFormat)
-
-	if cfg.OutputAllFormats && cfg.Outfile == "" {
-		return fmt.Errorf("--output-all-formats requires --outfile")
-	}
-
-	if cfg.Outfile != "" && ofmt != "" && !cfg.OutputAllFormats {
-		switch ofmt {
-		case "json", "jsonl", "csv", "console":
-		default:
-			return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv", cfg.OutputFormat)
-		}
-		if strings.HasSuffix(strings.ToLower(cfg.Outfile), "json") && ofmt == "console" {
-			cfg.OutputFormat = "json"
-		}
-	}
-
-	if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
-		return fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
+	ofmt, err := validateAutomateCLIOptions(cfg)
+	if err != nil {
+		return err
 	}
 
 	sources, err := resolveAutomateSources(ctx, cfg)
@@ -85,63 +68,13 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		output.PrintInfo("Gathering API details.\n")
 	}
 
-	batch := cfg.AutomateURLFile != ""
 	targetCircuit := scanner.NewTargetCircuit()
-	var failures []error
-	for index, source := range sources {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("automate scan canceled: %w", err)
-		}
-		sourceLabel := output.TerminalSafe(source.display())
-		if batch {
-			output.PrintInfo("[%d/%d] Scanning specification: %s\n", index+1, len(sources), sourceLabel)
-		}
-		if source.url != "" && !targetCircuit.Allow(source.url) {
-			continue
-		}
-
-		scanCfg := cloneAutomateConfig(cfg, source)
-		client, clientErr := newAutomateHTTPClient(scanCfg)
-		if clientErr != nil {
-			if !batch {
-				return clientErr
-			}
-			failure := fmt.Errorf("source %d (%s): initialize HTTP client: %w", index+1, sourceLabel, clientErr)
-			failures = append(failures, failure)
-			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
-			continue
-		}
-		bodyBytes, status, metadata, loadErr := loadSpecWithMetadata(ctx, scanCfg, client)
-		if source.url != "" {
-			targetCircuit.Observe(source.url, status, metadata)
-		}
-		if loadErr != nil {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("automate scan canceled: %w", err)
-			}
-			if !batch {
-				return loadErr
-			}
-			failure := fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, loadErr)
-			failures = append(failures, failure)
-			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
-			continue
-		}
-		resolver := openapi.NewResolver(scanCfg.SpecBaseDir)
-		if scanErr := scanner.GenerateRequestsIntoWriterWithCircuitContextE(ctx, bodyBytes, client, scanCfg, w, resolver, targetCircuit); scanErr != nil {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("automate scan canceled: %w", err)
-			}
-			if !batch {
-				return scanErr
-			}
-			failure := fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, scanErr)
-			failures = append(failures, failure)
-			w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
-		}
+	failures, err := scanAutomateSources(ctx, cfg, sources, w, targetCircuit)
+	if err != nil {
+		return err
 	}
 
-	if batch {
+	if cfg.AutomateURLFile != "" {
 		w.SpecTitle = ""
 		w.SpecDescription = ""
 	}
@@ -150,7 +83,105 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 			Origin: gap.Origin, Reason: gap.Reason, Skipped: gap.Skipped,
 		})
 	}
-	storageErr := resultRun.addAutomateResults(ctx, w)
+	return finalizeAutomateRun(ctx, resultRun, w, failures, len(sources))
+}
+
+func validateAutomateCLIOptions(cfg *config.Config) (string, error) {
+	ofmt := strings.ToLower(cfg.OutputFormat)
+	if cfg.OutputAllFormats && cfg.Outfile == "" {
+		return "", fmt.Errorf("--output-all-formats requires --outfile")
+	}
+	if cfg.Outfile != "" && ofmt != "" && !cfg.OutputAllFormats {
+		switch ofmt {
+		case "json", "jsonl", "csv", "console":
+		default:
+			return "", fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv", cfg.OutputFormat)
+		}
+		if strings.HasSuffix(strings.ToLower(cfg.Outfile), "json") && ofmt == "console" {
+			cfg.OutputFormat = "json"
+		}
+	}
+	if _, err := time.Parse("2006-01-02", cfg.CustomDate); err != nil {
+		return "", fmt.Errorf("invalid --custom-date %q; use YYYY-MM-DD", cfg.CustomDate)
+	}
+	return ofmt, nil
+}
+
+func scanAutomateSources(
+	ctx context.Context,
+	cfg *config.Config,
+	sources []automateSource,
+	w *output.Writer,
+	targetCircuit *scanner.TargetCircuit,
+) ([]error, error) {
+	batch := cfg.AutomateURLFile != ""
+	var failures []error
+	for index, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("automate scan canceled: %w", err)
+		}
+		failure := scanAutomateSource(ctx, cfg, source, index, len(sources), batch, w, targetCircuit)
+		if failure == nil {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("automate scan canceled: %w", err)
+		}
+		if !batch {
+			return nil, failure
+		}
+		failures = append(failures, failure)
+		w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
+	}
+	return failures, nil
+}
+
+func scanAutomateSource(
+	ctx context.Context,
+	base *config.Config,
+	source automateSource,
+	index, total int,
+	batch bool,
+	w *output.Writer,
+	targetCircuit *scanner.TargetCircuit,
+) error {
+	sourceLabel := output.TerminalSafe(source.display())
+	if batch {
+		output.PrintInfo("[%d/%d] Scanning specification: %s\n", index+1, total, sourceLabel)
+	}
+	if source.url != "" && !targetCircuit.Allow(source.url) {
+		return nil
+	}
+	scanCfg := cloneAutomateConfig(base, source)
+	client, err := newAutomateHTTPClient(scanCfg)
+	if err != nil {
+		if batch {
+			return fmt.Errorf("source %d (%s): initialize HTTP client: %w", index+1, sourceLabel, err)
+		}
+		return err
+	}
+	bodyBytes, status, metadata, err := loadSpecWithMetadata(ctx, scanCfg, client)
+	if source.url != "" {
+		targetCircuit.Observe(source.url, status, metadata)
+	}
+	if err != nil {
+		if batch {
+			return fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, err)
+		}
+		return err
+	}
+	resolver := openapi.NewResolver(scanCfg.SpecBaseDir)
+	if err := scanner.GenerateRequestsIntoWriterWithCircuitContextE(ctx, bodyBytes, client, scanCfg, w, resolver, targetCircuit); err != nil {
+		if batch {
+			return fmt.Errorf("source %d (%s): %w", index+1, sourceLabel, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func finalizeAutomateRun(ctx context.Context, run *resultRun, w *output.Writer, failures []error, sourceCount int) error {
+	storageErr := run.addAutomateResults(ctx, w)
 	outputErr := w.FinalizeOutput()
 	if len(failures) == 0 {
 		if outputErr != nil || storageErr != nil {
@@ -159,13 +190,13 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		return nil
 	}
 	batchErr := &automatePartialFailure{
-		failed: len(failures), total: len(sources), err: errors.Join(failures...),
+		failed: len(failures), total: sourceCount, err: errors.Join(failures...),
 	}
 	if outputErr == nil && storageErr == nil {
 		return batchErr
 	}
 	return errors.Join(
-		fmt.Errorf("%d of %d specification sources failed: %w", len(failures), len(sources), errors.Join(failures...)),
+		fmt.Errorf("%d of %d specification sources failed: %w", len(failures), sourceCount, errors.Join(failures...)),
 		wrapError("write output", outputErr), wrapError("store automate results", storageErr),
 	)
 }
