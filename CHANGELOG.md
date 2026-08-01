@@ -2,6 +2,97 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.7](https://github.com/mr-pmillz/sj/compare/v2.7.6...v2.7.7) - 2026-08-01
+
+### ✨ New features
+
+- Feat: add native MCP full-workflow runner - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- Expose run_full_workflow as a typed, single-call MCP tool backed by the existing - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- In-process CLI orchestration. - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - accept allowlisted target arrays, known specification URLs, or persisted - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   brute run IDs - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - default to automatic anonymous assessment without requiring a manifest upload - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - confine artifacts and the server-owned database beneath configured assessment - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   roots - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - retain server authority over proxy, TLS, evidence key, host allowlist, and - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   destructive access - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - preserve DELETE prohibition and independent POST/PATCH risk gates - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - return bounded artifact metadata and assessment identity instead of captured - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   response bodies - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - materialize URL arrays as private temporary inputs and remove them after - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   execution - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - keep all operational messages off MCP stdout to preserve protocol framing - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - document local configuration, invocation arguments, and safety behavior - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- TDD: - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - contract RED: 9445731 - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - adapter RED: 248de5e - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- QA: - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - go test ./... -count=1 - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - go test -race ./... -count=1 - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - golangci-lint run - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - npm run build (docs) - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - native stdio MCP smoke through socks5://127.0.0.1:9000 completed with - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   assessment 905feaccdb524b310b5074a51289be9a and zero POST/PATCH/DELETE - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+-   requests - ([2e1ab53](https://github.com/mr-pmillz/sj/commit/2e1ab53839da1ec6e90ee3edbf57438341de0dce))
+- - add --skip-brute support for direct spec URL files and database-backed brute - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- Feat: add evidence-driven API findings analysis - ([1c746f6](https://github.com/mr-pmillz/sj/commit/1c746f664a91cf0903253e9279860d1ed1bc73b5))
+- Correlate retained API exchanges to identify persistent state changes, verbose backend disclosures, implementation diagnostics, and contextual PII while suppressing weak status-only and ownership-unproven signals. - ([1c746f6](https://github.com/mr-pmillz/sj/commit/1c746f664a91cf0903253e9279860d1ed1bc73b5))
+- Expose the bounded read-only analyze_api_results MCP tool, preserve observation chronology and provenance across stored and file inputs, and carry semantic findings into assessment reports. - ([1c746f6](https://github.com/mr-pmillz/sj/commit/1c746f664a91cf0903253e9279860d1ed1bc73b5))
+- Render full escaped request/response evidence in a self-contained sortable HTML report, including bidirectional finding severity and specification-host statistics sorting. - ([1c746f6](https://github.com/mr-pmillz/sj/commit/1c746f664a91cf0903253e9279860d1ed1bc73b5))
+- Add adversarial regression coverage and an sj findings-analysis skill documenting evidence standards, false-positive controls, and reporting QA. - ([1c746f6](https://github.com/mr-pmillz/sj/commit/1c746f664a91cf0903253e9279860d1ed1bc73b5))
+- Feat: add authorized API assessment lifecycle - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Introduce a manifest-driven assessment framework for authorized API testing, including input import, endpoint inventory, deterministic planning, policy enforcement, ownership-backed BOLA analysis, authentication checks, protocol analysis, and bounded execution. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Persist signed assessment plans, attempts, comparisons, coverage, findings, and terminal integrity evidence in SQLite. Add durable leases, fenced publication, pacing, cancellation, retry-safe recovery, SOCKS transport enforcement, target isolation, and fail-closed resume semantics. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Expose assess plan, run, resume, status, and report through both the Cobra CLI and the policy-constrained MCP server. Confine manifests, inputs, databases, and evidence keys to operator-authorized roots while enforcing host allowlists and active/destructive gates. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Add opt-in AES-256-GCM request/response capture with bounded bodies, credential-header omission, tamper detection, and report-time decryption. Provide JSON, Markdown, HTML, SARIF, JUnit, and Bruno outputs. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Redesign HTML assessment reports with self-contained lazy tables, search, pagination, accessible sorting, severity ordering, dark mode, evidence controls, actual retained exchanges, and pre-limit suppression of disproved controls and comparisons. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Document the assessment and MCP workflows and add adversarial unit, integration, recovery, race, integrity, security, and browser-oriented regression coverage across the new lifecycle. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+- Verification: go test ./...; focused race suites; 80.5% statement coverage; go vet ./...; golangci-lint run; make build; docs npm run build; git diff --check. - ([3c05e84](https://github.com/mr-pmillz/sj/commit/3c05e84b0276ee11853c687c71fed5a633908aa1))
+
+### ✨: New features
+
+- Feat: automate safe full API assessment workflow - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- Extend sj run --full-workflow so API callers can execute the complete - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- Authorized lifecycle without supplying an assessment manifest. - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - generate and validate a strict anonymous assessment manifest from discovered - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   or supplied OpenAPI origins - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   run resume - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - execute assessment planning, runtime, and all report formats as part of the - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   full workflow - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - persist sealed inventory-only assessments when anonymous inputs contain no - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   ownership-backed candidates - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - keep DELETE disabled and require independent accept-risk opt-ins for PATCH - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   and full-workflow POST - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - expose matching POST and PATCH controls through the sj MCP automation tools - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - isolate target-specific rate limits and transport failures while retaining - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   partial coverage evidence - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - harden cancellation persistence, proxy routing, retry metadata, response - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   limits, and assessment snapshot integrity - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - document the automated and manifest-driven modes and expand regression - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+-   coverage - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- QA: - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - go test ./... -count=1 - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - go test -race ./... -count=1 - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - golangci-lint run - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - npm run build (docs) - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+- - 10-target CPT full-workflow smoke through socks5://127.0.0.1:9000 - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+
+### 🚜 Refactor
+
+- Refactor: resolve golangci-lint findings - ([6bd8098](https://github.com/mr-pmillz/sj/commit/6bd809873cb7fe8e0610cf0516f840830a37a5ec))
+- Deduplicate API disclosure finding construction and map template helpers directly to their implementations. - ([6bd8098](https://github.com/mr-pmillz/sj/commit/6bd809873cb7fe8e0610cf0516f840830a37a5ec))
+- Split assessment scheduling and per-node execution into focused runtime components while preserving lease fencing, cancellation boundaries, evidence persistence, and error identity. Tie heartbeat renewals to the lease-owned context so shutdown cancels in-flight work safely. - ([6bd8098](https://github.com/mr-pmillz/sj/commit/6bd809873cb7fe8e0610cf0516f840830a37a5ec))
+- Reduce test cognitive complexity and keep credential redaction canaries synthetic without gosec suppressions. - ([6bd8098](https://github.com/mr-pmillz/sj/commit/6bd809873cb7fe8e0610cf0516f840830a37a5ec))
+
+### 🧪 Testing
+
+- Test: require in-process MCP workflow adapter - ([248de5e](https://github.com/mr-pmillz/sj/commit/248de5ebb42f475a9ab44255dce35b04d672e6e4))
+- Add a RED integration test proving the native adapter materializes specification URL arrays securely, invokes the existing full-workflow stages with automatic assessment, returns durable artifact metadata, and removes its temporary input file. - ([248de5e](https://github.com/mr-pmillz/sj/commit/248de5ebb42f475a9ab44255dce35b04d672e6e4))
+- RED: go test ./internal/cli -run TestExecuteMCPFullWorkflowMaterializesURLsAndReturnsDurableArtifacts -count=1 fails because executeMCPFullWorkflow is not implemented. - ([248de5e](https://github.com/mr-pmillz/sj/commit/248de5ebb42f475a9ab44255dce35b04d672e6e4))
+- Test: define native MCP full-workflow contract - ([9445731](https://github.com/mr-pmillz/sj/commit/94457314bbc603e317bc39b634511bbb71756972))
+- Add RED contract tests requiring a typed run_full_workflow MCP tool, automatic assessment defaults, native runner invocation, bounded output, root confinement, host allowlisting, and independent destructive method gates. - ([9445731](https://github.com/mr-pmillz/sj/commit/94457314bbc603e317bc39b634511bbb71756972))
+- RED: go test ./pkg/mcpserver -run 'TestServerAdvertisesTypedToolsAndSafetyAnnotations|TestRunFullWorkflowTool' -count=1 fails because FullWorkflowRequest, FullWorkflowOutput, Options.FullWorkflowRunner, and the tool registration are not implemented. - ([9445731](https://github.com/mr-pmillz/sj/commit/94457314bbc603e317bc39b634511bbb71756972))
+
 ## [2.7.6](https://github.com/mr-pmillz/sj/compare/v2.7.5...v2.7.6) - 2026-07-23
 
 ### ✨ New features
@@ -23,6 +114,7 @@ All notable changes to this project will be documented [here](https://github.com
 
 ### ⚙️ Miscellaneous Tasks
 
+- Chore: update changelog - ([8983abb](https://github.com/mr-pmillz/sj/commit/8983abbaeacc5bb89f237629808ed1368d554865))
 - Chore: update changelog - ([9d47635](https://github.com/mr-pmillz/sj/commit/9d47635e311aec8f7c4e2656fdf2ef59c22f5a22))
 
 ## [2.7.5](https://github.com/mr-pmillz/sj/compare/v2.7.4...v2.7.5) - 2026-07-20
