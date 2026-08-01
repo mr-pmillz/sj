@@ -1,0 +1,162 @@
+---
+title: assess
+description: Plan, run, resume, and report ownership-backed API authorization assessments.
+---
+
+The `assess` command is sj's manifest-driven assessment lifecycle. It turns an explicit authorization boundary, named identities, owned test objects, expected access rules, and hard traffic budgets into a deterministic plan before any target request is sent.
+
+It does not replace the discovery-oriented `brute`, `automate`, `fuzz`, or legacy `report` commands. For a mass target list, use `run --full-workflow`. To append this lifecycle after that workflow has produced `automate.json`, pass `run --full-workflow --assessment-manifest TEMPLATE`; an exact `$workflow.automate` input path in the template is materialized to the new result file. The combined workflow preserves both the broad legacy report and the signed assessment-v2 reports.
+
+The first executable module is ownership-backed BOLA/IDOR testing for `GET` operations. It discovers object references in path and query parameters and nested JSON bodies, then compares victim-own, attacker-own, cross-owner, anonymous, and nonexistent-object controls twice. A successful response or a changed hash alone is never reported as a confirmed authorization bypass.
+
+## Prerequisites
+
+Use only locally materialized OpenAPI files or prior sj result sets. Offline planning does not fetch a remote specification. Keep the signing key stable for the lifetime of persisted assessments; sj uses it to reject a modified SQLite execution plan before resolving identity credentials or sending traffic.
+
+```bash
+# Generate once, then store this value in your normal secret manager.
+export SJ_ASSESSMENT_EVIDENCE_KEY='load-a-stable-key-from-your-secret-manager'
+
+export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
+export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'
+```
+
+`SJ_ASSESSMENT_EVIDENCE_KEY` must be base64 or hexadecimal for at least 32 decoded bytes. Keep it available for persisted run, resume, status, and report operations. Identity credentials are accepted only through `env:` or securely permissioned `file:` references in the manifest. Assessment commands reject inline headers, proxy credentials, and global transport overrides.
+
+## Manifest
+
+```yaml
+apiVersion: sj.dev/v1alpha1
+kind: Assessment
+metadata:
+  name: invoice-ownership
+spec:
+  origins:
+    - https://api.example.test
+  inputs:
+    - name: reviewed-contract
+      kind: openapi
+      path: /absolute/path/to/openapi.yaml
+      baseURL: https://api.example.test
+      operations:
+        - getInvoice
+      modules:
+        - bola
+  window:
+    start: 2026-08-01T13:00:00Z
+    end: 2026-08-01T15:00:00Z
+  transport:
+    proxy:
+      required: false
+      url: ""
+    tls:
+      insecureSkipVerify: false
+      justification: ""
+    redirects:
+      sameOriginOnly: true
+      max: 0
+  identities:
+    - name: user-a
+      role: member
+      tenant: tenant-a
+      headers:
+        Authorization: env:SJ_USER_A_TOKEN
+    - name: user-b
+      role: member
+      tenant: tenant-b
+      headers:
+        Authorization: env:SJ_USER_B_TOKEN
+  ownedObjects:
+    - name: invoice-a
+      type: invoice
+      identifier: inv-100
+      owner: user-a
+      tenant: tenant-a
+      provenance: authorized-fixture
+      stable: true
+      expectedAccess:
+        user-a: allow
+        user-b: deny
+    - name: invoice-b
+      type: invoice
+      identifier: inv-200
+      owner: user-b
+      tenant: tenant-b
+      provenance: authorized-fixture
+      stable: true
+      expectedAccess:
+        user-a: deny
+        user-b: allow
+  modules:
+    - name: bola
+      enabled: true
+      safetyClass: S2
+  budgets:
+    global:
+      maxRequests: 20
+      maxRequestBytes: 8192
+      maxResponseBytes: 65536
+      requestsPerSecond: 1
+  evidence:
+    storeResponseBodies: true
+    encryptionKey: env:SJ_ASSESSMENT_EVIDENCE_KEY
+    maxArtifactBytes: 65536
+    retention: 168h
+    includeSensitiveExports: true
+```
+
+Origins are exact scheme/host/port values. Wildcards, URL credentials, DELETE, S4 payloads, unbounded expansions, and implicit state-changing workflows are rejected. Redirect capacity is included in the offline request and byte reservation; `sameOriginOnly` is enforced even when another origin is separately authorized.
+
+## Lifecycle
+
+Planning validates and hashes the manifest, inventory, scope, policy, and finite request matrix without target traffic:
+
+```bash
+sj assess plan --manifest assessment.yaml
+```
+
+Run the signed plan and persist attempts, comparisons, findings, coverage, and stop reasons:
+
+```bash
+sj --database authorized-assessment.db \
+  assess run --manifest assessment.yaml
+```
+
+If a process is interrupted while an assessment remains recoverable, use the returned assessment ID:
+
+```bash
+sj --database authorized-assessment.db assess resume --id ASSESSMENT_ID
+sj --database authorized-assessment.db assess status --id ASSESSMENT_ID
+```
+
+Resume verifies the HMAC-signed execution snapshot and authorization window first. Modified URLs, scope, proxy policy, identity references, plan nodes, or budget limits fail closed. Completed work is not replayed. If a process stopped after a request was durably attempted but before its proof comparison completed, sj marks that node inconclusive/failed instead of replaying an ambiguous request; reconstructing semantic proof from partial attempts is not yet supported.
+
+Terminal evidence is separately HMAC-sealed before it can be rendered. A legitimate in-progress status is labeled `live-unsealed`; reports require a terminal, verified seal. Modified findings, attempts, comparisons, coverage, identity state, or assessment status produce an integrity error with no partial report output.
+
+Generate bounded output in terminal, JSON v2, Markdown, self-contained HTML, SARIF, JUnit XML, or Bruno ZIP form:
+
+```bash
+sj --database authorized-assessment.db \
+  assess report --id ASSESSMENT_ID --output-format html > assessment.html
+
+sj --database authorized-assessment.db \
+  assess report --id ASSESSMENT_ID --output-format bruno > reproduction.zip
+```
+
+Bruno output is a binary ZIP and should be redirected to a file. Reports preserve finding status, confidence, and severity as separate dimensions. JSON, Markdown, SARIF, JUnit, and terminal output do not embed raw exchanges or private artifact locations.
+
+HTML is the operator-facing evidence view. When both `storeResponseBodies` and `includeSensitiveExports` are true, sj captures each bounded request/response exchange as an AES-256-GCM artifact and decrypts it only after the signed terminal evidence passes verification. The self-contained report then shows the actual retained URL, non-credential headers, request body, response headers, response body, and any capture truncation. Authorization, cookie, API-key, and similar credential headers are omitted rather than replaced with opaque `[REDACTED]` evidence. A missing body is labeled as not retained; sj does not pretend that metadata is raw proof.
+
+HTML collection tables have independent search, page-size, pagination, keyboard-accessible sorting, and light/dark controls. Severity sorting starts critical-to-informational and reverses on the next click. False-positive control outcomes are excluded from Findings and Comparisons; their attempts remain available in Requests & Responses for auditability.
+
+An evidence-bearing HTML report is intentionally sensitive. Redirect it to an owner-only file, set mode `0600`, and share it deliberately:
+
+```bash
+umask 077
+sj --database authorized-assessment.db \
+  assess report --id ASSESSMENT_ID --output-format html > assessment.html
+```
+
+## Current execution boundary
+
+The lifecycle currently executes bounded, read-only BOLA proof matrices. The framework also includes network-free BFLA, BOPLA/excessive-data, mass-assignment, JWT/session/OpenAPI authentication, GraphQL authorization, WebSocket/AsyncAPI authorization, and HAR/Burp/Postman/gateway-import analysis components. State-changing S3 runtime execution remains fail-closed until a complete disposable-fixture, mutation, authoritative read-back, and non-DELETE rollback workflow is available.

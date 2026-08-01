@@ -34,12 +34,21 @@ var testOpenAPI = `{
 
 func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 	session := connectTestClient(t, Options{Version: "test"})
+	initialize := session.InitializeResult()
+	if initialize == nil || !strings.Contains(initialize.Instructions, "authorization-assessment") || !strings.Contains(initialize.Instructions, "operator-configured roots") {
+		t.Fatalf("server instructions do not describe assessment policy: %#v", initialize)
+	}
 	result, err := session.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wantNames := []string{"audit_openapi", "automate_openapi", "brute_openapi", "convert_openapi", "discover_openapi", "plan_openapi_requests", "scan_openapi"}
+	wantNames := []string{
+		"analyze_api_results",
+		"assess_plan", "assess_report", "assess_resume", "assess_run", "assess_status",
+		"audit_openapi", "automate_openapi", "brute_openapi", "convert_openapi",
+		"discover_openapi", "plan_openapi_requests", "run_full_workflow", "scan_openapi",
+	}
 	gotNames := make([]string, 0, len(result.Tools))
 	for _, tool := range result.Tools {
 		gotNames = append(gotNames, tool.Name)
@@ -48,6 +57,21 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 		}
 		if tool.Annotations == nil || tool.Annotations.OpenWorldHint == nil {
 			t.Errorf("tool %q is missing safety annotations", tool.Name)
+		}
+		if strings.HasPrefix(tool.Name, "assess_") || tool.Name == "analyze_api_results" {
+			schema, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var shape struct {
+				Properties map[string]json.RawMessage `json:"properties"`
+			}
+			if err := json.Unmarshal(schema, &shape); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := shape.Properties["database"]; exists {
+				t.Errorf("tool %q exposes caller-controlled database configuration: %s", tool.Name, schema)
+			}
 		}
 	}
 	slices.Sort(gotNames)
@@ -61,7 +85,7 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 			t.Errorf("%s should be read-only", name)
 		}
 	}
-	for _, name := range []string{"automate_openapi", "scan_openapi"} {
+	for _, name := range []string{"automate_openapi", "run_full_workflow", "scan_openapi"} {
 		if tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || !*tools[name].Annotations.DestructiveHint {
 			t.Errorf("%s should advertise potentially destructive behavior", name)
 		}
@@ -70,6 +94,43 @@ func TestServerAdvertisesTypedToolsAndSafetyAnnotations(t *testing.T) {
 		if !tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || *tools[name].Annotations.DestructiveHint {
 			t.Errorf("%s should advertise read-only probing behavior", name)
 		}
+	}
+	for _, name := range []string{"analyze_api_results", "assess_plan", "assess_report", "assess_status"} {
+		if !tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || *tools[name].Annotations.DestructiveHint || tools[name].Annotations.OpenWorldHint == nil || *tools[name].Annotations.OpenWorldHint {
+			t.Errorf("%s should advertise local read-only behavior", name)
+		}
+	}
+	for _, name := range []string{"assess_run", "assess_resume"} {
+		if tools[name].Annotations.ReadOnlyHint || tools[name].Annotations.DestructiveHint == nil || !*tools[name].Annotations.DestructiveHint || tools[name].Annotations.OpenWorldHint == nil || !*tools[name].Annotations.OpenWorldHint {
+			t.Errorf("%s should advertise active, potentially destructive behavior", name)
+		}
+	}
+}
+
+func TestAssessmentToolsFailClosedOnMissingOperatorAuthority(t *testing.T) {
+	session := connectTestClient(t, Options{Version: "test", AllowLocalFiles: true})
+
+	status := callTool(t, session, "assess_status", map[string]any{"assessment_id": "assessment-1"})
+	if !status.IsError || !strings.Contains(toolText(status), "evidence key") {
+		t.Fatalf("status result = isError:%v text:%q", status.IsError, toolText(status))
+	}
+
+	run := callTool(t, session, "assess_run", map[string]any{
+		"manifest_path": filepath.Join(t.TempDir(), "assessment.yaml"),
+	})
+	if !run.IsError || !strings.Contains(toolText(run), "active tools are disabled") {
+		t.Fatalf("run result = isError:%v text:%q", run.IsError, toolText(run))
+	}
+}
+
+func TestAssessmentReportUsesTypedBoundedArtifactEnvelope(t *testing.T) {
+	session := connectTestClient(t, Options{Version: "test"})
+	result := callTool(t, session, "assess_report", map[string]any{
+		"assessment_id": "assessment-1",
+		"output_format": "markdown",
+	})
+	if !result.IsError || !strings.Contains(toolText(result), "evidence key") {
+		t.Fatalf("report result = isError:%v text:%q", result.IsError, toolText(result))
 	}
 }
 
@@ -206,6 +267,48 @@ func TestAutomateToolExcludesMethodsBeforeNetworkExecution(t *testing.T) {
 	decodeStructured(t, allExcluded, &empty)
 	if getCalls.Load() != 1 || deleteCalls.Load() != 0 || len(empty.Results) != 0 || len(empty.Failures) != 0 {
 		t.Fatalf("all-excluded get=%d delete=%d output=%#v", getCalls.Load(), deleteCalls.Load(), empty)
+	}
+}
+
+func TestAutomateToolRequiresExplicitPostAndPatchOptIns(t *testing.T) {
+	var methods []string
+	factory := func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = mcpRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			methods = append(methods, request.Method)
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: request}, nil
+		})
+		return client, client.InitErr
+	}
+	spec := `{"openapi":"3.1.0","info":{"title":"Methods","version":"1"},"servers":[{"url":"https://api.example.com"}],"paths":{"/widgets":{"get":{"responses":{"200":{"description":"ok"}}},"post":{"responses":{"200":{"description":"ok"}}},"patch":{"responses":{"200":{"description":"ok"}}},"delete":{"responses":{"200":{"description":"ok"}}}}}}`
+	session := connectTestClient(t, Options{
+		Version: "test", AllowActive: true, AllowDestructive: true,
+		AllowedHosts: []string{"api.example.com"}, clientFactory: factory,
+	})
+
+	defaultResult := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": spec}}, "accept_risk": true,
+	})
+	if defaultResult.IsError || !slices.Equal(methods, []string{http.MethodGet}) {
+		t.Fatalf("default result error=%v text=%q methods=%v", defaultResult.IsError, toolText(defaultResult), methods)
+	}
+
+	methods = nil
+	optedIn := callTool(t, session, "automate_openapi", map[string]any{
+		"sources": []any{map[string]any{"document": spec}}, "accept_risk": true,
+		"allow_post": true, "allow_patch": true,
+	})
+	if optedIn.IsError || !slices.Equal(methods, []string{http.MethodGet, http.MethodPost, http.MethodPatch}) {
+		t.Fatalf("opt-in result error=%v text=%q methods=%v", optedIn.IsError, toolText(optedIn), methods)
+	}
+	for _, arguments := range []map[string]any{
+		{"sources": []any{map[string]any{"document": spec}}, "allow_post": true},
+		{"sources": []any{map[string]any{"document": spec}}, "allow_patch": true},
+	} {
+		result := callTool(t, session, "automate_openapi", arguments)
+		if !result.IsError || !strings.Contains(toolText(result), "require accept_risk=true") {
+			t.Fatalf("unsafe opt-in result = error:%v text:%q", result.IsError, toolText(result))
+		}
 	}
 }
 
@@ -918,7 +1021,12 @@ func connectTestClient(t *testing.T, options Options) *mcp.ClientSession {
 
 func callTool(t *testing.T, session *mcp.ClientSession, name string, arguments map[string]any) *mcp.CallToolResult {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	return callToolWithin(t, session, name, arguments, 5*time.Second)
+}
+
+func callToolWithin(t *testing.T, session *mcp.ClientSession, name string, arguments map[string]any, timeout time.Duration) *mcp.CallToolResult {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
 	if err != nil {

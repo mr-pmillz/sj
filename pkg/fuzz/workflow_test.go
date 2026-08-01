@@ -3,6 +3,7 @@ package fuzz
 import (
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -75,5 +76,39 @@ func TestRunPreflightsEveryWorkflowBeforeNetworkIO(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("network calls before complete workflow validation = %d", calls.Load())
+	}
+}
+
+func TestWorkflowRunIsolatesRateLimitedOriginAndContinuesHealthyOrigin(t *testing.T) {
+	var requested []string
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		if request.URL.Host == "limited.example" {
+			return fuzzResponse(request, http.StatusTooManyRequests, `{"error":"limited"}`)
+		}
+		return fuzzResponse(request, http.StatusOK, `{"ok":true}`)
+	})}
+	workflows := []Workflow{
+		{Name: "limited-first", Steps: []WorkflowStep{
+			{Name: "limited", Method: http.MethodGet, URL: "https://limited.example/one"},
+			{Name: "limited-skipped", Method: http.MethodGet, URL: "https://limited.example/two"},
+		}},
+		{Name: "healthy", Steps: []WorkflowStep{
+			{Name: "healthy", Method: http.MethodGet, URL: "https://healthy.example/one", ExpectStatus: []int{http.StatusOK}},
+		}},
+	}
+	report, err := run(t.Context(), client, nil, Options{
+		MaxRequests: 10, Delay: minimumRequestDelay, Workflows: workflows,
+		ContinueOnTargetError: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://limited.example/one", "https://healthy.example/one"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+	if report.Summary.RateLimitedOrigins != 1 || report.Summary.SkippedIsolated != 1 {
+		t.Fatalf("summary = %#v", report.Summary)
 	}
 }

@@ -21,25 +21,26 @@ import (
 )
 
 type fuzzCLIOptions struct {
-	Inputs           []string
-	RunIDs           []string
-	Scope            string
-	Endpoints        []string
-	BaseURL          string
-	IdentityHeaders  []string
-	KnownUsername    string
-	IDORRange        string
-	WorkflowFile     string
-	MaxRequests      int
-	Delay            time.Duration
-	MaxCases         int
-	ResponseGuided   bool
-	MaxGuidedRetries int
-	Progress         bool
-	OutputFormat     string
-	MaxInputBytes    int64
-	MaxFiles         int
-	MaxRecords       int
+	Inputs                []string
+	RunIDs                []string
+	Scope                 string
+	Endpoints             []string
+	BaseURL               string
+	IdentityHeaders       []string
+	KnownUsername         string
+	IDORRange             string
+	WorkflowFile          string
+	MaxRequests           int
+	Delay                 time.Duration
+	MaxCases              int
+	ResponseGuided        bool
+	MaxGuidedRetries      int
+	ContinueOnTargetError bool
+	Progress              bool
+	OutputFormat          string
+	MaxInputBytes         int64
+	MaxFiles              int
+	MaxRecords            int
 }
 
 var fuzzOptions = fuzzCLIOptions{
@@ -127,6 +128,7 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 		MaxResponseBytes: cfg.MaxResponseBytes, StoreResponses: cfg.StoreResponses,
 		MaxStoredResponseBytes: cfg.MaxStoredResponseBytes, Workflows: workflows,
 		ResponseGuided: options.ResponseGuided, MaxGuidedRetries: options.MaxGuidedRetries,
+		ContinueOnTargetError: options.ContinueOnTargetError,
 	}
 	stopProgress := func() {}
 	if options.Progress {
@@ -146,13 +148,15 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 	if err != nil {
 		return err
 	}
+	runOptions.TargetOriginTransportError = client.IsTargetOriginTransportError
 	resultRun, err := beginResultRun(ctx, cfg, "fuzz", map[string]any{
 		"scope": options.Scope, "operation_count": len(selected), "workflow_count": len(workflows),
 		"max_requests": options.MaxRequests, "required_requests": plan.RequiredRequests,
 		"deterministic_requests": plan.DeterministicRequests, "reserved_guided_requests": plan.ReservedGuidedRequests,
 		"delay_ms": options.Delay.Milliseconds(), "accept_risk": cfg.AcceptRisk,
 		"response_guided": options.ResponseGuided, "max_guided_retries": options.MaxGuidedRetries,
-		"progress": options.Progress,
+		"continue_on_target_error": options.ContinueOnTargetError,
+		"progress":                 options.Progress,
 	})
 	if err != nil {
 		return err
@@ -172,7 +176,7 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 	} else if err := fuzz.WriteFile(report, format, cfg.Outfile, cfg.ColorMode); err != nil {
 		return err
 	}
-	return fuzzCompletionError(report)
+	return fuzzCompletionErrorForMode(report, options.ContinueOnTargetError)
 }
 
 func startFuzzProgress(tracker *fuzz.ProgressTracker, destination io.Writer) func() {
@@ -234,7 +238,11 @@ func writeFuzzProgress(destination io.Writer, snapshot fuzz.ProgressSnapshot, fi
 }
 
 func fuzzCompletionError(report fuzz.Report) error {
-	if report.Summary.RateLimited {
+	return fuzzCompletionErrorForMode(report, false)
+}
+
+func fuzzCompletionErrorForMode(report fuzz.Report, continueOnTargetError bool) error {
+	if report.Summary.RateLimited && !continueOnTargetError {
 		return fmt.Errorf("target signaled an exhausted or near-exhausted request budget; fuzzing stopped immediately to preserve rate limits")
 	}
 	if report.Summary.RequestBudgetHit {

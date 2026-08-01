@@ -20,26 +20,34 @@ type Discovery struct {
 }
 
 type Operation struct {
-	Origin            string `json:"-"`
-	Source            string `json:"source"`
-	Method            string `json:"method"`
-	Status            int    `json:"status"`
-	Target            string `json:"target"`
-	URL               string `json:"url,omitempty"`
-	ContentType       string `json:"content_type,omitempty"`
-	RequestBody       string `json:"request_body,omitempty"`
-	ResponseBody      string `json:"response_body,omitempty"`
-	ResponseTruncated bool   `json:"response_truncated,omitempty"`
-	BaselineURL       string `json:"baseline_url,omitempty"`
-	Case              string `json:"case,omitempty"`
-	Category          string `json:"category,omitempty"`
-	Identity          string `json:"identity,omitempty"`
-	Guidance          string `json:"guidance,omitempty"`
+	RunID             string    `json:"run_id,omitempty"`
+	ObservationID     int64     `json:"observation_id,omitempty"`
+	ObservedAt        time.Time `json:"observed_at,omitempty"`
+	AuthContext       string    `json:"auth_context,omitempty"`
+	InputPath         string    `json:"-"`
+	InputOrdinal      int64     `json:"-"`
+	InputOccurrence   int64     `json:"-"`
+	Origin            string    `json:"-"`
+	Source            string    `json:"source"`
+	Method            string    `json:"method"`
+	Status            int       `json:"status"`
+	Target            string    `json:"target"`
+	URL               string    `json:"url,omitempty"`
+	ContentType       string    `json:"content_type,omitempty"`
+	RequestBody       string    `json:"request_body,omitempty"`
+	ResponseBody      string    `json:"response_body,omitempty"`
+	ResponseTruncated bool      `json:"response_truncated,omitempty"`
+	BaselineURL       string    `json:"baseline_url,omitempty"`
+	Case              string    `json:"case,omitempty"`
+	Category          string    `json:"category,omitempty"`
+	Identity          string    `json:"identity,omitempty"`
+	Guidance          string    `json:"guidance,omitempty"`
 }
 
 type Failure struct {
-	Source string `json:"source"`
-	Error  string `json:"error"`
+	Source   string `json:"source"`
+	Error    string `json:"error"`
+	Coverage bool   `json:"coverage_gap,omitempty"`
 }
 
 type BruteObservation struct {
@@ -148,6 +156,10 @@ type Metrics struct {
 }
 
 type Evidence struct {
+	RunID             string
+	ObservationID     int64
+	ObservedAt        time.Time
+	AuthContext       string
 	Source            string
 	Method            string
 	Status            int

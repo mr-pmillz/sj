@@ -23,7 +23,8 @@ It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON S
 | `collection`          | Generates populated Bruno API penetration-testing collections from automate results              |
 | `fuzz`                | Runs rate-safe active API mutation, identity-comparison, PII, enumeration, and error checks      |
 | `report`              | Builds terminal, Markdown, and HTML API penetration-test reports                                 |
-| `run --full-workflow` | Chains authorized recon, enumeration, bounded exploitation, collection generation, and reporting |
+| `run --full-workflow` | Chains recon, enumeration, bounded fuzzing, legacy reporting, and optional assessment-v2 verification |
+| `assess`              | Plans, runs, resumes, and reports manifest-backed authorization verification                     |
 | `runs`                | Lists runs in the default-on SQLite result database                                              |
 | `mcp`                 | Starts an optional, policy-constrained MCP server for AI agents                                  |
 
@@ -71,7 +72,7 @@ Send requests to each discovered endpoint and analyze responses:
 sj automate -u https://petstore.swagger.io/v2/swagger.json -qi
 ```
 
-By default, active scanning sends only `GET`, `HEAD`, `OPTIONS`, and OpenAPI 3.2 `QUERY` operations. Add `--accept-risk` (or the broader `--force`) only when you are authorized to send state-changing methods.
+By default, active scanning sends only `GET`, `HEAD`, `OPTIONS`, and OpenAPI 3.2 `QUERY` operations. DELETE is never planned, and PATCH additionally requires `--allow-patch`; state-changing requests still require `--accept-risk` (or the legacy broader `--force` safety bypass where supported).
 
 ```
 Gathering API details.
@@ -251,7 +252,47 @@ sj --socks5-proxy socks5://127.0.0.1:9000 \
   --max-cases 4096 --max-fuzz-requests 10000 --delay 500ms
 ```
 
-The output directory must not already exist. DELETE is always excluded, response capture is enabled for automate and fuzz with the configured response read limit, and SQLite storage remains enabled. Non-DELETE state-changing requests still require `--accept-risk`. A rate-limit signal stops active fuzzing immediately; already captured artifacts are still used to generate the Bruno collection and final reports.
+The output directory must not already exist. DELETE is always excluded. PATCH and POST are also excluded from the full workflow by default; opt in with `--allow-patch` and/or `--allow-post`, each together with `--accept-risk`. Response capture is enabled for automate and fuzz with the configured response read limit, and SQLite storage remains enabled. A 429, advertised depleted rate budget, or repeated proven target-origin transport failure opens a circuit only for that exact origin across automate specification fetches, generated endpoint requests, guided retries, replays, fuzz probes, and business workflows; healthy targets continue. Direct transports are target-attributable, while SOCKS isolation requires a target-specific proxy reply; ambiguous HTTP/SOCKS proxy failures are never mislabeled as a bad target. Skipped counts and reasons are retained as coverage gaps in JSON, SQLite, and the final legacy report. Workflow-wide budgets, cancellation, invalid configuration, global proxy failures, and persistence failures remain command-level errors.
+
+Use `--skip-brute --url-file known-specs.txt` to start from known OpenAPI URLs. Use `--skip-brute --brute-run RUN_ID --database results.db` to resume from one or more retained brute runs. `--auto-assess` automatically materializes and runs the assessment continuation without a supplied manifest; because it does not invent identities or ownership, its output is explicitly limited to anonymous/public-control coverage. Supply `--assessment-manifest` for ownership-backed testing.
+
+The stage commands are complementary, not deprecated. `brute`, `automate`, `fuzz`, and legacy `report` build and analyze a broad discovery corpus. `assess plan/run/report` performs higher-confidence, manifest-backed authorization verification against named identities and explicitly owned objects. Keep both report families: legacy `report` covers recon and fuzz artifacts, while `assess report` covers a signed persisted assessment ID.
+
+To append assessment-v2 to the same non-interactive workflow, provide an authorized manifest template and stable evidence key. Exactly one `kind: sj-results` input must use the exact `spec.inputs[].path` scalar `$workflow.automate`; sj materializes it as this run's private absolute `automate.json` path:
+
+```bash
+export SJ_ASSESSMENT_EVIDENCE_KEY='load-a-stable-key-from-your-secret-manager'
+export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
+export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'
+
+sj --database targets/results/authorized-qa.db \
+  -o targets/results/full-workflow-with-assessment \
+  run --full-workflow --url-file targets/unique-base-urls.txt \
+  --assessment-manifest assessment-template.yaml \
+  --assessment-max-results 1000
+```
+
+This additive mode runs `brute -> automate -> fuzz -> collection -> legacy report -> assess plan -> assess run -> assess reports`. It writes `assessment.db`, the materialized manifest, plan/run JSON, and JSON, Markdown, HTML, SARIF, JUnit, and Bruno assessment artifacts inside the workflow directory. It rejects `--no-database`, a missing `SJ_ASSESSMENT_EVIDENCE_KEY`, incomplete authorization facts, any manifest origin not present in the normalized `--url-file` origin set, and global proxy/SOCKS/insecure overrides before traffic; the assessment manifest remains the exclusive assessment transport authority. The template is strictly validated, pinned, scope-checked, and materialized before network stages. Assessment rate stops, conservative direct DNS/connection-refused failures, and target failures proven by a required healthy proxy are isolated by origin. Once the partial run and every requested report are durable, the combined workflow returns success while the assessment snapshot truthfully records failed/inconclusive coverage; standalone `assess run` remains strict and returns the typed partial error. Do not auto-generate identity, ownership, or expected-access declarations from recon results.
+
+### Manifest-driven authorization assessments
+
+Build an offline, deterministic ownership matrix from a local OpenAPI contract, two or more named identities, and explicitly owned test objects:
+
+```bash
+export SJ_ASSESSMENT_EVIDENCE_KEY='load-a-stable-key-from-your-secret-manager'
+export SJ_USER_A_TOKEN='Bearer replace-from-secret-manager'
+export SJ_USER_B_TOKEN='Bearer replace-from-secret-manager'
+
+sj assess plan --manifest assessment.yaml
+sj --database authorized-assessment.db assess run --manifest assessment.yaml
+sj --database authorized-assessment.db assess status --id ASSESSMENT_ID
+sj --database authorized-assessment.db \
+  assess report --id ASSESSMENT_ID --output-format html > assessment.html
+```
+
+`assess` rejects remote inputs during offline planning, literal credentials, wildcard scope, destructive methods, unsafe payload classes, unbudgeted redirects, and unsigned resume state. The initial runtime executes read-only BOLA/IDOR proof matrices with victim-own, attacker-own, cross-owner, anonymous, and nonexistent-object controls. Confirmed findings require established ownership, an expected deny policy, repeated stable victim-specific evidence, and a distinct successful negative control. See the [assess command guide](https://mr-pmillz.github.io/sj/commands/assess/) for the manifest and lifecycle.
+
+Assessment HTML reports use offline, independently searchable/sortable/paginated tables with a persistent light/dark toggle. False-positive control outcomes are suppressed from Findings and Comparisons instead of being presented as vulnerabilities. When a manifest explicitly enables `storeResponseBodies` and `includeSensitiveExports`, request/response exchanges are stored as bounded AES-256-GCM artifacts and rendered as actual evidence after integrity verification; credential-bearing headers are omitted. Treat these HTML files as sensitive and keep them mode `0600`.
 
 ### SQLite result database
 
@@ -281,7 +322,7 @@ Expose typed `sj` tools to an MCP client over standard input/output:
 }
 ```
 
-The server provides passive audit, request-planning, and conversion tools plus opt-in single-target and batch scanning and definition discovery. The `brute_openapi` tool supports bounded target-level workers, and `automate_openapi` accepts its structured reports directly. Batch automation deduplicates identical operation plans and supports method exclusions, complete response capture, full-URL progress, and `auto`, `always`, or `never` color modes. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, workers, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
+The server provides passive audit, request-planning, and conversion tools plus opt-in single-target and batch scanning and definition discovery. The `brute_openapi` tool supports bounded target-level workers, and `automate_openapi` accepts its structured reports directly. `run_full_workflow` is a native single-call path that accepts target or specification URL arrays and runs the same in-process discovery/automation/fuzz/collection/report/automatic-assessment orchestration as the CLI; its database, proxy, evidence key, and artifact root remain operator-controlled. Batch automation deduplicates identical operation plans and supports method exclusions, complete response capture, full-URL progress, and `auto`, `always`, or `never` color modes. Remote access requires at least one `--allow-host`; local files require `--allow-local-files`; state-changing requests require both `--allow-active` and `--allow-destructive`. Protocol input, structured output, result counts, workers, and concurrent calls are bounded. Run `sj mcp --help` for policy controls.
 
 ## Key Features
 
@@ -298,6 +339,9 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Default SQLite History** — Query immutable run IDs and reuse stored brute/automate/fuzz results without intermediate files.
 - **Bruno Collections** — Generate populated API penetration-test requests, bounded payload dictionaries, identity comparisons, and workflow templates.
 - **Rate-Safe API Fuzzing** — Run bounded object/username enumeration, identity comparisons, PII checks, verbose-error checks, and explicit read-back workflows.
+- **Ownership-Backed Assessments** — Build signed, resumable BOLA proof matrices from exact scope, named identities, owned fixtures, expected deny rules, and worst-case traffic budgets.
+- **API Ecosystem Inventory** — Normalize OpenAPI, sj results, HAR, Burp XML, Postman, and gateway logs while identifying shadow, zombie, version-drift, and enumeration candidates without granting active scope.
+- **Protocol-Aware Planning** — Bound GraphQL depth/aliases/complexity and WebSocket/AsyncAPI message authorization cases without generating introspection, flooding, or denial-of-service traffic.
 - **Wildcard-200 Detection** — Suppress repeated web-server fallback responses from brute discovery results.
 - **API Penetration-Test Reports** — Consolidate prior scan results into terminal, Markdown, and self-contained HTML reports with weighted triage and OWASP API mappings.
 - **Dangerous Keyword Detection** — Warns before testing endpoints with potentially destructive operations (override with `--force` or `--accept-risk`).

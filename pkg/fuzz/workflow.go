@@ -182,12 +182,23 @@ func validMethod(method string) bool {
 	return true
 }
 
-func executeWorkflows(ctx context.Context, client *http.Client, report *Report, identities []Identity, options Options, wait waitFunc) error {
+func executeWorkflows(
+	ctx context.Context,
+	client *http.Client,
+	report *Report,
+	state *probeRunState,
+	identities []Identity,
+	options Options,
+	wait waitFunc,
+) error {
 	identityMap := make(map[string]Identity, len(identities))
 	for _, identity := range identities {
 		identityMap[identity.Name] = identity
 	}
-	executor := workflowExecutor{ctx: ctx, client: client, report: report, identities: identities, identityMap: identityMap, options: options, wait: wait}
+	executor := workflowExecutor{
+		ctx: ctx, client: client, report: report, state: state,
+		identities: identities, identityMap: identityMap, options: options, wait: wait,
+	}
 	for _, workflow := range options.Workflows {
 		stop, err := executor.execute(workflow)
 		if err != nil {
@@ -204,6 +215,7 @@ type workflowExecutor struct {
 	ctx         context.Context
 	client      *http.Client
 	report      *Report
+	state       *probeRunState
 	identities  []Identity
 	identityMap map[string]Identity
 	options     Options
@@ -225,7 +237,7 @@ func (executor *workflowExecutor) execute(workflow Workflow) (bool, error) {
 		return false, nil
 	}
 	variables := make(map[string]string)
-	for _, step := range workflow.Steps {
+	for index, step := range workflow.Steps {
 		outcome, err := executor.executeStep(workflow, step, variables)
 		if err != nil {
 			return false, err
@@ -234,11 +246,27 @@ func (executor *workflowExecutor) execute(workflow Workflow) (bool, error) {
 		case workflowStepStop:
 			return true, nil
 		case workflowStepNextWorkflow:
+			executor.recordBlockedWorkflowSteps(workflow.Steps[index+1:], variables)
 			return false, nil
 		case workflowStepContinue:
 		}
 	}
 	return false, nil
+}
+
+func (executor *workflowExecutor) recordBlockedWorkflowSteps(
+	steps []WorkflowStep,
+	variables map[string]string,
+) {
+	if !executor.options.ContinueOnTargetError {
+		return
+	}
+	for _, step := range steps {
+		target := substituteWorkflowVariables(step.URL, variables)
+		if executor.state.originBlocked(target) {
+			executor.report.Summary.SkippedIsolated++
+		}
+	}
 }
 
 func workflowUnsafeSteps(workflow Workflow) int {
@@ -256,22 +284,36 @@ func (executor *workflowExecutor) executeStep(workflow Workflow, step WorkflowSt
 		executor.report.Summary.RequestBudgetHit = true
 		return workflowStepStop, nil
 	}
-	if executor.report.Summary.Requests > 0 {
-		if err := executor.wait(executor.ctx, executor.options.Delay); err != nil {
-			return workflowStepStop, fmt.Errorf("workflow pacing canceled: %w", err)
-		}
-	}
 	identity, err := executor.stepIdentity(workflow, step, variables)
 	if err != nil {
 		return workflowStepStop, err
 	}
 	plan := workflowProbePlan(workflow, step, variables, identity)
+	if executor.options.ContinueOnTargetError && executor.state.originBlocked(plan.targetURL) {
+		executor.report.Summary.SkippedIsolated++
+		return workflowStepNextWorkflow, nil
+	}
+	if executor.report.Summary.Requests > 0 {
+		if err := executor.wait(executor.ctx, executor.options.Delay); err != nil {
+			return workflowStepStop, fmt.Errorf("workflow pacing canceled: %w", err)
+		}
+	}
 	probe, responseBody := executeProbe(executor.ctx, executor.client, plan, executor.options)
 	executor.report.Probes = append(executor.report.Probes, probe)
 	updateSummary(&executor.report.Summary, probe)
 	if shouldStopForRateLimit(probe) {
 		executor.report.Summary.RateLimited = true
+		if executor.options.ContinueOnTargetError && executor.state.blockOrigin(plan.targetURL) {
+			executor.report.Summary.RateLimitedOrigins++
+			return workflowStepNextWorkflow, nil
+		}
 		return workflowStepStop, nil
+	}
+	if executor.options.ContinueOnTargetError && executor.state.recordTransportResult(
+		plan.targetURL, probe.targetOriginTransportFailure,
+	) {
+		executor.report.Summary.TransportLimitedOrigins++
+		return workflowStepNextWorkflow, nil
 	}
 	if !executor.verifyStep(workflow, step, plan, probe, responseBody) {
 		return workflowStepNextWorkflow, nil

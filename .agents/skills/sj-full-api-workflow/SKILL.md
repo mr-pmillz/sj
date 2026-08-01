@@ -35,9 +35,11 @@ Do not accept silently partial range coverage.
 
 ## Execute the workflow
 
-Prefer `sj run --full-workflow` for a new end-to-end assessment. It chains brute, automate, IDOR fuzz, Bruno collection generation, and reporting into a fresh directory.
+Prefer `sj run --full-workflow` for a new end-to-end assessment. It chains brute, automate, IDOR fuzz, Bruno collection generation, and reporting into a fresh directory. When the operator also provides an explicit identity/ownership manifest template, `--assessment-manifest` appends assessment-v2 planning, execution, and all report formats. Never infer identities, owned objects, or expected access from discovery data.
 
-Use the sj MCP server for brute and automate when it is configured for the session and exposes those tools. Use the CLI for a stage the server does not expose, while preserving the same proxy, target scope, database, exclusions, and output conventions.
+Use `--skip-brute --url-file` for known specification URLs, or `--skip-brute --brute-run` with the configured database to resume from retained brute evidence. Use `--auto-assess` when the caller needs a one-command assessment continuation without a manifest file. Automatic assessment must remain anonymous/public-control only: materialize no identities, owned objects, or ownership expectations, and never describe its results as ownership-backed authorization verification.
+
+Use the sj MCP server's native `run_full_workflow` tool for a one-call local workflow when it is configured for the session. It accepts target URL arrays, or known specification URLs/stored brute run IDs with `skip_brute`, and defaults to automatic anonymous assessment. The server operator retains authority over the proxy, database, evidence key, allowed hosts, and artifact roots. Use individual MCP tools or the CLI only when intentionally testing a stage in isolation.
 
 Apply these invariants:
 
@@ -46,11 +48,24 @@ Apply these invariants:
 - render fuzz status from immutable atomic snapshots owned by the scan goroutine; keep URLs, headers, and request/response bodies out of progress state;
 - enable bounded response-guided repair and reserve every possible retry during the offline preflight;
 - always exclude DELETE;
-- require a separate explicit `--accept-risk` decision for POST, PUT, PATCH, and business-workflow execution;
-- stop immediately on HTTP 429 or advertised remaining capacity of one or less;
+- exclude PATCH by default and require both `--allow-patch` and `--accept-risk` to send it;
+- exclude POST from the full workflow by default and require both `--allow-post` and `--accept-risk` to send it;
+- require a separate explicit `--accept-risk` decision for PUT and business-workflow execution;
+- stop requests to the affected origin immediately on HTTP 429 or advertised depleted capacity while continuing authorized healthy origins;
 - never use denial-of-service, sleep, oversized, recursive, or rate-exhaustion payloads;
 - enable complete response capture for automate and fuzz; and
 - keep SQLite storage enabled unless the user explicitly requests an ephemeral run.
+
+For the optional assessment continuation:
+
+- require persisted storage and a stable `SJ_ASSESSMENT_EVIDENCE_KEY`;
+- require exactly one `kind: sj-results` input with the exact `$workflow.automate` scalar in `spec.inputs[].path` to bind the new `automate.json` artifact;
+- validate and pin the complete strict template before target traffic, and require explicit identities plus owned objects;
+- require every exact manifest origin to be present in the normalized `--url-file` origin set before any network stage;
+- keep the manifest as the exclusive assessment transport authority and reject global proxy/SOCKS/insecure overrides;
+- contain target-origin rate and verified transport failures while keeping global policy, proxy, storage, lease, and cancellation failures fatal; and
+- skip assessment traffic after a global automate or fuzz failure; and
+- preserve both the legacy corpus report and signed assessment-v2 reports because they cover different evidence surfaces.
 
 ## Inspect and fix
 

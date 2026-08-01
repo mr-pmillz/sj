@@ -25,9 +25,11 @@ sj/
 ├── pkg/
 │   ├── brute/                # Brute-force scanner logic
 │   ├── audit/                # Passive security and contract analysis
+│   ├── assessment/           # Manifest, policy, planning, execution, and reporting
 │   ├── config/               # Config struct and mode constants
 │   ├── httpclient/           # HTTP client wrapper (proxy, TLS, User-Agent)
 │   ├── mcpserver/            # Typed MCP handlers and security policy
+│   ├── modules/              # BOLA, authorization, auth, GraphQL, and WebSocket modules
 │   ├── openapi/              # OpenAPI/Swagger parsing, conversion, resolution
 │   ├── output/               # Colored console output, structured writers
 │   ├── scanner/              # Request generation and endpoint scanning
@@ -68,6 +70,23 @@ Loads remote and local specifications with the configured size, timeout, redirec
 
 Performs deterministic, network-free checks of security requirements, schemes, servers, operation metadata, path parameters, callbacks, and webhooks. It renders console, JSON, and SARIF reports.
 
+### `pkg/assessment`
+
+Implements the manifest-driven authorized-assessment lifecycle as focused packages:
+
+- `model` and `manifest` build immutable, strictly validated authorization inputs.
+- `inventory` and `importer` normalize OpenAPI, prior sj results, HAR, Burp XML, Postman, and gateway logs without authorizing observed origins.
+- `policy`, `planner`, and `executor` enforce exact scope, safety classes, complete worst-case reservations, bounded responses, redirects, proxy requirements, and rate-limit stops before network I/O.
+- `reference` and `compare` discover nested object references and suppress catch-all, echo, volatile, scalar, and error-envelope false positives.
+- `runtime` signs persisted execution snapshots, runs the ownership matrix, and verifies scope, budget, credentials, and the authorization window again on resume.
+- `report` renders bounded terminal, JSON, Markdown, HTML, SARIF, JUnit, and Bruno output without raw credential or response evidence.
+
+SQLite persistence lives in `pkg/store`. Assessment rows are additive to the legacy run schema and retain plan, attempt, comparison, coverage, and evidence-lineage records for recovery and reporting.
+
+### `pkg/modules`
+
+Contains finite, proof-oriented security modules. BOLA uses explicit object ownership and expected deny rules. BFLA, BOPLA, and mass-assignment analyzers keep heuristic, differential, ownership-backed, and side-effect-verified confidence separate. Authentication analysis is offline and never forges credentials. GraphQL and WebSocket planners bound depth, aliases, batches, messages, and candidate expansion and do not generate denial-of-service traffic.
+
 ### `pkg/scanner`
 
 The core request-generation engine. Given a parsed spec and a config, it builds requests for each endpoint, fills parameter placeholders with test values, sends the requests (in `automate` mode), and formats the output.
@@ -101,6 +120,27 @@ CLI flags → config.Config
                 │
                 ▼
         output.Writer (console / json / jsonl / csv)
+```
+
+The manifest-driven assessment path is deliberately separate:
+
+```text
+local OpenAPI / passive imports + Assessment manifest
+                         │
+                         ▼
+        immutable inventory + object-reference discovery
+                         │
+                         ▼
+          exact scope policy + hierarchical budget ledger
+                         │
+                         ▼
+             deterministic, HMAC-signed execution plan
+                         │
+                         ▼
+       single executor network boundary → durable attempts
+                         │
+                         ▼
+       semantic controls → findings + coverage + reports
 ```
 
 ## Build System

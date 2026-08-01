@@ -137,6 +137,7 @@ type scanInput struct {
 	RequiredOnly         bool        `json:"required_only,omitempty" jsonschema:"Populate only required operation parameters."`
 	RetryOnHint          bool        `json:"retry_on_hint,omitempty" jsonschema:"Retry safe 401 responses that contain structured missing-parameter hints."`
 	AcceptRisk           bool        `json:"accept_risk,omitempty" jsonschema:"Request state-changing methods and dangerous paths. Requires server-side destructive authorization."`
+	AllowPatch           bool        `json:"allow_patch,omitempty" jsonschema:"Include PATCH operations. Sending them also requires accept_risk=true and server-side destructive authorization."`
 	ResponsePreviewBytes int         `json:"response_preview_bytes,omitempty" jsonschema:"Return this many response bytes per operation, from 0 through 4096."`
 	StoreResponses       bool        `json:"store_responses,omitempty" jsonschema:"Return complete response bodies up to the MCP server's configured emergency response ceiling."`
 }
@@ -167,6 +168,9 @@ func (service *service) scan(ctx context.Context, _ *mcp.CallToolRequest, input 
 	if input.AcceptRisk && !service.policy.allowDestructive {
 		return nil, scanOutput{}, fmt.Errorf("destructive requests are disabled by the MCP server")
 	}
+	if input.AllowPatch && !input.AcceptRisk {
+		return nil, scanOutput{}, fmt.Errorf("allow_patch requires accept_risk=true")
+	}
 	if input.ResponsePreviewBytes < 0 || input.ResponsePreviewBytes > 4096 {
 		return nil, scanOutput{}, fmt.Errorf("response_preview_bytes must be between 0 and 4096")
 	}
@@ -185,6 +189,7 @@ func (service *service) scan(ctx context.Context, _ *mcp.CallToolRequest, input 
 	cfg.RequiredOnly = input.RequiredOnly
 	cfg.RetryOnHint = input.RetryOnHint
 	cfg.AcceptRisk = input.AcceptRisk
+	cfg.AllowPatch = input.AllowPatch
 	cfg.Force = false
 	cfg.Verbose = input.ResponsePreviewBytes > 0
 	cfg.ResponsePreview = input.ResponsePreviewBytes

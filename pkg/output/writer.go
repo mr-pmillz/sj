@@ -45,6 +45,8 @@ type Writer struct {
 	AccessibleEndpoints []string
 	EndpointPaths       []string
 	PreparedRequests    []PreparedRequest
+	SourceFailures      []SourceFailure
+	CoverageGaps        []CoverageGap
 	SpecTitle           string
 	SpecDescription     string
 }
@@ -53,6 +55,7 @@ func NewWriter(cfg *config.Config) *Writer {
 	return &Writer{
 		Cfg: cfg, Results: []Result{}, VerboseResults: []VerboseResult{}, AccessibleEndpoints: []string{},
 		EndpointPaths: []string{}, PreparedRequests: []PreparedRequest{},
+		SourceFailures: []SourceFailure{}, CoverageGaps: []CoverageGap{},
 	}
 }
 

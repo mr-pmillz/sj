@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/httpclient"
+	"github.com/mr-pmillz/sj/pkg/output"
 	"github.com/mr-pmillz/sj/pkg/store"
 )
 
@@ -152,8 +154,77 @@ func TestRunAutomateContinuesAfterSourceFailureAndReturnsSummaryError(t *testing
 	if readErr != nil {
 		t.Fatalf("successful partial output was not written: %v", readErr)
 	}
-	if !strings.Contains(string(data), `"source":"`+serverURL+`/spec-two"`) || strings.Contains(string(data), `"source":"`+serverURL+`/missing"`) {
+	var payload struct {
+		Results        []output.Result        `json:"results"`
+		SourceFailures []output.SourceFailure `json:"source_failures"`
+	}
+	if decodeErr := json.Unmarshal(data, &payload); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if len(payload.Results) != 1 || payload.Results[0].Source != serverURL+"/spec-two" ||
+		len(payload.SourceFailures) != 1 || payload.SourceFailures[0].Source != serverURL+"/missing" {
 		t.Fatalf("partial output = %s", data)
+	}
+}
+
+func TestRunAutomateContainsSpecFetchRateLimitToOrigin(t *testing.T) {
+	input := writeAutomateInput(t, "targets.txt", strings.Join([]string{
+		"https://limited.test/spec-one",
+		"https://limited.test/spec-two",
+		"https://healthy.test/spec",
+	}, "\n"))
+	outputPath := filepath.Join(t.TempDir(), "results.json")
+	var requested []string
+	previous := newAutomateHTTPClient
+	newAutomateHTTPClient = func(cfg *config.Config) (*httpclient.Client, error) {
+		client := httpclient.NewClient(cfg)
+		client.HTTP.Transport = cliRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requested = append(requested, request.URL.String())
+			header := http.Header{"Content-Type": []string{"application/json"}}
+			status := http.StatusOK
+			body := `{"openapi":"3.0.3","servers":[{"url":"https://healthy.test"}],"paths":{"/items":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+			switch request.URL.String() {
+			case "https://limited.test/spec-one":
+				status = http.StatusTooManyRequests
+				body = `{"error":"limited"}`
+			case "https://limited.test/spec-two":
+				body = `{"openapi":"3.0.3","servers":[{"url":"https://limited.test"}],"paths":{"/should-not-run":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+			case "https://healthy.test/items":
+				body = `{"ok":true}`
+			}
+			return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		})
+		return client, nil
+	}
+	t.Cleanup(func() { newAutomateHTTPClient = previous })
+
+	cfg := config.New()
+	cfg.AutomateURLFile = input
+	cfg.OutputFormat = "json"
+	cfg.Outfile = outputPath
+	err := runAutomate(t.Context(), cfg)
+	var partial *automatePartialFailure
+	if !errors.As(err, &partial) {
+		t.Fatalf("error = %v, want contained source failure", err)
+	}
+	want := []string{
+		"https://limited.test/spec-one",
+		"https://healthy.test/spec",
+		"https://healthy.test/items",
+	}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requested URLs = %v, want %v", requested, want)
+	}
+	contents, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(contents), `"coverage_gaps"`) ||
+		!strings.Contains(string(contents), `"source_failures"`) ||
+		!strings.Contains(string(contents), `"source":"https://limited.test/spec-one"`) ||
+		!strings.Contains(string(contents), `"origin":"https://limited.test"`) ||
+		!strings.Contains(string(contents), `"reason":"rate-limited"`) {
+		t.Fatalf("automate output omitted circuit coverage gap: %s", contents)
 	}
 }
 
