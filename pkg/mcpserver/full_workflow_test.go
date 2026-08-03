@@ -48,12 +48,13 @@ func TestRunFullWorkflowToolInvokesNativeRunnerWithAutomaticAssessment(t *testin
 	})
 
 	result := callTool(t, session, "run_full_workflow", map[string]any{
-		"skip_brute":       true,
-		"spec_urls":        []string{"https://api.example.com/openapi.json"},
-		"output_directory": outputDirectory,
-		"idor_range":       "1-2",
-		"max_cases":        16,
-		"delay_ms":         100,
+		"skip_brute":                true,
+		"spec_urls":                 []string{"https://api.example.com/openapi.json"},
+		"output_directory":          outputDirectory,
+		"idor_range":                "1-2",
+		"max_cases":                 128,
+		"delay_ms":                  100,
+		"enable_special_chars_fuzz": true,
 	})
 	if result.IsError {
 		t.Fatalf("run_full_workflow failed: %s", toolText(result))
@@ -69,6 +70,9 @@ func TestRunFullWorkflowToolInvokesNativeRunnerWithAutomaticAssessment(t *testin
 	}
 	if received.Delay != 100*time.Millisecond {
 		t.Fatalf("delay = %s", received.Delay)
+	}
+	if !received.EnableSpecialCharsFuzz {
+		t.Fatalf("special-character fuzzing was not enabled: %#v", received)
 	}
 	var output FullWorkflowOutput
 	decodeStructured(t, result, &output)
