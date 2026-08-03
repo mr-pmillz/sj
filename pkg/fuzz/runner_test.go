@@ -228,6 +228,30 @@ func TestRunFindsPIIAndVerboseErrorsWithoutCopyingMatchedData(t *testing.T) {
 	}
 }
 
+func TestRunSpecialCharacterProbeUsesExistingVerboseErrorAnalysis(t *testing.T) {
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.HasPrefix(request.Header.Get("X-SJ-Test-Case"), "special_character:") {
+			return fuzzResponse(request, http.StatusInternalServerError, `{"error":"stack trace /home/service/main.go:10"}`)
+		}
+		return fuzzResponse(request, http.StatusBadRequest, `{"error":"invalid input"}`)
+	})}
+	report, err := run(t.Context(), client, []pentestreport.Operation{{
+		Method: http.MethodGet, URL: "https://api.example/search?q=ordinary", Target: "/search",
+	}}, Options{
+		MaxRequests: 128, Delay: minimumRequestDelay, MaxCasesPerOperation: 128,
+		EnableSpecialCharacters: true,
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range report.Findings {
+		if finding.Category == "verbose_error" && strings.Contains(finding.Evidence, "stack_trace") {
+			return
+		}
+	}
+	t.Fatalf("special-character verbose-error finding missing: probes=%#v findings=%#v", report.Probes, report.Findings)
+}
+
 func TestRunClassifiesSQLAlchemyDatabaseDisclosure(t *testing.T) {
 	const responseBody = `{"detail":"Database failure: (pyodbc.IntegrityError) ('23000', \"[Microsoft][ODBC Driver 17 for SQL Server][SQL Server] Cannot insert NULL into column 'CallbackUrl', table 'tenantdb.dbo.ApiAudit'; constraint 'FK_ApiAudit_Tenant'.\")\n[SQL: EXEC spAuditAdd @payload = ?]\n[parameters: ('omitted',)]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)"}`
 	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -664,6 +688,23 @@ func TestPlanReportsRequiredRequestsBeforeNetworkExecution(t *testing.T) {
 	}
 	if !plan.ExceedsBudget || plan.RequiredRequests <= 2 || plan.SkippedUnsafe != 1 {
 		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPlanIncludesEverySpecialCharacterProbe(t *testing.T) {
+	plan, err := Plan([]pentestreport.Operation{{
+		Method: http.MethodGet, URL: "https://api.example/search?q=ordinary", Target: "/search",
+	}}, Options{
+		MaxRequests: 128, Delay: minimumRequestDelay, MaxCasesPerOperation: 128,
+		EnableSpecialCharacters: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// baseline + six built-in bad-character probes + 60 special-character probes
+	// + the synthetic invalid-type probe.
+	if plan.DeterministicRequests != 68 || plan.RequiredRequests != 68 || plan.ExceedsBudget {
+		t.Fatalf("special-character plan = %#v", plan)
 	}
 }
 

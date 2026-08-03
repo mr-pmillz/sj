@@ -47,15 +47,31 @@ func EncryptHTTPExchange(key []byte, exchange HTTPExchange) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal HTTP exchange evidence: %w", err)
 	}
+	outputSize, err := httpExchangeOutputSize(len(plaintext), httpExchangeNonceSize, aead.Overhead())
+	if err != nil {
+		return nil, err
+	}
 	nonce := make([]byte, httpExchangeNonceSize)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("generate HTTP exchange evidence nonce: %w", err)
 	}
-	output := make([]byte, 0, len(httpExchangeMagic)+len(nonce)+len(plaintext)+aead.Overhead())
+	output := make([]byte, 0, outputSize)
 	output = append(output, httpExchangeMagic...)
 	output = append(output, nonce...)
 	output = aead.Seal(output, nonce, plaintext, httpExchangeMagic)
 	return output, nil
+}
+
+func httpExchangeOutputSize(plaintextSize, nonceSize, overhead int) (int, error) {
+	size := len(httpExchangeMagic)
+	maxInt := int(^uint(0) >> 1)
+	for _, additionalSize := range []int{nonceSize, plaintextSize, overhead} {
+		if additionalSize < 0 || size > maxInt-additionalSize {
+			return 0, errors.New("HTTP exchange evidence is too large to encrypt")
+		}
+		size += additionalSize
+	}
+	return size, nil
 }
 
 func DecryptHTTPExchange(key, ciphertext []byte) (HTTPExchange, error) {

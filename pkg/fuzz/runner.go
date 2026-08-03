@@ -73,6 +73,7 @@ type Options struct {
 	Identities                 []Identity
 	MaxCasesPerOperation       int
 	IDORRange                  *apitest.NumericRange
+	EnableSpecialCharacters    bool
 	MaxResponseBytes           int64
 	StoreResponses             bool
 	MaxStoredResponseBytes     int64
@@ -209,6 +210,7 @@ func Plan(operations []pentestreport.Operation, options Options) (PlanSummary, e
 		}
 		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{
 			KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
+			EnableSpecialCharacters: options.EnableSpecialCharacters,
 		})
 		if mutationErr != nil {
 			return PlanSummary{}, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, mutationErr)
@@ -299,6 +301,7 @@ func planOperationProbes(operation pentestreport.Operation, identities []Identit
 	}
 	mutations, err := apitest.Mutations(operation, apitest.MutationOptions{
 		KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
+		EnableSpecialCharacters: options.EnableSpecialCharacters,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, err)
