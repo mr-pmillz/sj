@@ -73,7 +73,7 @@ type Options struct {
 	Identities                 []Identity
 	MaxCasesPerOperation       int
 	IDORRange                  *apitest.NumericRange
-	SpecialCharacters          []string
+	EnableSpecialCharacters    bool
 	MaxResponseBytes           int64
 	StoreResponses             bool
 	MaxStoredResponseBytes     int64
@@ -210,7 +210,7 @@ func Plan(operations []pentestreport.Operation, options Options) (PlanSummary, e
 		}
 		mutations, mutationErr := apitest.Mutations(operation, apitest.MutationOptions{
 			KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
-			SpecialCharacters: options.SpecialCharacters,
+			EnableSpecialCharacters: options.EnableSpecialCharacters,
 		})
 		if mutationErr != nil {
 			return PlanSummary{}, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, mutationErr)
@@ -301,7 +301,7 @@ func planOperationProbes(operation pentestreport.Operation, identities []Identit
 	}
 	mutations, err := apitest.Mutations(operation, apitest.MutationOptions{
 		KnownUsername: options.KnownUsername, MaxCases: options.MaxCasesPerOperation, IDORRange: options.IDORRange,
-		SpecialCharacters: options.SpecialCharacters,
+		EnableSpecialCharacters: options.EnableSpecialCharacters,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("plan fuzz cases for %s %s: %w", operation.Method, operation.URL, err)
@@ -516,9 +516,6 @@ func scheduleGuidedRetry(report *Report, state *probeRunState, plan plannedProbe
 }
 
 func normalizeOptions(options *Options) error {
-	if err := apitest.ValidateSpecialCharacters(options.SpecialCharacters); err != nil {
-		return err
-	}
 	if options.MaxRequests == 0 {
 		options.MaxRequests = 200
 	}

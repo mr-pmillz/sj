@@ -9,20 +9,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	pentestreport "github.com/mr-pmillz/sj/pkg/report"
 )
 
 const (
-	ScopeAll                       = "all"
-	ScopeInteresting               = "interesting"
-	ScopeIDOR                      = "idor"
-	MaximumPayloadBytes            = 4 * 1024
-	MaximumIDORRangeValues         = 1_000
-	MaximumSpecialCharacterEntries = 256
-	maximumMutationCases           = 4_096
+	ScopeAll               = "all"
+	ScopeInteresting       = "interesting"
+	ScopeIDOR              = "idor"
+	MaximumPayloadBytes    = 4 * 1024
+	MaximumIDORRangeValues = 1_000
+	maximumMutationCases   = 4_096
 )
 
 var (
@@ -39,6 +36,12 @@ var (
 		{name: "format", value: "%s%s%s"},
 		{name: "sql_meta", value: "' OR '1'='1"},
 	}
+	specialCharacterPayloads = []string{
+		"!", `"`, "#", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/",
+		":", ";", "<", "=", ">", "?", "@", "[", `\`, "]", "^", "_", "`", "{", "|", "}", "~", "$",
+		"%21", "%22", "%23", "%24", "%25", "%26", "%27", "%28", "%29", "%2A", "%2B", "%2C", "%2F",
+		"%3A", "%3B", "%3C", "%3D", "%3E", "%3F", "%40", "%5B", "%5C", "%5D", "%5E", "%60", "%7B", "%7C", "%7D",
+	}
 )
 
 type SelectOptions struct {
@@ -48,10 +51,10 @@ type SelectOptions struct {
 }
 
 type MutationOptions struct {
-	KnownUsername     string
-	MaxCases          int
-	IDORRange         *NumericRange
-	SpecialCharacters []string
+	KnownUsername           string
+	MaxCases                int
+	IDORRange               *NumericRange
+	EnableSpecialCharacters bool
 }
 
 type NumericRange struct {
@@ -286,15 +289,12 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	if maxCases < 1 || maxCases > maximumMutationCases {
 		return nil, fmt.Errorf("mutation cases must be between 1 and %d", maximumMutationCases)
 	}
-	if err := ValidateSpecialCharacters(options.SpecialCharacters); err != nil {
-		return nil, err
-	}
 	parsed, err := url.Parse(operation.URL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
 		return nil, errors.New("operation URL must be an absolute http(s) URL")
 	}
 	collectorLimit := maxCases
-	if len(options.SpecialCharacters) > 0 {
+	if options.EnableSpecialCharacters {
 		collectorLimit++
 	}
 	collector := mutationCollector{values: make([]Mutation, 0, collectorLimit), limit: collectorLimit}
@@ -312,44 +312,14 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	addQueryMutations(parsed, operation.RequestBody, options.KnownUsername, collector.add)
 	addBodyMutations(operation, options.KnownUsername, collector.add)
 	addBadCharacterMutations(operation, parsed, collector.add)
-	addSpecialCharacterMutations(operation, parsed, options.SpecialCharacters, collector.add)
+	if options.EnableSpecialCharacters {
+		addSpecialCharacterMutations(operation, parsed, specialCharacterPayloads, collector.add)
+	}
 	collector.ensureVerboseProbe(parsed, operation.RequestBody)
-	if len(options.SpecialCharacters) > 0 && len(collector.values) > maxCases {
+	if options.EnableSpecialCharacters && len(collector.values) > maxCases {
 		return nil, fmt.Errorf("complete special-character fuzzing exceeds --max-cases %d for this operation; increase --max-cases or narrow the operation scope", maxCases)
 	}
 	return collector.values, nil
-}
-
-func ValidateSpecialCharacters(values []string) error {
-	if len(values) > MaximumSpecialCharacterEntries {
-		return fmt.Errorf("special-character corpus may contain at most %d payloads", MaximumSpecialCharacterEntries)
-	}
-	seen := make(map[string]struct{}, len(values))
-	for index, value := range values {
-		if _, exists := seen[value]; exists {
-			return fmt.Errorf("special-character payload %d is a duplicate", index+1)
-		}
-		seen[value] = struct{}{}
-		decoded := value
-		if len(value) == 3 && value[0] == '%' {
-			parsed, err := strconv.ParseUint(value[1:], 16, 8)
-			if err != nil {
-				return fmt.Errorf("special-character payload %d must contain exactly one special character or one %%HH value", index+1)
-			}
-			decoded = string(rune(parsed))
-		}
-		if utf8.RuneCountInString(decoded) != 1 {
-			return fmt.Errorf("special-character payload %d must contain exactly one special character or one %%HH value", index+1)
-		}
-		character, _ := utf8.DecodeRuneInString(decoded)
-		if character == utf8.RuneError || unicode.IsControl(character) || unicode.IsSpace(character) {
-			return fmt.Errorf("special-character payload %d resolves to a control or whitespace character", index+1)
-		}
-		if unicode.IsLetter(character) || unicode.IsDigit(character) {
-			return fmt.Errorf("special-character payload %d resolves to a letter or digit", index+1)
-		}
-	}
-	return nil
 }
 
 func validateNumericRange(idRange NumericRange) error {

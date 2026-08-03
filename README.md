@@ -204,7 +204,7 @@ sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
 sj fuzz -I automate.json --scope all -F json -o fuzz.json
 sj fuzz -I automate.json --endpoint 'GET https://api.example/users/1'
 sj fuzz --run AUTOMATE_RUN_ID --scope all \
-  --special-chars-wordlist /path/to/special-chars-urlencoded.txt \
+  --enable-special-chars-fuzz \
   --max-cases 256 --max-requests 1000 --delay 500ms \
   --store-responses -F json -o special-character-fuzz.json
 sj fuzz --run AUTOMATE_RUN_ID --scope idor --idor-range 1-100 \
@@ -215,7 +215,7 @@ sj fuzz --run AUTOMATE_RUN_ID --scope idor --idor-range 1-100 \
 
 Numeric IDOR ranges are inclusive and limited to 1,000 values. sj mutates every identifier-bearing path segment, query parameter, and top-level JSON property, rejects a partial range when `--max-cases` is too small, and reports a high-severity active-test candidate only when multiple successful IDs have distinct response hashes. Identical wildcard/catch-all responses are not reported as differential IDOR evidence.
 
-`--special-chars-wordlist` accepts up to 256 unique lines containing one special character or one `%HH` literal. sj preserves raw and encoded-looking entries as distinct logical values, then applies normal URL serialization. Each request changes one deterministic query or top-level JSON string field to one corpus value; query and body probes are separate. If neither surface exists, sj uses a synthetic `sj_probe` query field. The wordlist is validated before traffic, and preflight rejects a case or request budget that would silently truncate it. Concrete stack traces, framework/runtime diagnostics, and database details flow through the existing verbose-error analyzer; generic 5xx responses are counted but are not reported as vulnerabilities without disclosure evidence.
+`--enable-special-chars-fuzz` opts into sj's compiled-in 60-value slice of raw and `%HH` special-character payloads. sj preserves raw and encoded-looking entries as distinct logical values, then applies normal URL serialization. Each request changes one deterministic query or top-level JSON string field to one corpus value; query and body probes are separate. If neither surface exists, sj uses a synthetic `sj_probe` query field. Preflight rejects a case or request budget that would silently truncate the corpus. Concrete stack traces, framework/runtime diagnostics, and database details flow through the existing verbose-error analyzer; generic 5xx responses are counted but are not reported as vulnerabilities without disclosure evidence.
 
 `fuzz` is sequential, enforces a hard request budget and bounded payload/response sizes, and stops immediately on HTTP 429 or a near-empty advertised rate budget. It returns an incomplete-coverage error if `--max-requests` prevents every planned case from running. It does not generate oversized, recursive, sleep, resource-exhaustion, or denial-of-service payloads. State-changing operations require `--accept-risk`.
 
@@ -255,7 +255,7 @@ sj --socks5-proxy socks5://127.0.0.1:9000 \
   -o targets/results/full-workflow \
   run --full-workflow --url-file targets/unique-base-urls.txt \
   --workers 20 --exclude DELETE --idor-range 1-100 \
-  --special-chars-wordlist /path/to/special-chars-urlencoded.txt \
+  --enable-special-chars-fuzz \
   --max-cases 4096 --max-fuzz-requests 10000 --delay 500ms
 ```
 

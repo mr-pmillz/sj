@@ -238,8 +238,8 @@ func TestRunSpecialCharacterProbeUsesExistingVerboseErrorAnalysis(t *testing.T) 
 	report, err := run(t.Context(), client, []pentestreport.Operation{{
 		Method: http.MethodGet, URL: "https://api.example/search?q=ordinary", Target: "/search",
 	}}, Options{
-		MaxRequests: 16, Delay: minimumRequestDelay, MaxCasesPerOperation: 16,
-		SpecialCharacters: []string{"!"},
+		MaxRequests: 128, Delay: minimumRequestDelay, MaxCasesPerOperation: 128,
+		EnableSpecialCharacters: true,
 	}, noWait)
 	if err != nil {
 		t.Fatal(err)
@@ -695,15 +695,15 @@ func TestPlanIncludesEverySpecialCharacterProbe(t *testing.T) {
 	plan, err := Plan([]pentestreport.Operation{{
 		Method: http.MethodGet, URL: "https://api.example/search?q=ordinary", Target: "/search",
 	}}, Options{
-		MaxRequests: 16, Delay: minimumRequestDelay, MaxCasesPerOperation: 16,
-		SpecialCharacters: []string{"!", "%21"},
+		MaxRequests: 128, Delay: minimumRequestDelay, MaxCasesPerOperation: 128,
+		EnableSpecialCharacters: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// baseline + six built-in bad-character probes + two explicit corpus probes
+	// baseline + six built-in bad-character probes + 60 special-character probes
 	// + the synthetic invalid-type probe.
-	if plan.DeterministicRequests != 10 || plan.RequiredRequests != 10 || plan.ExceedsBudget {
+	if plan.DeterministicRequests != 68 || plan.RequiredRequests != 68 || plan.ExceedsBudget {
 		t.Fatalf("special-character plan = %#v", plan)
 	}
 }
