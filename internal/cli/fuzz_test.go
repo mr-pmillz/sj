@@ -9,6 +9,7 @@ import (
 
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/fuzz"
+	"github.com/spf13/cobra"
 )
 
 func TestRunFuzzRecordsEmptyIDORScopeWithoutSendingRequests(t *testing.T) {
@@ -59,5 +60,20 @@ func TestRunFuzzRecordsEmptyIDORScopeWithoutSendingRequests(t *testing.T) {
 	cfg.Outfile = filepath.Join(directory, "empty-interesting.json")
 	if err := runFuzz(t.Context(), cfg, options); err == nil {
 		t.Fatal("a non-IDOR empty scope was accepted as a successful no-op")
+	}
+}
+
+func TestFuzzCommandsExposeSpecialCharacterBooleanFlag(t *testing.T) {
+	for name, command := range map[string]*cobra.Command{"fuzz": fuzzCmd, "run": fullWorkflowCmd} {
+		flag := command.Flags().Lookup("enable-special-chars-fuzz")
+		if flag == nil {
+			t.Fatalf("%s command does not expose --enable-special-chars-fuzz", name)
+		}
+		if flag.Value.Type() != "bool" {
+			t.Fatalf("%s --enable-special-chars-fuzz type = %q, want bool", name, flag.Value.Type())
+		}
+		if command.Flags().Lookup("special-chars-wordlist") != nil {
+			t.Fatalf("%s command still exposes obsolete --special-chars-wordlist", name)
+		}
 	}
 }

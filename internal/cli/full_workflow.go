@@ -20,28 +20,29 @@ import (
 const fullWorkflowMaximumFuzzRequests = 50_000
 
 type fullWorkflowCLIOptions struct {
-	FullWorkflow          bool
-	SkipBrute             bool
-	TargetsFile           string
-	BruteRunIDs           []string
-	OutputDirectory       string
-	Workers               int
-	ExcludeMethods        []string
-	IDORRange             string
-	MaxFuzzRequests       int
-	MaxCases              int
-	Delay                 time.Duration
-	IdentityHeaders       []string
-	KnownUsername         string
-	AcceptRisk            bool
-	AllowPost             bool
-	AllowPatch            bool
-	MaxEvidence           int
-	AssessmentManifest    string
-	AutoAssess            bool
-	AssessmentMaxResults  int
-	AssessmentEvidenceKey []byte
-	ProtocolSafeOutput    bool
+	FullWorkflow           bool
+	SkipBrute              bool
+	TargetsFile            string
+	BruteRunIDs            []string
+	OutputDirectory        string
+	Workers                int
+	ExcludeMethods         []string
+	IDORRange              string
+	MaxFuzzRequests        int
+	MaxCases               int
+	Delay                  time.Duration
+	IdentityHeaders        []string
+	KnownUsername          string
+	EnableSpecialCharsFuzz bool
+	AcceptRisk             bool
+	AllowPost              bool
+	AllowPatch             bool
+	MaxEvidence            int
+	AssessmentManifest     string
+	AutoAssess             bool
+	AssessmentMaxResults   int
+	AssessmentEvidenceKey  []byte
+	ProtocolSafeOutput     bool
 }
 
 var fullWorkflowOptions = fullWorkflowCLIOptions{
@@ -197,7 +198,8 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		fuzzErr = stages.fuzz(ctx, fuzzCfg, fuzzCLIOptions{
 			Inputs: []string{paths.automateJSON}, Scope: apitest.ScopeIDOR, IDORRange: options.IDORRange,
 			IdentityHeaders: append([]string(nil), options.IdentityHeaders...), KnownUsername: options.KnownUsername,
-			MaxRequests: options.MaxFuzzRequests, Delay: options.Delay, MaxCases: max(options.MaxCases, idRange.End-idRange.Start+1),
+			EnableSpecialCharsFuzz: options.EnableSpecialCharsFuzz,
+			MaxRequests:            options.MaxFuzzRequests, Delay: options.Delay, MaxCases: max(options.MaxCases, idRange.End-idRange.Start+1),
 			ResponseGuided: true, MaxGuidedRetries: 2, Progress: true,
 			ContinueOnTargetError: true,
 			OutputFormat:          "json", MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
@@ -476,6 +478,7 @@ func init() {
 	fullWorkflowCmd.Flags().DurationVar(&fullWorkflowOptions.Delay, "delay", 500*time.Millisecond, "Delay between sequential fuzz requests; minimum 100ms.")
 	fullWorkflowCmd.Flags().StringArrayVar(&fullWorkflowOptions.IdentityHeaders, "identity-header", nil, "Named identity header as NAME=Header: Value; repeatable.")
 	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.KnownUsername, "known-username", "", "Authorized known username for differential checks.")
+	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.EnableSpecialCharsFuzz, "enable-special-chars-fuzz", false, "Enable the built-in special-character corpus during the fuzz stage.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AcceptRisk, "accept-risk", false, "Allow non-DELETE state-changing requests; DELETE remains excluded.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPost, "allow-post", false, "Include POST operations in the full workflow; requires --accept-risk.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPatch, "allow-patch", false, "Include PATCH operations in the full workflow; requires --accept-risk.")

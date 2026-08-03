@@ -36,6 +36,12 @@ var (
 		{name: "format", value: "%s%s%s"},
 		{name: "sql_meta", value: "' OR '1'='1"},
 	}
+	specialCharacterPayloads = []string{
+		"!", `"`, "#", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/",
+		":", ";", "<", "=", ">", "?", "@", "[", `\`, "]", "^", "_", "`", "{", "|", "}", "~", "$",
+		"%21", "%22", "%23", "%24", "%25", "%26", "%27", "%28", "%29", "%2A", "%2B", "%2C", "%2F",
+		"%3A", "%3B", "%3C", "%3D", "%3E", "%3F", "%40", "%5B", "%5C", "%5D", "%5E", "%60", "%7B", "%7C", "%7D",
+	}
 )
 
 type SelectOptions struct {
@@ -45,9 +51,10 @@ type SelectOptions struct {
 }
 
 type MutationOptions struct {
-	KnownUsername string
-	MaxCases      int
-	IDORRange     *NumericRange
+	KnownUsername           string
+	MaxCases                int
+	IDORRange               *NumericRange
+	EnableSpecialCharacters bool
 }
 
 type NumericRange struct {
@@ -286,7 +293,11 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
 		return nil, errors.New("operation URL must be an absolute http(s) URL")
 	}
-	collector := mutationCollector{values: make([]Mutation, 0, maxCases), limit: maxCases}
+	collectorLimit := maxCases
+	if options.EnableSpecialCharacters {
+		collectorLimit++
+	}
+	collector := mutationCollector{values: make([]Mutation, 0, collectorLimit), limit: collectorLimit}
 	if options.IDORRange != nil {
 		if err := validateNumericRange(*options.IDORRange); err != nil {
 			return nil, err
@@ -301,7 +312,13 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	addQueryMutations(parsed, operation.RequestBody, options.KnownUsername, collector.add)
 	addBodyMutations(operation, options.KnownUsername, collector.add)
 	addBadCharacterMutations(operation, parsed, collector.add)
+	if options.EnableSpecialCharacters {
+		addSpecialCharacterMutations(operation, parsed, specialCharacterPayloads, collector.add)
+	}
 	collector.ensureVerboseProbe(parsed, operation.RequestBody)
+	if options.EnableSpecialCharacters && len(collector.values) > maxCases {
+		return nil, fmt.Errorf("complete special-character fuzzing exceeds --max-cases %d for this operation; increase --max-cases or narrow the operation scope", maxCases)
+	}
 	return collector.values, nil
 }
 
@@ -538,6 +555,66 @@ func addBadCharacterMutations(operation pentestreport.Operation, parsed *url.URL
 		clone := cloneObject(body)
 		clone[key] = payload.value
 		addJSONMutation(add, "bad_character:body:"+key+":"+payload.name, "bad_character", operation.URL, clone)
+	}
+}
+
+func addSpecialCharacterMutations(operation pentestreport.Operation, parsed *url.URL, values []string, add func(Mutation)) {
+	if len(values) == 0 {
+		return
+	}
+	addedSurface := false
+	queryKeys := make([]string, 0, len(parsed.Query()))
+	for key := range parsed.Query() {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
+	if len(queryKeys) > 0 {
+		addedSurface = true
+		key := queryKeys[0]
+		for index, value := range values {
+			clone := *parsed
+			changed := clone.Query()
+			changed.Set(key, value)
+			clone.RawQuery = changed.Encode()
+			add(Mutation{
+				Name: fmt.Sprintf("special_character:query:%04d", index+1), Category: "special_character",
+				URL: clone.String(), Body: []byte(operation.RequestBody),
+			})
+		}
+	}
+	if len(operation.RequestBody) > 0 && len(operation.RequestBody) <= MaximumPayloadBytes {
+		var body map[string]any
+		if json.Unmarshal([]byte(operation.RequestBody), &body) == nil {
+			keys := make([]string, 0, len(body))
+			for key, value := range body {
+				if _, ok := value.(string); ok {
+					keys = append(keys, key)
+				}
+			}
+			sort.Strings(keys)
+			if len(keys) > 0 {
+				addedSurface = true
+				key := keys[0]
+				for index, value := range values {
+					clone := cloneObject(body)
+					clone[key] = value
+					addJSONMutation(add, fmt.Sprintf("special_character:body:%04d", index+1), "special_character", operation.URL, clone)
+				}
+			}
+		}
+	}
+	if addedSurface {
+		return
+	}
+	for index, value := range values {
+		clone := *parsed
+		changed := clone.Query()
+		changed.Set("sj_probe", value)
+		clone.RawQuery = changed.Encode()
+		add(Mutation{
+			Name: fmt.Sprintf("special_character:query:%04d", index+1), Category: "special_character",
+			URL: clone.String(), Body: []byte(operation.RequestBody),
+		})
 	}
 }
 
