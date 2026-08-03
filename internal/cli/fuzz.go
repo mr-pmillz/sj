@@ -28,6 +28,8 @@ type fuzzCLIOptions struct {
 	BaseURL               string
 	IdentityHeaders       []string
 	KnownUsername         string
+	SpecialCharsWordlist  string
+	SpecialCharacters     []string
 	IDORRange             string
 	WorkflowFile          string
 	MaxRequests           int
@@ -67,6 +69,19 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 	}
 	if options.Delay < 100*time.Millisecond || options.Delay > time.Minute {
 		return fmt.Errorf("--delay must be between 100ms and 1m to preserve bounded request pacing")
+	}
+	specialCharacters := append([]string(nil), options.SpecialCharacters...)
+	if strings.TrimSpace(options.SpecialCharsWordlist) != "" {
+		if len(specialCharacters) > 0 {
+			return fmt.Errorf("special-character payloads must come from either a wordlist or preloaded workflow values")
+		}
+		loaded, loadErr := fuzz.LoadSpecialCharacterWordlist(options.SpecialCharsWordlist)
+		if loadErr != nil {
+			return loadErr
+		}
+		specialCharacters = loaded
+	} else if err := apitest.ValidateSpecialCharacters(specialCharacters); err != nil {
+		return err
 	}
 	var idRange *apitest.NumericRange
 	if strings.TrimSpace(options.IDORRange) != "" {
@@ -124,8 +139,9 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 	runOptions := fuzz.Options{
 		MaxRequests: options.MaxRequests, Delay: options.Delay, AcceptRisk: cfg.AcceptRisk,
 		KnownUsername: options.KnownUsername, Identities: identities, MaxCasesPerOperation: options.MaxCases,
-		IDORRange:        idRange,
-		MaxResponseBytes: cfg.MaxResponseBytes, StoreResponses: cfg.StoreResponses,
+		IDORRange:         idRange,
+		SpecialCharacters: specialCharacters,
+		MaxResponseBytes:  cfg.MaxResponseBytes, StoreResponses: cfg.StoreResponses,
 		MaxStoredResponseBytes: cfg.MaxStoredResponseBytes, Workflows: workflows,
 		ResponseGuided: options.ResponseGuided, MaxGuidedRetries: options.MaxGuidedRetries,
 		ContinueOnTargetError: options.ContinueOnTargetError,
@@ -156,6 +172,7 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 		"delay_ms": options.Delay.Milliseconds(), "accept_risk": cfg.AcceptRisk,
 		"response_guided": options.ResponseGuided, "max_guided_retries": options.MaxGuidedRetries,
 		"continue_on_target_error": options.ContinueOnTargetError,
+		"special_character_count":  len(specialCharacters),
 		"progress":                 options.Progress,
 	})
 	if err != nil {
@@ -337,6 +354,7 @@ func init() {
 	fuzzCmd.Flags().StringVar(&fuzzOptions.BaseURL, "base-url", "", "Fallback API base URL for legacy results that do not record full URLs.")
 	fuzzCmd.Flags().StringArrayVar(&fuzzOptions.IdentityHeaders, "identity-header", nil, "Named identity header as NAME=Header: Value; repeat for multiple headers and identities.")
 	fuzzCmd.Flags().StringVar(&fuzzOptions.KnownUsername, "known-username", "", "Authorized known username for differential username-enumeration checks.")
+	fuzzCmd.Flags().StringVar(&fuzzOptions.SpecialCharsWordlist, "special-chars-wordlist", "", "File containing one raw or percent-encoded special character per line.")
 	fuzzCmd.Flags().StringVar(&fuzzOptions.IDORRange, "idor-range", "", "Bounded inclusive numeric ID range as START-END (maximum 1000 values).")
 	fuzzCmd.Flags().StringVar(&fuzzOptions.WorkflowFile, "workflow", "", "JSON workflow file with captured variables and read-back assertions.")
 	fuzzCmd.Flags().IntVar(&fuzzOptions.MaxRequests, "max-requests", 200, "Hard request budget, including workflow steps.")

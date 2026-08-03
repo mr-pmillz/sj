@@ -18,6 +18,7 @@ sj --socks5-proxy socks5://127.0.0.1:9000 \
   --url-file targets/unique-base-urls.txt \
   --workers 20 --exclude DELETE \
   --idor-range 1-100 --max-cases 4096 \
+  --special-chars-wordlist /path/to/special-chars-urlencoded.txt \
   --max-fuzz-requests 20000 --delay 500ms \
   --max-evidence 100
 ```
@@ -37,6 +38,8 @@ SJ_ASSESSMENT_EVIDENCE_KEY=... ./bin/sj \
 Mass-target execution is failure-isolated by exact origin. Brute contains HTTP 429, advertised depleted-capacity, repeated transport, WAF, and uniform-unavailable stops to the target being scanned. Automate shares one circuit across remote specification fetches and generated operation requests, opening it after a 429, a remaining-capacity value of one or less, or three consecutive proven target-origin transport failures. Direct transports are target-attributable; SOCKS transports require a target-specific reply such as host-unreachable or connection-refused. Ambiguous HTTP/SOCKS proxy failures are not converted into per-origin coverage gaps. Local safety skips do not reset a target failure sequence, and a depleted response is never retried or replayed. Full-workflow fuzz applies the same classification to generated probes and business workflows. Healthy origins continue in deterministic order; invalid configuration, cancellation, a global proxy failure, an exhausted workflow-wide request budget, or an artifact/database failure remains a command-level error.
 
 The fuzz stage enables response-guided repair with at most two chained retries per deterministic probe. The preflight reserves the worst-case retry budget before it sends traffic. Structured validation requirements can be repaired; credential requirements, file uploads, and ambiguous backend exceptions remain unresolved unless the operator supplies the required authorized identity or test data.
+
+When `--special-chars-wordlist` is present, the workflow validates and loads the complete bounded corpus before creating its output directory or sending discovery traffic. The fuzz stage then runs each entry as an isolated query/body mutation within the same sequential pacing, per-origin circuit breakers, `--max-cases`, and `--max-fuzz-requests` gates.
 
 Numeric IDOR enumeration is additionally gated by a live per-identity baseline. Only current 2xx, non-failure, substantive JSON data responses release numeric mutations; invalid, catch-all, or trivial baselines are recorded and skipped.
 

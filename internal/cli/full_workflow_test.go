@@ -47,7 +47,7 @@ func TestExecuteFullWorkflowConfiguresSafeOrderedStages(t *testing.T) {
 		},
 		fuzz: func(_ context.Context, stageCfg *config.Config, options fuzzCLIOptions) error {
 			calls = append(calls, "fuzz")
-			if !stageCfg.StoreResponses || options.Scope != "idor" || options.IDORRange != "1-100" || options.MaxCases < 100 || options.SpecialCharsWordlist != specialCharacters || !options.ResponseGuided || options.MaxGuidedRetries != 2 || !options.Progress || !options.ContinueOnTargetError {
+			if !stageCfg.StoreResponses || options.Scope != "idor" || options.IDORRange != "1-100" || options.MaxCases < 100 || !reflect.DeepEqual(options.SpecialCharacters, []string{"!", "%21"}) || options.SpecialCharsWordlist != "" || !options.ResponseGuided || options.MaxGuidedRetries != 2 || !options.Progress || !options.ContinueOnTargetError {
 				t.Fatalf("fuzz config=%#v options=%#v", stageCfg, options)
 			}
 			return nil
@@ -74,6 +74,37 @@ func TestExecuteFullWorkflowConfiguresSafeOrderedStages(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"brute", "automate", "fuzz", "collection", "report"}) {
 		t.Fatalf("stage order = %v", calls)
+	}
+}
+
+func TestExecuteFullWorkflowRejectsInvalidSpecialCharacterWordlistBeforeSideEffects(t *testing.T) {
+	directory := t.TempDir()
+	targets := filepath.Join(directory, "targets.txt")
+	if err := os.WriteFile(targets, []byte("https://api.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wordlist := filepath.Join(directory, "special-characters.txt")
+	if err := os.WriteFile(wordlist, []byte("not-one-character\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputDirectory := filepath.Join(directory, "workflow")
+	called := false
+	stages := fullWorkflowStages{
+		brute: func(context.Context, *config.Config) error { called = true; return nil },
+	}
+	err := executeFullWorkflow(t.Context(), config.New(), fullWorkflowCLIOptions{
+		FullWorkflow: true, TargetsFile: targets, OutputDirectory: outputDirectory, Workers: 1,
+		IDORRange: "1-3", MaxFuzzRequests: 20, MaxCases: 8, Delay: 500 * time.Millisecond,
+		SpecialCharsWordlist: wordlist,
+	}, stages)
+	if err == nil || !strings.Contains(err.Error(), "special-character wordlist") {
+		t.Fatalf("invalid wordlist error = %v", err)
+	}
+	if called {
+		t.Fatal("a workflow stage ran before special-character wordlist validation")
+	}
+	if _, statErr := os.Stat(outputDirectory); !os.IsNotExist(statErr) {
+		t.Fatalf("output directory was created before wordlist validation: %v", statErr)
 	}
 }
 

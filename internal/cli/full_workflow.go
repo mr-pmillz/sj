@@ -13,6 +13,7 @@ import (
 	"github.com/mr-pmillz/sj/pkg/apitest"
 	"github.com/mr-pmillz/sj/pkg/brute"
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/fuzz"
 	"github.com/mr-pmillz/sj/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,7 @@ type fullWorkflowCLIOptions struct {
 	Delay                 time.Duration
 	IdentityHeaders       []string
 	KnownUsername         string
+	SpecialCharsWordlist  string
 	AcceptRisk            bool
 	AllowPost             bool
 	AllowPatch            bool
@@ -99,6 +101,13 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	idRange, err := validateFullWorkflowOptions(base, options)
 	if err != nil {
 		return err
+	}
+	var specialCharacters []string
+	if strings.TrimSpace(options.SpecialCharsWordlist) != "" {
+		specialCharacters, err = fuzz.LoadSpecialCharacterWordlist(options.SpecialCharsWordlist)
+		if err != nil {
+			return err
+		}
 	}
 	paths, err := prepareFullWorkflowPaths(options.OutputDirectory)
 	if err != nil {
@@ -197,7 +206,8 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		fuzzErr = stages.fuzz(ctx, fuzzCfg, fuzzCLIOptions{
 			Inputs: []string{paths.automateJSON}, Scope: apitest.ScopeIDOR, IDORRange: options.IDORRange,
 			IdentityHeaders: append([]string(nil), options.IdentityHeaders...), KnownUsername: options.KnownUsername,
-			MaxRequests: options.MaxFuzzRequests, Delay: options.Delay, MaxCases: max(options.MaxCases, idRange.End-idRange.Start+1),
+			SpecialCharacters: append([]string(nil), specialCharacters...),
+			MaxRequests:       options.MaxFuzzRequests, Delay: options.Delay, MaxCases: max(options.MaxCases, idRange.End-idRange.Start+1),
 			ResponseGuided: true, MaxGuidedRetries: 2, Progress: true,
 			ContinueOnTargetError: true,
 			OutputFormat:          "json", MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
@@ -476,6 +486,7 @@ func init() {
 	fullWorkflowCmd.Flags().DurationVar(&fullWorkflowOptions.Delay, "delay", 500*time.Millisecond, "Delay between sequential fuzz requests; minimum 100ms.")
 	fullWorkflowCmd.Flags().StringArrayVar(&fullWorkflowOptions.IdentityHeaders, "identity-header", nil, "Named identity header as NAME=Header: Value; repeatable.")
 	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.KnownUsername, "known-username", "", "Authorized known username for differential checks.")
+	fullWorkflowCmd.Flags().StringVar(&fullWorkflowOptions.SpecialCharsWordlist, "special-chars-wordlist", "", "File containing one raw or percent-encoded special character per line for the fuzz stage.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AcceptRisk, "accept-risk", false, "Allow non-DELETE state-changing requests; DELETE remains excluded.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPost, "allow-post", false, "Include POST operations in the full workflow; requires --accept-risk.")
 	fullWorkflowCmd.Flags().BoolVar(&fullWorkflowOptions.AllowPatch, "allow-patch", false, "Include PATCH operations in the full workflow; requires --accept-risk.")

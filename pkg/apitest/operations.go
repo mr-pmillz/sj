@@ -9,17 +9,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	pentestreport "github.com/mr-pmillz/sj/pkg/report"
 )
 
 const (
-	ScopeAll               = "all"
-	ScopeInteresting       = "interesting"
-	ScopeIDOR              = "idor"
-	MaximumPayloadBytes    = 4 * 1024
-	MaximumIDORRangeValues = 1_000
-	maximumMutationCases   = 4_096
+	ScopeAll                       = "all"
+	ScopeInteresting               = "interesting"
+	ScopeIDOR                      = "idor"
+	MaximumPayloadBytes            = 4 * 1024
+	MaximumIDORRangeValues         = 1_000
+	MaximumSpecialCharacterEntries = 256
+	maximumMutationCases           = 4_096
 )
 
 var (
@@ -45,9 +48,10 @@ type SelectOptions struct {
 }
 
 type MutationOptions struct {
-	KnownUsername string
-	MaxCases      int
-	IDORRange     *NumericRange
+	KnownUsername     string
+	MaxCases          int
+	IDORRange         *NumericRange
+	SpecialCharacters []string
 }
 
 type NumericRange struct {
@@ -282,11 +286,18 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	if maxCases < 1 || maxCases > maximumMutationCases {
 		return nil, fmt.Errorf("mutation cases must be between 1 and %d", maximumMutationCases)
 	}
+	if err := ValidateSpecialCharacters(options.SpecialCharacters); err != nil {
+		return nil, err
+	}
 	parsed, err := url.Parse(operation.URL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
 		return nil, errors.New("operation URL must be an absolute http(s) URL")
 	}
-	collector := mutationCollector{values: make([]Mutation, 0, maxCases), limit: maxCases}
+	collectorLimit := maxCases
+	if len(options.SpecialCharacters) > 0 {
+		collectorLimit++
+	}
+	collector := mutationCollector{values: make([]Mutation, 0, collectorLimit), limit: collectorLimit}
 	if options.IDORRange != nil {
 		if err := validateNumericRange(*options.IDORRange); err != nil {
 			return nil, err
@@ -301,8 +312,44 @@ func Mutations(operation pentestreport.Operation, options MutationOptions) ([]Mu
 	addQueryMutations(parsed, operation.RequestBody, options.KnownUsername, collector.add)
 	addBodyMutations(operation, options.KnownUsername, collector.add)
 	addBadCharacterMutations(operation, parsed, collector.add)
+	addSpecialCharacterMutations(operation, parsed, options.SpecialCharacters, collector.add)
 	collector.ensureVerboseProbe(parsed, operation.RequestBody)
+	if len(options.SpecialCharacters) > 0 && len(collector.values) > maxCases {
+		return nil, fmt.Errorf("complete special-character fuzzing exceeds --max-cases %d for this operation; increase --max-cases or narrow the operation scope", maxCases)
+	}
 	return collector.values, nil
+}
+
+func ValidateSpecialCharacters(values []string) error {
+	if len(values) > MaximumSpecialCharacterEntries {
+		return fmt.Errorf("special-character corpus may contain at most %d payloads", MaximumSpecialCharacterEntries)
+	}
+	seen := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		if _, exists := seen[value]; exists {
+			return fmt.Errorf("special-character payload %d is a duplicate", index+1)
+		}
+		seen[value] = struct{}{}
+		decoded := value
+		if len(value) == 3 && value[0] == '%' {
+			parsed, err := strconv.ParseUint(value[1:], 16, 8)
+			if err != nil {
+				return fmt.Errorf("special-character payload %d must contain exactly one special character or one %%HH value", index+1)
+			}
+			decoded = string(rune(parsed))
+		}
+		if utf8.RuneCountInString(decoded) != 1 {
+			return fmt.Errorf("special-character payload %d must contain exactly one special character or one %%HH value", index+1)
+		}
+		character, _ := utf8.DecodeRuneInString(decoded)
+		if character == utf8.RuneError || unicode.IsControl(character) || unicode.IsSpace(character) {
+			return fmt.Errorf("special-character payload %d resolves to a control or whitespace character", index+1)
+		}
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			return fmt.Errorf("special-character payload %d resolves to a letter or digit", index+1)
+		}
+	}
+	return nil
 }
 
 func validateNumericRange(idRange NumericRange) error {
@@ -538,6 +585,66 @@ func addBadCharacterMutations(operation pentestreport.Operation, parsed *url.URL
 		clone := cloneObject(body)
 		clone[key] = payload.value
 		addJSONMutation(add, "bad_character:body:"+key+":"+payload.name, "bad_character", operation.URL, clone)
+	}
+}
+
+func addSpecialCharacterMutations(operation pentestreport.Operation, parsed *url.URL, values []string, add func(Mutation)) {
+	if len(values) == 0 {
+		return
+	}
+	addedSurface := false
+	queryKeys := make([]string, 0, len(parsed.Query()))
+	for key := range parsed.Query() {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
+	if len(queryKeys) > 0 {
+		addedSurface = true
+		key := queryKeys[0]
+		for index, value := range values {
+			clone := *parsed
+			changed := clone.Query()
+			changed.Set(key, value)
+			clone.RawQuery = changed.Encode()
+			add(Mutation{
+				Name: fmt.Sprintf("special_character:query:%04d", index+1), Category: "special_character",
+				URL: clone.String(), Body: []byte(operation.RequestBody),
+			})
+		}
+	}
+	if len(operation.RequestBody) > 0 && len(operation.RequestBody) <= MaximumPayloadBytes {
+		var body map[string]any
+		if json.Unmarshal([]byte(operation.RequestBody), &body) == nil {
+			keys := make([]string, 0, len(body))
+			for key, value := range body {
+				if _, ok := value.(string); ok {
+					keys = append(keys, key)
+				}
+			}
+			sort.Strings(keys)
+			if len(keys) > 0 {
+				addedSurface = true
+				key := keys[0]
+				for index, value := range values {
+					clone := cloneObject(body)
+					clone[key] = value
+					addJSONMutation(add, fmt.Sprintf("special_character:body:%04d", index+1), "special_character", operation.URL, clone)
+				}
+			}
+		}
+	}
+	if addedSurface {
+		return
+	}
+	for index, value := range values {
+		clone := *parsed
+		changed := clone.Query()
+		changed.Set("sj_probe", value)
+		clone.RawQuery = changed.Encode()
+		add(Mutation{
+			Name: fmt.Sprintf("special_character:query:%04d", index+1), Category: "special_character",
+			URL: clone.String(), Body: []byte(operation.RequestBody),
+		})
 	}
 }
 

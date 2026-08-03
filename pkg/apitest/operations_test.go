@@ -232,7 +232,7 @@ func TestMutationsIncludeBoundedSafeBadCharacterCorpus(t *testing.T) {
 
 func TestMutationsAddEachSpecialCharacterAsAnIsolatedQueryProbe(t *testing.T) {
 	operation := pentestreport.Operation{
-		Method: "GET", URL: "https://api.example/search?q=ordinary&lang=en", Target: "/search",
+		Method: "GET", URL: "https://api.example/search?q=ordinary&zz=en", Target: "/search",
 	}
 	values := []string{"!", "%21", "#"}
 	mutations, err := Mutations(operation, MutationOptions{MaxCases: 16, SpecialCharacters: values})
@@ -250,7 +250,7 @@ func TestMutationsAddEachSpecialCharacterAsAnIsolatedQueryProbe(t *testing.T) {
 			t.Fatal(parseErr)
 		}
 		got = append(got, parsed.Query().Get("q"))
-		if parsed.Query().Get("lang") != "en" || len(mutation.Body) != 0 {
+		if parsed.Query().Get("zz") != "en" || len(mutation.Body) != 0 {
 			t.Fatalf("special-character mutation changed unrelated input: %#v", mutation)
 		}
 		if strings.Contains(mutation.Name, got[len(got)-1]) {
@@ -292,6 +292,32 @@ func TestMutationsAddEachSpecialCharacterAsAnIsolatedJSONProbe(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, values) {
 		t.Fatalf("special-character JSON probes = %#v, want %#v", got, values)
+	}
+}
+
+func TestMutationsUseSyntheticQueryProbeWhenNoInputFieldExists(t *testing.T) {
+	operation := pentestreport.Operation{
+		Method: "GET", URL: "https://api.example/health", Target: "/health",
+	}
+	values := []string{"!", "%21"}
+	mutations, err := Mutations(operation, MutationOptions{MaxCases: 16, SpecialCharacters: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, mutation := range mutations {
+		if mutation.Category != "special_character" {
+			continue
+		}
+		parsed, parseErr := url.Parse(mutation.URL)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		got = append(got, parsed.Query().Get("sj_probe"))
+	}
+	if !reflect.DeepEqual(got, values) {
+		t.Fatalf("synthetic special-character probes = %#v, want %#v", got, values)
 	}
 }
 

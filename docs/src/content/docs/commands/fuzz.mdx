@@ -13,6 +13,34 @@ sj fuzz --run AUTOMATE_RUN_ID --scope interesting \
   --max-requests 2000 --delay 500ms --progress
 ```
 
+To exercise bad-character handling one value at a time, supply a bounded
+line-oriented corpus. Each line must be one special character or one `%HH`
+literal. Raw and encoded-looking entries remain distinct logical API values:
+for example, `!` reaches the application as `!`, while `%21` reaches it as the
+literal three-character value `%21`.
+
+```bash
+sj fuzz --run AUTOMATE_RUN_ID --scope all \
+  --special-chars-wordlist /path/to/special-chars-urlencoded.txt \
+  --max-cases 256 --max-requests 1000 \
+  --delay 500ms --store-responses --output-format json \
+  -o special-character-fuzz.json
+```
+
+For each operation, sj mutates the first deterministic query field and the
+first top-level JSON string field, when present. Query and body mutations are
+separate requests, and only one field receives one corpus value in each
+request. When neither surface exists, sj uses a synthetic `sj_probe` query
+field. Case labels contain an ordinal rather than the payload. The offline
+preflight rejects `--max-cases` or `--max-requests` values that cannot cover the
+complete requested corpus and response-guided retry reserve.
+
+Special-character responses use the normal analysis pipeline. Concrete stack
+traces, runtime/framework diagnostics, and database detail can produce
+`verbose_error` or `implementation_disclosure` findings. Generic 5xx responses
+are counted in the summary but are not promoted to vulnerability findings
+without disclosure evidence.
+
 `--progress` writes a goroutine-safe status line to stderr. The scan owner publishes immutable atomic snapshots containing counts and the current method/case only; URLs, identity headers, request bodies, and response bodies are never copied into progress state. This keeps structured stdout and output files valid while allowing a renderer to observe a running scan without racing result collection.
 
 sj never executes server-provided content or arbitrary regexes. It does not invent bearer tokens, subscription keys, session headers, or file uploads. Ambiguous errors such as `NoneType` without a named field are retained as unresolved hints instead of guessed application semantics. A guided 2xx response is evidence that the repaired request was accepted, not proof of a vulnerability.
@@ -50,6 +78,7 @@ Response-guided repairs of an invalid baseline are retained as separate reproduc
 - The preflight includes deterministic probes and the worst-case `--max-guided-retries` reserve. Narrow scope or increase the explicit budget when the full plan does not fit.
 - `qualified_idor_baselines`, `rejected_idor_baselines`, and `skipped_invalid_idor` show the live baseline gate outcome. A skipped invalid case is deliberate false-positive prevention, not completed numeric coverage.
 - Bad-character payloads are short, non-time-based probes for quoting, traversal, markup, template, format-string, and SQL metacharacter handling. They do not contain sleep, oversized, recursive, or resource-exhaustion cases.
+- Explicit special-character wordlists are limited to 256 unique non-control values and 64 KiB. Symlinks, whitespace/control characters, letters, digits, multi-character entries, duplicates, and malformed `%HH` entries are rejected before traffic.
 - Response storage is opt-in for standalone fuzz runs. Set the stored-body ceiling equal to the read ceiling when complete evidence is required, then verify that no result is marked truncated.
 
 Use repeated `--identity-header 'NAME=Header: Value'` flags to compare authorized identities. Complete persisted-side-effect tests require an explicit workflow file and `--accept-risk`.
