@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.8](https://github.com/mr-pmillz/sj/compare/v2.7.7...v2.7.8) - 2026-08-03
+
+### ✨ New features
+
+- Feat: add special-character fuzz wordlists - ([bb8d9b1](https://github.com/mr-pmillz/sj/commit/bb8d9b1cd1b984181e87e52f9fde631081f7d9ab))
+- Test: add RED coverage for special-character fuzzing - ([6890091](https://github.com/mr-pmillz/sj/commit/689009156d399886dd453efa85af2da3c09ca493))
+
+### 🐛 Bug fixes
+
+- Fix(evidence): guard ciphertext allocation size - ([db73609](https://github.com/mr-pmillz/sj/commit/db736097bcf916c6fd530f58b143793523e8053e))
+
+### 🚜 Refactor
+
+- Refactor: embed special-character fuzz corpus - ([95811e0](https://github.com/mr-pmillz/sj/commit/95811e00abce9f38be89c70795604b31b027d3ec))
+
 ## [2.7.7](https://github.com/mr-pmillz/sj/compare/v2.7.6...v2.7.7) - 2026-08-01
 
 ### ✨ New features
@@ -76,6 +91,10 @@ All notable changes to this project will be documented [here](https://github.com
 - - golangci-lint run - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
 - - npm run build (docs) - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
 - - 10-target CPT full-workflow smoke through socks5://127.0.0.1:9000 - ([3532117](https://github.com/mr-pmillz/sj/commit/35321170558c8f15c4335856327f533f8a22220c))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([163240c](https://github.com/mr-pmillz/sj/commit/163240c537e38307efe4239ab93e6b160e62c32f))
 
 ### 🚜 Refactor
 
