@@ -86,6 +86,33 @@ func TestHTTPExchangeEncryptionRequiresAnExactAES256Key(t *testing.T) {
 	}
 }
 
+func TestHTTPExchangeOutputSizeRejectsIntegerOverflow(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	fixedSize := len(httpExchangeMagic) + httpExchangeNonceSize + 16
+	tests := []struct {
+		name          string
+		plaintextSize int
+		want          int
+		wantErr       bool
+	}{
+		{name: "ordinary size", plaintextSize: 128, want: fixedSize + 128},
+		{name: "maximum size", plaintextSize: maxInt - fixedSize, want: maxInt},
+		{name: "overflow", plaintextSize: maxInt - fixedSize + 1, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := httpExchangeOutputSize(test.plaintextSize, httpExchangeNonceSize, 16)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("httpExchangeOutputSize() error = %v, wantErr %t", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Fatalf("httpExchangeOutputSize() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHTTPExchangeEncryptionRejectsTampering(t *testing.T) {
 	key := bytes.Repeat([]byte{0x73}, 32)
 	ciphertext, err := EncryptHTTPExchange(key, HTTPExchange{
