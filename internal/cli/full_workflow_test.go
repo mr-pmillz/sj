@@ -22,6 +22,10 @@ func TestExecuteFullWorkflowConfiguresSafeOrderedStages(t *testing.T) {
 	if err := os.WriteFile(targets, []byte("https://api.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	specialCharacters := filepath.Join(t.TempDir(), "special-characters.txt")
+	if err := os.WriteFile(specialCharacters, []byte("!\n%21\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	outputDirectory := filepath.Join(t.TempDir(), "workflow")
 	var calls []string
 	stages := fullWorkflowStages{
@@ -43,7 +47,7 @@ func TestExecuteFullWorkflowConfiguresSafeOrderedStages(t *testing.T) {
 		},
 		fuzz: func(_ context.Context, stageCfg *config.Config, options fuzzCLIOptions) error {
 			calls = append(calls, "fuzz")
-			if !stageCfg.StoreResponses || options.Scope != "idor" || options.IDORRange != "1-100" || options.MaxCases < 100 || !options.ResponseGuided || options.MaxGuidedRetries != 2 || !options.Progress || !options.ContinueOnTargetError {
+			if !stageCfg.StoreResponses || options.Scope != "idor" || options.IDORRange != "1-100" || options.MaxCases < 100 || options.SpecialCharsWordlist != specialCharacters || !options.ResponseGuided || options.MaxGuidedRetries != 2 || !options.Progress || !options.ContinueOnTargetError {
 				t.Fatalf("fuzz config=%#v options=%#v", stageCfg, options)
 			}
 			return nil
@@ -63,6 +67,7 @@ func TestExecuteFullWorkflowConfiguresSafeOrderedStages(t *testing.T) {
 	options := fullWorkflowCLIOptions{
 		FullWorkflow: true, TargetsFile: targets, OutputDirectory: outputDirectory, Workers: 20,
 		IDORRange: "1-100", MaxFuzzRequests: 500, MaxCases: 128, Delay: 500 * time.Millisecond,
+		SpecialCharsWordlist: specialCharacters,
 	}
 	if err := executeFullWorkflow(t.Context(), config.New(), options, stages); err != nil {
 		t.Fatal(err)

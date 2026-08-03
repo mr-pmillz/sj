@@ -1,9 +1,11 @@
 package apitest
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -225,6 +227,81 @@ func TestMutationsIncludeBoundedSafeBadCharacterCorpus(t *testing.T) {
 		if !strings.Contains(joined, marker) {
 			t.Fatalf("missing %q in payload corpus: %q", marker, payloads)
 		}
+	}
+}
+
+func TestMutationsAddEachSpecialCharacterAsAnIsolatedQueryProbe(t *testing.T) {
+	operation := pentestreport.Operation{
+		Method: "GET", URL: "https://api.example/search?q=ordinary&lang=en", Target: "/search",
+	}
+	values := []string{"!", "%21", "#"}
+	mutations, err := Mutations(operation, MutationOptions{MaxCases: 16, SpecialCharacters: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, mutation := range mutations {
+		if mutation.Category != "special_character" {
+			continue
+		}
+		parsed, parseErr := url.Parse(mutation.URL)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		got = append(got, parsed.Query().Get("q"))
+		if parsed.Query().Get("lang") != "en" || len(mutation.Body) != 0 {
+			t.Fatalf("special-character mutation changed unrelated input: %#v", mutation)
+		}
+		if strings.Contains(mutation.Name, got[len(got)-1]) {
+			t.Fatalf("case name exposed payload %q: %q", got[len(got)-1], mutation.Name)
+		}
+		if got[len(got)-1] == "%21" && !strings.Contains(mutation.URL, "q=%2521") {
+			t.Fatalf("literal encoded value was decoded before transport: %q", mutation.URL)
+		}
+	}
+	if !reflect.DeepEqual(got, values) {
+		t.Fatalf("special-character query probes = %#v, want %#v", got, values)
+	}
+}
+
+func TestMutationsAddEachSpecialCharacterAsAnIsolatedJSONProbe(t *testing.T) {
+	operation := pentestreport.Operation{
+		Method: "POST", URL: "https://api.example/users", Target: "/users",
+		ContentType: "application/json", RequestBody: `{"name":"ordinary","untouched":"value"}`,
+	}
+	values := []string{"!", "%21", "#"}
+	mutations, err := Mutations(operation, MutationOptions{MaxCases: 16, SpecialCharacters: values})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, mutation := range mutations {
+		if mutation.Category != "special_character" {
+			continue
+		}
+		var body map[string]any
+		if err := json.Unmarshal(mutation.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, body["name"].(string))
+		if body["untouched"] != "value" || mutation.URL != operation.URL {
+			t.Fatalf("special-character mutation changed unrelated input: %#v", mutation)
+		}
+	}
+	if !reflect.DeepEqual(got, values) {
+		t.Fatalf("special-character JSON probes = %#v, want %#v", got, values)
+	}
+}
+
+func TestMutationsRejectPartialSpecialCharacterCorpus(t *testing.T) {
+	operation := pentestreport.Operation{
+		Method: "GET", URL: "https://api.example/search?q=ordinary", Target: "/search",
+	}
+	_, err := Mutations(operation, MutationOptions{MaxCases: 8, SpecialCharacters: []string{"!", "%21", "#"}})
+	if err == nil || !strings.Contains(err.Error(), "complete special-character fuzzing") {
+		t.Fatalf("partial special-character corpus was accepted: %v", err)
 	}
 }
 
