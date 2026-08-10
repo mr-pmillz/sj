@@ -78,12 +78,12 @@ jobs:
       # After GoReleaser runs, attest all the files in ./dist/checksums.txt:
       # See https://docs.docker.com/build/metadata/attestations/
       - name: Attest Build Provenance for Archives
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # ratchet:actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # ratchet:actions/attest@v4
         with:
           subject-checksums: ./dist/checksums.txt
       # After GoReleaser runs, attest all the images in ./dist/digests.txt:
       - name: Attest Build Provenance for Docker Images
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # ratchet:actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # ratchet:actions/attest@v4
         with:
           subject-checksums: ./dist/digests.txt
 

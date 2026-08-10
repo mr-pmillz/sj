@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
-      - uses: getplumber/plumber@7ad9d267ee5a00163cec9e5c749a088d5f565167 # ratchet:getplumber/plumber@v0.4.26
+      - uses: getplumber/plumber@e0ba76a60c6ee793d485a02067f05223fe75c9f4 # ratchet:getplumber/plumber@v0.4.34
         with:
           # Set to `true` to publish an official Plumber score badge
           # (it makes your score and repo name public, see Score Push section below)
