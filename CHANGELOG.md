@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.7.9](https://github.com/mr-pmillz/sj/compare/v2.7.8...v2.7.9) - 2026-09-03
+
+### 🐛 Bug fixes
+
+- Fix(mcp): enable special-character fuzz workflow - ([f13fbcd](https://github.com/mr-pmillz/sj/commit/f13fbcd5f505c22350cc324b2a12ca35fabdf6e9))
+- Fix(mcp): enable special-character fuzz workflow - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
+- Expose enable_special_chars_fuzz on run_full_workflow and carry the validated option through the native MCP runner into the fuzz stage. - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
+- Add MCP and CLI regression coverage so the schema input is verified at both propagation boundaries. The post-fix bounded CPT run through the configured SOCKS5 proxy executed all 180 special-character probes without transport, rate-limit, budget, or truncation failures. - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
+
 ## [2.7.8](https://github.com/mr-pmillz/sj/compare/v2.7.7...v2.7.8) - 2026-08-03
 
 ### ✨ New features
@@ -12,6 +21,10 @@ All notable changes to this project will be documented [here](https://github.com
 ### 🐛 Bug fixes
 
 - Fix(evidence): guard ciphertext allocation size - ([db73609](https://github.com/mr-pmillz/sj/commit/db736097bcf916c6fd530f58b143793523e8053e))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([d66bdfa](https://github.com/mr-pmillz/sj/commit/d66bdfa427cfd0af8ff20d78dac6f08b2785e951))
 
 ### 🚜 Refactor
 
