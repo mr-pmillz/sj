@@ -83,6 +83,7 @@ type Options struct {
 	Progress                   *ProgressTracker
 	ContinueOnTargetError      bool
 	TargetOriginTransportError func(error) bool
+	Redact                     func(string) string
 }
 
 type Summary struct {
@@ -257,19 +258,66 @@ func run(ctx context.Context, client *http.Client, operations []pentestreport.Op
 	}
 	state := newProbeRunState(plans)
 	if err := executeProbePlans(ctx, client, &report, state, options, wait); err != nil {
+		redactReport(&report, options.Redact)
 		return report, err
 	}
 	if (!report.Summary.RateLimited || options.ContinueOnTargetError) && len(options.Workflows) > 0 {
 		if err := executeWorkflows(ctx, client, &report, state, identities, options, wait); err != nil {
-			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true)
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true, options.Redact)
+			redactReport(&report, options.Redact)
 			return report, err
 		}
 	}
 	workflowFindings := append([]Finding(nil), report.Findings...)
 	report.Findings = append(analyzeProbeFindings(report.Probes), workflowFindings...)
 	report.CompletedAt = time.Now().UTC()
-	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true)
+	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, true, options.Redact)
+	redactReport(&report, options.Redact)
 	return report, nil
+}
+
+func redactReport(report *Report, redact func(string) string) {
+	if report == nil || redact == nil {
+		return
+	}
+	for index := range report.Probes {
+		probe := &report.Probes[index]
+		probe.Method = redact(probe.Method)
+		probe.URL = redact(probe.URL)
+		probe.BaselineURL = redact(probe.BaselineURL)
+		probe.Case = redact(probe.Case)
+		probe.Category = redact(probe.Category)
+		probe.Identity = redact(probe.Identity)
+		probe.AuthContext = redact(probe.AuthContext)
+		probe.ContentType = redact(probe.ContentType)
+		probe.RequestBody = redact(probe.RequestBody)
+		probe.ResponseBody = redact(probe.ResponseBody)
+		probe.ResponseHash = redact(probe.ResponseHash)
+		probe.Error = redact(probe.Error)
+		probe.Guidance = redact(probe.Guidance)
+		for piiIndex := range probe.PIITypes {
+			probe.PIITypes[piiIndex] = redact(probe.PIITypes[piiIndex])
+		}
+		for disclosureIndex := range probe.DisclosureTypes {
+			probe.DisclosureTypes[disclosureIndex] = redact(probe.DisclosureTypes[disclosureIndex])
+		}
+		for bodyIndex := range probe.analysisBody {
+			probe.analysisBody[bodyIndex] = 0
+		}
+		probe.analysisBody = nil
+	}
+	for index := range report.Findings {
+		finding := &report.Findings[index]
+		finding.Severity = redact(finding.Severity)
+		finding.Category = redact(finding.Category)
+		finding.Title = redact(finding.Title)
+		finding.Method = redact(finding.Method)
+		finding.URL = redact(finding.URL)
+		finding.Evidence = redact(finding.Evidence)
+		for owaspIndex := range finding.OWASP {
+			finding.OWASP[owaspIndex] = redact(finding.OWASP[owaspIndex])
+		}
+	}
 }
 
 func buildProbePlans(operations []pentestreport.Operation, identities []Identity, options Options, summary *Summary) ([]plannedProbe, error) {
@@ -357,27 +405,27 @@ func newProbeRunState(plans []plannedProbe) *probeRunState {
 }
 
 func executeProbePlans(ctx context.Context, client *http.Client, report *Report, state *probeRunState, options Options, wait waitFunc) error {
-	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, false)
+	publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, nil, false, options.Redact)
 	for index := 0; index < len(state.plans); index++ {
 		plan := state.plans[index]
 		if options.ContinueOnTargetError && state.originBlocked(plan.targetURL) {
 			report.Summary.SkippedIsolated++
-			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false, options.Redact)
 			continue
 		}
 		if plan.requiresValidIDORBaseline && !state.idorBaselineStates[plan.idorBaselineKey] {
 			report.Summary.SkippedInvalidIDOR++
-			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+			publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false, options.Redact)
 			continue
 		}
 		if report.Summary.Requests > 0 {
 			if err := wait(ctx, options.Delay); err != nil {
-				publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, true)
+				publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, true, options.Redact)
 				return fmt.Errorf("fuzz request pacing canceled: %w", err)
 			}
 		}
 		stop := executePlannedProbe(ctx, client, report, state, plan, options)
-		publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false)
+		publishRunProgress(options.Progress, report.Summary, len(state.plans), options.MaxRequests, &plan, false, options.Redact)
 		if stop {
 			break
 		}
@@ -665,7 +713,14 @@ func idorBaselineKey(plan plannedProbe) string {
 	return plan.method + "\x00" + plan.baselineURL + "\x00" + plan.identity.Name
 }
 
-func publishRunProgress(tracker *ProgressTracker, summary Summary, planned, budget int, current *plannedProbe, done bool) {
+func publishRunProgress(
+	tracker *ProgressTracker,
+	summary Summary,
+	planned, budget int,
+	current *plannedProbe,
+	done bool,
+	redact func(string) string,
+) {
 	if tracker == nil {
 		return
 	}
@@ -680,6 +735,11 @@ func publishRunProgress(tracker *ProgressTracker, summary Summary, planned, budg
 		snapshot.CurrentMethod = current.method
 		snapshot.CurrentCase = current.caseName
 		snapshot.CurrentIdentity = current.identity.Name
+		if redact != nil {
+			snapshot.CurrentMethod = redact(snapshot.CurrentMethod)
+			snapshot.CurrentCase = redact(snapshot.CurrentCase)
+			snapshot.CurrentIdentity = redact(snapshot.CurrentIdentity)
+		}
 	}
 	tracker.publish(snapshot)
 }

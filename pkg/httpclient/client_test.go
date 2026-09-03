@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -61,6 +63,69 @@ func TestMakeRequestDoesNotFollowCrossOriginRedirectOrLeakHeaders(t *testing.T) 
 	}
 	if got := downstreamCalls.Load(); got != 0 {
 		t.Fatalf("redirect target received %d requests, want 0", got)
+	}
+}
+
+func TestPrivateHeadersAreInjectedAtTheScopedTransportBoundary(t *testing.T) {
+	const sentinel = "private-sentinel-8d39d7"
+	path := writePrivateHeaderFixture(t, "X-SJ-Private: "+sentinel+"\n")
+	policy, err := privateheaders.Load(path, []string{"https://allowed.example.test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.New()
+	cfg.HeaderFile = path
+	cfg.PrivateHeaders = policy
+	client := testClient(t, cfg)
+	var allowed, denied string
+	err = client.ReplaceHTTPTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Host {
+		case "allowed.example.test":
+			allowed = request.Header.Get("X-SJ-Private")
+		case "denied.example.test":
+			denied = request.Header.Get("X-SJ-Private")
+		}
+		return response(request, http.StatusOK, http.Header{}, "ok"), nil
+	}), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = client.MakeRequest(http.MethodGet, "https://allowed.example.test/resource", nil)
+	_, _, _ = client.MakeRequest(http.MethodGet, "https://denied.example.test/resource", nil)
+	if allowed != sentinel {
+		t.Fatalf("allowed request private header = %q", allowed)
+	}
+	if denied != "" {
+		t.Fatalf("denied request leaked private header = %q", denied)
+	}
+}
+
+func TestPrivateHeadersAreNotCopiedToReplay(t *testing.T) {
+	path := writePrivateHeaderFixture(t, "X-SJ-Private: private-sentinel\n")
+	policy, err := privateheaders.Load(path, []string{"https://allowed.example.test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.New()
+	cfg.HeaderFile = path
+	cfg.PrivateHeaders = policy
+	client := testClient(t, cfg)
+	var replayHeader string
+	client.Replay = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		replayHeader = request.Header.Get("X-SJ-Private")
+		return response(request, http.StatusOK, http.Header{}, "ok"), nil
+	})}
+	client.ReplayRequest(http.MethodGet, "https://allowed.example.test/resource", nil)
+	if replayHeader != "" {
+		t.Fatalf("replay received private header %q", replayHeader)
+	}
+}
+
+func TestNewClientFailsClosedWhenHeaderFileWasNotLoaded(t *testing.T) {
+	cfg := config.New()
+	cfg.HeaderFile = "/run/casm-credential/credential.conf"
+	if err := NewClient(cfg).InitErr; err == nil {
+		t.Fatal("client accepted an unloaded private header file")
 	}
 }
 
@@ -343,4 +408,13 @@ func TestDangerousKeywordMatchingAvoidsSubstringFalsePositives(t *testing.T) {
 			t.Errorf("path %s status=%d, want 200", test.path, status)
 		}
 	}
+}
+
+func writePrivateHeaderFixture(t *testing.T, contents string) string {
+	t.Helper()
+	path := t.TempDir() + "/credential.conf"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

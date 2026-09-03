@@ -5,6 +5,8 @@ description: Send automated requests to discovered API endpoints.
 
 The `automate` command sends a request to each endpoint discovered in a Swagger/OpenAPI definition file and reports the HTTP status code of each response. This gives you a quick view of which endpoints require authentication and which do not.
 
+Use the global `--header-file` option when private request headers must stay out of argv and persisted artifacts. The owner-only file is read once before traffic. Headers are sent only to exact origins supplied through `--url`, `--url-file`, or an explicit `--target`; a server URL learned only from the OpenAPI document is not authorized.
+
 ## Usage
 
 ```bash

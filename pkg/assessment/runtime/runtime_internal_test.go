@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/mr-pmillz/sj/pkg/assessment/model"
 	"github.com/mr-pmillz/sj/pkg/assessment/planner"
 	"github.com/mr-pmillz/sj/pkg/assessment/reference"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 	"github.com/mr-pmillz/sj/pkg/store"
 )
 
@@ -26,6 +28,23 @@ type fixedRoundTripper struct{}
 
 func (fixedRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("not used")
+}
+
+func TestAssessmentResponsePersistenceRedactsPrivateReflections(t *testing.T) {
+	const sentinel = "assessment-private-42ca"
+	path := filepath.Join(t.TempDir(), "credential.conf")
+	if err := os.WriteFile(path, []byte("X-SJ-Private: "+sentinel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := privateheaders.Load(path, []string{"https://api.example.test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := &executor.Response{StatusCode: http.StatusOK, Body: []byte(`{"echo":"` + sentinel + `"}`)}
+	persisted := responseForPersistence(original, policy)
+	if string(original.Body) == string(persisted.Body) || strings.Contains(string(persisted.Body), sentinel) {
+		t.Fatalf("persisted assessment response = %q", persisted.Body)
+	}
 }
 
 func TestClientForProofEnforcesManifestTransportVariants(t *testing.T) {

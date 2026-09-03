@@ -81,10 +81,32 @@ func TerminalSafe(value string) string {
 }
 
 func (w *Writer) AddResult(r Result) {
+	if w.Cfg != nil && w.Cfg.PrivateHeaders != nil {
+		redact := w.Cfg.PrivateHeaders.RedactString
+		r.Source = redact(r.Source)
+		r.Method = redact(r.Method)
+		r.Target = redact(r.Target)
+		r.URL = redact(r.URL)
+		r.ContentType = redact(r.ContentType)
+		r.RequestBody = redact(r.RequestBody)
+		r.ResponseBody = redact(r.ResponseBody)
+	}
 	w.Results = append(w.Results, r)
 }
 
 func (w *Writer) AddVerboseResult(r VerboseResult) {
+	if w.Cfg != nil && w.Cfg.PrivateHeaders != nil {
+		redact := w.Cfg.PrivateHeaders.RedactString
+		r.Source = redact(r.Source)
+		r.Method = redact(r.Method)
+		r.Preview = redact(r.Preview)
+		r.Target = redact(r.Target)
+		r.URL = redact(r.URL)
+		r.ContentType = redact(r.ContentType)
+		r.RequestBody = redact(r.RequestBody)
+		r.ResponseBody = redact(r.ResponseBody)
+		r.Curl = redact(r.Curl)
+	}
 	w.VerboseResults = append(w.VerboseResults, r)
 }
 
@@ -95,6 +117,14 @@ func (w *Writer) WriteLog(sc int, target, method, response string) {
 }
 
 func (w *Writer) WriteLogE(sc int, target, method, response string) error {
+	if w.Cfg != nil && w.Cfg.PrivateHeaders != nil {
+		redact := w.Cfg.PrivateHeaders.RedactString
+		target = redact(target)
+		method = redact(method)
+		response = redact(response)
+		w.SpecTitle = redact(w.SpecTitle)
+		w.SpecDescription = redact(w.SpecDescription)
+	}
 	var out io.Writer = os.Stdout
 	previewLen := min(len(response), w.Cfg.ResponsePreview)
 	var file *os.File

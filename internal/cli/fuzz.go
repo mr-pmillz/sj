@@ -132,6 +132,9 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 		ResponseGuided: options.ResponseGuided, MaxGuidedRetries: options.MaxGuidedRetries,
 		ContinueOnTargetError: options.ContinueOnTargetError,
 	}
+	if cfg.PrivateHeaders != nil {
+		runOptions.Redact = cfg.PrivateHeaders.RedactString
+	}
 	stopProgress := func() {}
 	if options.Progress {
 		tracker := fuzz.NewProgressTracker()
@@ -164,7 +167,10 @@ func runFuzz(ctx context.Context, cfg *config.Config, options fuzzCLIOptions) (r
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = resultRun.finish(resultErr) }()
+	defer func() {
+		resultErr = resultRun.finish(redactPrivateError(cfg, resultErr))
+		resultErr = redactPrivateError(cfg, resultErr)
+	}()
 	report, err := fuzz.Run(ctx, client.HTTP, selected, runOptions)
 	if err != nil {
 		return err
