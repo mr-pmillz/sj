@@ -7,6 +7,7 @@ import (
 
 	"github.com/mr-pmillz/sj/pkg/assessment/compare"
 	"github.com/mr-pmillz/sj/pkg/assessment/executor"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 	"github.com/mr-pmillz/sj/pkg/store"
 )
 
@@ -70,6 +71,7 @@ func (service *Service) newNodeExecution(
 	if err != nil {
 		return nil, err
 	}
+	client.Transport = privateheaders.Wrap(client.Transport, service.privateHeaders)
 	paceClient(client, pacer, lease.ensure)
 	runner, err := executor.New(executor.Config{
 		Client: client, Ledger: ledger, EvidenceKey: service.evidenceKey, ProxyVerifier: verifier,
@@ -82,7 +84,8 @@ func (service *Service) newNodeExecution(
 		ctx: ctx, resultStore: resultStore, assessmentID: assessmentID, nodeID: nodeID,
 		proof: proof, bindings: bindings, runner: runner, retrySource: retrySource,
 		evidencePolicy: evidencePolicy, evidenceKey: service.evidenceKey,
-		lease: lease, byKind: make(map[string][]caseEvidence), directTransport: service.directTransport,
+		lease: lease, privateHeaders: service.privateHeaders,
+		byKind: make(map[string][]caseEvidence), directTransport: service.directTransport,
 	}, nil
 }
 
@@ -204,9 +207,10 @@ func (execution *nodeExecution) persistCaseEvidence(
 	); err != nil {
 		return err
 	}
+	persistedResponse := responseForPersistence(result.Response, execution.privateHeaders)
 	if err := persistHTTPExchangeArtifact(
 		execution.resultStore, execution.ctx, execution.assessmentID, attemptID,
-		matrixCase, attempt, result.Response, execution.evidenceKey,
+		matrixCase, attempt, persistedResponse, execution.evidenceKey,
 		execution.evidencePolicy, execution.lease,
 	); err != nil {
 		return err
@@ -219,7 +223,22 @@ func (execution *nodeExecution) persistCaseEvidence(
 		execution.byKind[matrixCase.Kind],
 		caseEvidence{response: response, attemptID: attemptID},
 	)
-	return execution.persistSemanticResponse(attemptID, attempt, compare.Analyze(response))
+	persistedAnalysisResponse := response
+	if persistedResponse != nil {
+		persistedAnalysisResponse.Body = append([]byte(nil), persistedResponse.Body...)
+	}
+	return execution.persistSemanticResponse(attemptID, attempt, compare.Analyze(persistedAnalysisResponse))
+}
+
+func responseForPersistence(response *executor.Response, policy *privateheaders.Policy) *executor.Response {
+	if response == nil || policy == nil {
+		return response
+	}
+	return &executor.Response{
+		StatusCode: response.StatusCode,
+		Header:     response.Header.Clone(),
+		Body:       policy.RedactBytes(response.Body),
+	}
 }
 
 func (execution *nodeExecution) persistSemanticResponse(

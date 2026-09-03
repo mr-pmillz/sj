@@ -56,11 +56,17 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 	if err != nil {
 		return err
 	}
+	if err := loadPrivateHeaders(cfg, automateExplicitURLs(cfg, sources)); err != nil {
+		return err
+	}
 	resultRun, err := beginResultRun(ctx, cfg, "automate", map[string]any{"source_count": len(sources), "store_responses": cfg.StoreResponses})
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = resultRun.finish(resultErr) }()
+	defer func() {
+		resultErr = resultRun.finish(redactPrivateError(cfg, resultErr))
+		resultErr = redactPrivateError(cfg, resultErr)
+	}()
 	w := output.NewWriter(cfg)
 
 	if ofmt != "json" && ofmt != "jsonl" && ofmt != "csv" {
@@ -79,8 +85,13 @@ func runAutomate(ctx context.Context, cfg *config.Config) (resultErr error) {
 		w.SpecDescription = ""
 	}
 	for _, gap := range targetCircuit.CoverageGaps() {
+		origin, reason := gap.Origin, gap.Reason
+		if cfg.PrivateHeaders != nil {
+			origin = cfg.PrivateHeaders.RedactString(origin)
+			reason = cfg.PrivateHeaders.RedactString(reason)
+		}
 		w.CoverageGaps = append(w.CoverageGaps, output.CoverageGap{
-			Origin: gap.Origin, Reason: gap.Reason, Skipped: gap.Skipped,
+			Origin: origin, Reason: reason, Skipped: gap.Skipped,
 		})
 	}
 	return finalizeAutomateRun(ctx, resultRun, w, failures, len(sources))
@@ -131,7 +142,15 @@ func scanAutomateSources(
 			return nil, failure
 		}
 		failures = append(failures, failure)
-		w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: source.display(), Error: failure.Error()})
+		failureMessage := failure.Error()
+		if cfg.PrivateHeaders != nil {
+			failureMessage = cfg.PrivateHeaders.RedactString(failureMessage)
+		}
+		sourceDisplay := source.display()
+		if cfg.PrivateHeaders != nil {
+			sourceDisplay = cfg.PrivateHeaders.RedactString(sourceDisplay)
+		}
+		w.SourceFailures = append(w.SourceFailures, output.SourceFailure{Source: sourceDisplay, Error: failureMessage})
 	}
 	return failures, nil
 }

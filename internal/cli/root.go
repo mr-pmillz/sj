@@ -100,6 +100,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&cfg.Force, "force", false, "Bypass unsafe-method and dangerous-keyword safety checks.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.Format, "format", "f", "json", "Declare the format of the definition file (json/yaml/yml/js).")
 	rootCmd.PersistentFlags().StringArrayVarP(&cfg.Headers, "headers", "H", nil, "Add custom headers, separated by a colon (\"Name: Value\"). Multiple flags are accepted.")
+	rootCmd.PersistentFlags().StringVar(&cfg.HeaderFile, "header-file", "", "Read private request headers from an owner-only file and apply them only to explicit target origins.")
 	rootCmd.PersistentFlags().BoolVarP(&cfg.Insecure, "insecure", "i", false, "Ignores server certificate validation.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.LocalFile, "local-file", "l", "", "Loads the documentation from a local file.")
 	rootCmd.PersistentFlags().StringVarP(&cfg.Outfile, "outfile", "o", "", "Write command output to a file when the selected format supports it.")
@@ -137,6 +138,9 @@ func init() {
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
+		}
+		if cfg.HeaderFile != "" && cmd != bruteCmd && cmd != automateCmd && cmd != fullWorkflowCmd {
+			return fmt.Errorf("--header-file is supported only by brute, automate, and run")
 		}
 		return nil
 	}

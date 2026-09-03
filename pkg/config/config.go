@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 )
 
 type Mode int
@@ -52,6 +54,8 @@ type Config struct {
 	RandomUserAgent bool
 	AgentExplicit   bool
 	Headers         []string
+	HeaderFile      string
+	PrivateHeaders  *privateheaders.Policy
 	Force           bool
 	Quiet           bool
 	SafeWords       []string
@@ -164,6 +168,9 @@ func (c *Config) Validate() error {
 	}
 	if err := c.validateSOCKS5(); err != nil {
 		return err
+	}
+	if c.HeaderFile != "" && c.ReplayProxy != "" {
+		return fmt.Errorf("--header-file and --replay-proxy are mutually exclusive")
 	}
 	for _, header := range c.Headers {
 		name, value, ok := strings.Cut(header, ":")

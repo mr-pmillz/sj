@@ -19,6 +19,7 @@ import (
 	"github.com/mr-pmillz/sj/pkg/assessment/model"
 	"github.com/mr-pmillz/sj/pkg/evidence"
 	"github.com/mr-pmillz/sj/pkg/modules/bola"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 	"github.com/mr-pmillz/sj/pkg/store"
 )
 
@@ -90,6 +91,7 @@ type nodeExecution struct {
 	evidencePolicy  evidencePolicyMetadata
 	evidenceKey     []byte
 	lease           *assessmentExecutionLease
+	privateHeaders  *privateheaders.Policy
 	directTransport bool
 	byKind          map[string][]caseEvidence
 }

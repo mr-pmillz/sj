@@ -1200,6 +1200,9 @@ func executePlanResultContext(ctx context.Context, plan RequestPlan, client *htt
 		}
 	}
 	cfg.Headers = userHeaders
+	if cfg.PrivateHeaders != nil {
+		response = cfg.PrivateHeaders.RedactString(response)
+	}
 	preview := response[:min(len(response), max(cfg.ResponsePreview, 0))]
 	source := specificationResultSource(cfg)
 	contentType := configuredContentType(plan.Headers)

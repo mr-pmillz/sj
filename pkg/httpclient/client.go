@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/mr-pmillz/sj/pkg/config"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -30,11 +31,15 @@ type Client struct {
 }
 
 type managedRoundTripper struct {
-	next http.RoundTripper
+	next           http.RoundTripper
+	privateHeaders *privateheaders.Policy
 }
 
 func (transport *managedRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	return transport.next.RoundTrip(request)
+	if transport.privateHeaders == nil {
+		return transport.next.RoundTrip(request)
+	}
+	return transport.privateHeaders.RoundTrip(transport.next, request)
 }
 
 func (transport *managedRoundTripper) CloseIdleConnections() {
@@ -51,6 +56,9 @@ type ResponseMetadata struct {
 }
 
 func NewClient(cfg *config.Config) *Client {
+	if cfg == nil {
+		return &Client{InitErr: errors.New("configuration is required")}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	if cfg.Insecure {
@@ -58,6 +66,12 @@ func NewClient(cfg *config.Config) *Client {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
 	}
 	c := &Client{Cfg: cfg}
+	if cfg.HeaderFile != "" && cfg.PrivateHeaders == nil {
+		c.InitErr = errors.New("private header file was not loaded")
+	}
+	if cfg.HeaderFile != "" && cfg.ReplayProxy != "" {
+		c.InitErr = errors.Join(c.InitErr, errors.New("private headers cannot be combined with replay proxying"))
+	}
 	httpProxyConfigured := cfg.Proxy != "" && cfg.Proxy != "NOPROXY"
 	switch {
 	case cfg.SOCKS5Proxy != "":
@@ -85,8 +99,12 @@ func NewClient(cfg *config.Config) *Client {
 		}
 	}
 
+	var routeTransport http.RoundTripper = transport
+	if cfg.PrivateHeaders != nil {
+		routeTransport = &managedRoundTripper{next: transport, privateHeaders: cfg.PrivateHeaders}
+	}
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: routeTransport,
 		Timeout:   cfg.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -94,7 +112,7 @@ func NewClient(cfg *config.Config) *Client {
 	}
 
 	c.HTTP = httpClient
-	c.routeTransport = transport
+	c.routeTransport = routeTransport
 	c.configuredRoute = true
 
 	if cfg.ReplayProxy != "" {
@@ -428,7 +446,7 @@ func (c *Client) ReplaceHTTPTransport(
 	if transport == nil {
 		return errors.New("HTTP transport is required")
 	}
-	managed := &managedRoundTripper{next: transport}
+	managed := &managedRoundTripper{next: transport, privateHeaders: c.Cfg.PrivateHeaders}
 	c.HTTP.Transport = managed
 	c.routeTransport = managed
 	c.configuredRoute = configuredRoute

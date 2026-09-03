@@ -54,7 +54,10 @@ func runCollection(ctx context.Context, cfg *config.Config, options collectionCL
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = resultRun.finish(resultErr) }()
+	defer func() {
+		resultErr = resultRun.finish(redactPrivateError(cfg, resultErr))
+		resultErr = redactPrivateError(cfg, resultErr)
+	}()
 	summary, err := bruno.Generate(dataset.Operations, cfg.Outfile, bruno.Options{
 		Name: options.Name, Scope: options.Scope, BaseURL: options.BaseURL,
 		KnownUsername: options.KnownUsername, MaxOperations: options.MaxOperations,

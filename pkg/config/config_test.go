@@ -132,3 +132,12 @@ func TestValidateSOCKS5Configuration(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsPrivateHeaderFileWithReplayProxy(t *testing.T) {
+	cfg := New()
+	cfg.HeaderFile = "/run/casm-credential/credential.conf"
+	cfg.ReplayProxy = "http://127.0.0.1:8080"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted --header-file with --replay-proxy")
+	}
+}

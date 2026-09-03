@@ -59,7 +59,13 @@ func RetryWithHintsMetadataContext(
 		if err != nil {
 			break
 		}
-		output.PrintInfo("[retry %d] authentication response identified missing parameters %v\n", attempt+1, hints)
+		logHints := append([]string(nil), hints...)
+		if cfg.PrivateHeaders != nil {
+			for index := range logHints {
+				logHints[index] = cfg.PrivateHeaders.RedactString(logHints[index])
+			}
+		}
+		output.PrintInfo("[retry %d] authentication response identified missing parameters %v\n", attempt+1, logHints)
 		_, nextResponse, nextStatus, nextMetadata := client.MakeRequestWithMetadataContext(
 			ctx, method, updatedURL, bytes.NewReader([]byte(requestBody)),
 		)

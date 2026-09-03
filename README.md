@@ -339,6 +339,7 @@ The server provides passive audit, request-planning, and conversion tools plus o
 - **Random User-Agent** — Uses a random browser User-Agent by default for stealth. Override with `--agent`.
 - **Replay Proxy** — Route matched requests through a separate proxy while scanning through another (or direct).
 - **SOCKS5 Proxies** — Route every command through anonymous or username/password-authenticated SOCKS5 with remote hostname resolution.
+- **Private Header Files** — Load owner-only request headers once for `brute`, `automate`, or `run` and deliver them only to origins explicitly named by that invocation.
 - **Multi-format Output** — Export results as JSON, JSONL, or CSV with `-F` and `-o` flags.
 - **Batch Automation** — Scan URL lists or `brute` JSON/JSONL output directly with `automate -U`.
 - **Batch Brute Forcing** — Scan multiple targets from a file with `-U`.
@@ -367,6 +368,7 @@ The server provides passive audit, request-planning, and conversion tools plus o
       --no-database             Disable SQLite result storage for this command.
   -f, --format string           Definition file format: json/yaml/yml/js. (default "json")
   -H, --headers stringArray     Custom headers ("Name: Value"). Multiple flags accepted.
+      --header-file string      Read private headers from an owner-only file for explicit target origins.
   -i, --insecure                Ignore server certificate validation.
   -l, --local-file string       Load documentation from a local file.
   -o, --outfile string          Output results to a file.
@@ -384,6 +386,26 @@ The server provides passive audit, request-planning, and conversion tools plus o
   -u, --url string              Load documentation from a URL.
 ```
 
+### Private request headers
+
+For credentials that must not appear in process arguments, command metadata, generated requests, reports, or SQLite, put one HTTP header per line in a private regular file:
+
+```text
+Authorization: Bearer <opaque-value>
+X-API-Key: <opaque-value>
+```
+
+The file must be owned by sj's effective user and grant no group or other permissions (normally mode `0600`). It must not be a symlink. sj reads it once before target traffic and supports it only with `brute`, `automate`, and `run`:
+
+```bash
+sj automate -u https://target.example.com/openapi.json \
+  --header-file /run/casm-credential/credential.conf
+```
+
+In the CASM container contract, run sj as UID/GID `65532:65532` and mount the mode-`0600` file with UID `65532`. The feature does not require root; ownership is checked against the process's effective UID.
+
+Private headers are injected only at the HTTP transport boundary. An origin is authorized only when its scheme, host, and effective port came from this invocation's `--url`, URL-list input, or explicit `--target`; origins learned from OpenAPI, HTML, redirects, responses, discovery, or retained database runs do not gain access. Cross-origin requests therefore omit the private headers. `--header-file` cannot be combined with `--replay-proxy`, and a private header name cannot also be supplied through `-H/--headers`.
+
 ## Project Structure
 
 ```
@@ -400,6 +422,7 @@ sj/
 │   ├── openapi/              # Spec parsing, schema resolution
 │   ├── mcpserver/             # Typed MCP tools and policy enforcement
 │   ├── output/               # Multi-format result output
+│   ├── privateheaders/       # Owner-only private header parsing and origin-scoped injection
 │   ├── report/               # Result ingestion, metrics, severity analysis, and rendering
 │   ├── store/                # Versioned SQLite run/result persistence
 │   ├── specsource/            # Bounded URL/local specification loading

@@ -89,7 +89,10 @@ func runReport(ctx context.Context, cfg *config.Config, options reportCLIOptions
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = resultRun.finish(resultErr) }()
+	defer func() {
+		resultErr = resultRun.finish(redactPrivateError(cfg, resultErr))
+		resultErr = redactPrivateError(cfg, resultErr)
+	}()
 	report := pentestreport.Analyze(dataset, pentestreport.AnalyzeOptions{
 		Title: options.Title, GeneratedAt: time.Now().UTC(), MaxEvidence: options.MaxEvidence,
 	})
