@@ -101,6 +101,13 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	if err != nil {
 		return err
 	}
+	explicitURLs, err := fullWorkflowExplicitURLs(base, options)
+	if err != nil {
+		return err
+	}
+	if err := loadPrivateHeaders(base, explicitURLs); err != nil {
+		return err
+	}
 	paths, err := prepareFullWorkflowPaths(options.OutputDirectory)
 	if err != nil {
 		return err
@@ -148,6 +155,7 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		}
 		bruteCfg.Outfile = paths.bruteBase
 		bruteErr = stages.brute(ctx, bruteCfg)
+		bruteErr = redactPrivateError(base, bruteErr)
 		if bruteErr != nil && !regularFileExists(paths.bruteJSON) {
 			return fmt.Errorf("full workflow brute stage: %w", bruteErr)
 		}
@@ -184,6 +192,7 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	automateCfg.FullURLs = true
 	configureCompleteResponseStorage(automateCfg)
 	automateErr := stages.automate(ctx, automateCfg)
+	automateErr = redactPrivateError(base, automateErr)
 	if automateErr != nil && !regularFileExists(paths.automateJSON) {
 		return fmt.Errorf("full workflow automate stage: %w", automateErr)
 	}
@@ -204,6 +213,7 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 			ContinueOnTargetError: true,
 			OutputFormat:          "json", MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
 		})
+		fuzzErr = redactPrivateError(base, fuzzErr)
 	}
 
 	collectionCfg := cloneWorkflowConfig(base)
@@ -213,6 +223,7 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		KnownUsername: options.KnownUsername, MaxOperations: 10_000, MaxRequests: 50_000,
 		MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000,
 	})
+	collectionErr = redactPrivateError(base, collectionErr)
 
 	reportInputs := []string{paths.automateJSON}
 	if !options.SkipBrute {
@@ -227,6 +238,7 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		Inputs: reportInputs, AllFormats: true, Format: "terminal", Title: "sj Full API Penetration Test Report",
 		MaxInputBytes: 1 << 30, MaxFiles: 10_000, MaxRecords: 1_000_000, MaxEvidence: options.MaxEvidence,
 	})
+	reportErr = redactPrivateError(base, reportErr)
 
 	var assessmentErr error
 	if assessmentEnabled {
@@ -238,16 +250,17 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		default:
 			assessmentErr = stages.assessment(ctx, fullWorkflowAssessmentConfig(base), assessmentRequest)
 		}
+		assessmentErr = redactPrivateError(base, assessmentErr)
 	}
 
-	return errors.Join(
+	return redactPrivateError(base, errors.Join(
 		wrapWorkflowStageError("brute", suppressBrutePartialFailure(bruteErr, paths.bruteJSON)),
 		wrapWorkflowStageError("automate", automateContinuationErr),
 		wrapWorkflowStageError("fuzz", fuzzErr),
 		wrapWorkflowStageError("collection", collectionErr),
 		wrapWorkflowStageError("report", reportErr),
 		wrapWorkflowStageError("assessment", assessmentErr),
-	)
+	))
 }
 
 func suppressBrutePartialFailure(err error, artifactPath string) error {
@@ -277,6 +290,9 @@ func validateFullWorkflowOptions(base *config.Config, options fullWorkflowCLIOpt
 	}
 	if base == nil {
 		return apitest.NumericRange{}, fmt.Errorf("full workflow configuration is required")
+	}
+	if err := base.Validate(); err != nil {
+		return apitest.NumericRange{}, fmt.Errorf("invalid full workflow configuration: %w", err)
 	}
 	if err := validateFullWorkflowSources(base, options); err != nil {
 		return apitest.NumericRange{}, err

@@ -27,23 +27,24 @@ type FullWorkflowRunner func(context.Context, *config.Config, FullWorkflowReques
 
 // FullWorkflowRequest is the normalized, policy-checked native runner input.
 type FullWorkflowRequest struct {
-	SkipBrute            bool
-	Targets              []string
-	SpecURLs             []string
-	BruteRunIDs          []string
-	OutputDirectory      string
-	Workers              int
-	ExcludeMethods       []string
-	IDORRange            string
-	MaxFuzzRequests      int
-	MaxCases             int
-	Delay                time.Duration
-	AcceptRisk           bool
-	AllowPost            bool
-	AllowPatch           bool
-	MaxEvidence          int
-	AutoAssess           bool
-	AssessmentMaxResults int
+	SkipBrute              bool
+	Targets                []string
+	SpecURLs               []string
+	BruteRunIDs            []string
+	OutputDirectory        string
+	Workers                int
+	ExcludeMethods         []string
+	IDORRange              string
+	MaxFuzzRequests        int
+	MaxCases               int
+	Delay                  time.Duration
+	EnableSpecialCharsFuzz bool
+	AcceptRisk             bool
+	AllowPost              bool
+	AllowPatch             bool
+	MaxEvidence            int
+	AutoAssess             bool
+	AssessmentMaxResults   int
 }
 
 // FullWorkflowOutput returns durable artifact locations and identifiers rather
@@ -57,23 +58,24 @@ type FullWorkflowOutput struct {
 }
 
 type fullWorkflowInput struct {
-	SkipBrute            bool     `json:"skip_brute,omitempty" jsonschema:"Skip discovery. Supply spec_urls or brute_run_ids instead of targets."`
-	Targets              []string `json:"targets,omitempty" jsonschema:"Allowlisted absolute HTTP(S) base targets for OpenAPI discovery."`
-	SpecURLs             []string `json:"spec_urls,omitempty" jsonschema:"Allowlisted absolute OpenAPI document URLs used when skip_brute=true."`
-	BruteRunIDs          []string `json:"brute_run_ids,omitempty" jsonschema:"Persisted brute run IDs used when skip_brute=true. Uses only the server-configured database."`
-	OutputDirectory      string   `json:"output_directory" jsonschema:"New absolute artifact directory beneath an operator-configured assessment root."`
-	Workers              int      `json:"workers,omitempty" jsonschema:"Target-level brute workers. Defaults to 20 and cannot exceed 256."`
-	ExcludeMethods       []string `json:"exclude_methods,omitempty" jsonschema:"Additional HTTP methods to omit. DELETE is always disabled; PATCH and POST are disabled by default."`
-	IDORRange            string   `json:"idor_range,omitempty" jsonschema:"Inclusive numeric IDOR range. Defaults to 1-100."`
-	MaxFuzzRequests      int      `json:"max_fuzz_requests,omitempty" jsonschema:"Hard fuzz request budget. Defaults to 20000 and cannot exceed 50000."`
-	MaxCases             int      `json:"max_cases,omitempty" jsonschema:"Maximum mutation cases per operation. Defaults to 4096."`
-	DelayMilliseconds    int64    `json:"delay_ms,omitempty" jsonschema:"Delay between sequential fuzz requests in milliseconds. Defaults to 500; range 100 through 60000."`
-	AcceptRisk           bool     `json:"accept_risk,omitempty" jsonschema:"Authorize non-DELETE state-changing requests. Requires server-side destructive authorization."`
-	AllowPost            bool     `json:"allow_post,omitempty" jsonschema:"Include POST operations; requires accept_risk=true and server-side destructive authorization."`
-	AllowPatch           bool     `json:"allow_patch,omitempty" jsonschema:"Include PATCH operations; requires accept_risk=true and server-side destructive authorization."`
-	MaxEvidence          int      `json:"max_evidence,omitempty" jsonschema:"Maximum proof records per report finding. Defaults to 100."`
-	SkipAssessment       bool     `json:"skip_assessment,omitempty" jsonschema:"Skip the automatic anonymous assessment continuation. Automatic assessment runs by default."`
-	AssessmentMaxResults int      `json:"assessment_max_results,omitempty" jsonschema:"Maximum rows per assessment report collection; zero keeps safe renderer defaults."`
+	SkipBrute              bool     `json:"skip_brute,omitempty" jsonschema:"Skip discovery. Supply spec_urls or brute_run_ids instead of targets."`
+	Targets                []string `json:"targets,omitempty" jsonschema:"Allowlisted absolute HTTP(S) base targets for OpenAPI discovery."`
+	SpecURLs               []string `json:"spec_urls,omitempty" jsonschema:"Allowlisted absolute OpenAPI document URLs used when skip_brute=true."`
+	BruteRunIDs            []string `json:"brute_run_ids,omitempty" jsonschema:"Persisted brute run IDs used when skip_brute=true. Uses only the server-configured database."`
+	OutputDirectory        string   `json:"output_directory" jsonschema:"New absolute artifact directory beneath an operator-configured assessment root."`
+	Workers                int      `json:"workers,omitempty" jsonschema:"Target-level brute workers. Defaults to 20 and cannot exceed 256."`
+	ExcludeMethods         []string `json:"exclude_methods,omitempty" jsonschema:"Additional HTTP methods to omit. DELETE is always disabled; PATCH and POST are disabled by default."`
+	IDORRange              string   `json:"idor_range,omitempty" jsonschema:"Inclusive numeric IDOR range. Defaults to 1-100."`
+	MaxFuzzRequests        int      `json:"max_fuzz_requests,omitempty" jsonschema:"Hard fuzz request budget. Defaults to 20000 and cannot exceed 50000."`
+	MaxCases               int      `json:"max_cases,omitempty" jsonschema:"Maximum mutation cases per operation. Defaults to 4096."`
+	DelayMilliseconds      int64    `json:"delay_ms,omitempty" jsonschema:"Delay between sequential fuzz requests in milliseconds. Defaults to 500; range 100 through 60000."`
+	EnableSpecialCharsFuzz bool     `json:"enable_special_chars_fuzz,omitempty" jsonschema:"Enable the complete built-in raw and percent-encoded special-character corpus during the fuzz stage."`
+	AcceptRisk             bool     `json:"accept_risk,omitempty" jsonschema:"Authorize non-DELETE state-changing requests. Requires server-side destructive authorization."`
+	AllowPost              bool     `json:"allow_post,omitempty" jsonschema:"Include POST operations; requires accept_risk=true and server-side destructive authorization."`
+	AllowPatch             bool     `json:"allow_patch,omitempty" jsonschema:"Include PATCH operations; requires accept_risk=true and server-side destructive authorization."`
+	MaxEvidence            int      `json:"max_evidence,omitempty" jsonschema:"Maximum proof records per report finding. Defaults to 100."`
+	SkipAssessment         bool     `json:"skip_assessment,omitempty" jsonschema:"Skip the automatic anonymous assessment continuation. Automatic assessment runs by default."`
+	AssessmentMaxResults   int      `json:"assessment_max_results,omitempty" jsonschema:"Maximum rows per assessment report collection; zero keeps safe renderer defaults."`
 }
 
 func (service *service) runFullWorkflow(
@@ -175,7 +177,8 @@ func (service *service) validateFullWorkflowInput(input fullWorkflowInput) (Full
 		OutputDirectory: outputDirectory, Workers: workers,
 		ExcludeMethods: append([]string(nil), input.ExcludeMethods...), IDORRange: idRange,
 		MaxFuzzRequests: maxFuzzRequests, MaxCases: maxCases, Delay: delay,
-		AcceptRisk: input.AcceptRisk, AllowPost: input.AllowPost, AllowPatch: input.AllowPatch,
+		EnableSpecialCharsFuzz: input.EnableSpecialCharsFuzz,
+		AcceptRisk:             input.AcceptRisk, AllowPost: input.AllowPost, AllowPatch: input.AllowPatch,
 		MaxEvidence: maxEvidence, AutoAssess: !input.SkipAssessment,
 		AssessmentMaxResults: input.AssessmentMaxResults,
 	}, nil

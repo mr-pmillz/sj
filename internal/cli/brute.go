@@ -38,6 +38,9 @@ func (failure *bruteArtifactError) Unwrap() error {
 
 func runBrute(ctx context.Context, cfg *config.Config) error {
 	cfg.Mode = config.ModeBrute
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid brute configuration: %w", err)
+	}
 	ofmt := strings.ToLower(cfg.BruteOutputFormat)
 	if cfg.BruteAllFormats && cfg.Outfile == "" {
 		return fmt.Errorf("--output-all-formats requires --outfile")
@@ -49,15 +52,18 @@ func runBrute(ctx context.Context, cfg *config.Config) error {
 			return fmt.Errorf("unsupported output format %q; supported formats: console, json, jsonl, csv, txt", cfg.BruteOutputFormat)
 		}
 	}
+	targets, err := bruteTargets(cfg)
+	if err != nil {
+		return err
+	}
+	if err := loadPrivateHeaders(cfg, targets); err != nil {
+		return err
+	}
 	client, err := newHTTPClient(cfg)
 	if err != nil {
 		return err
 	}
 	scanner := brute.NewScanner(client, cfg)
-	targets, err := bruteTargets(cfg)
-	if err != nil {
-		return err
-	}
 	resultRun, err := beginResultRun(ctx, cfg, "brute", map[string]any{"target_count": len(targets), "workers": cfg.BruteWorkers})
 	if err != nil {
 		return err
@@ -88,9 +94,11 @@ func runBrute(ctx context.Context, cfg *config.Config) error {
 	var partial *brute.PartialBatchError
 	artifactErr := errors.Join(wrapError("store brute results", storageErr), outputErr)
 	if errors.As(scanErr, &partial) && artifactErr != nil {
-		return resultRun.finish(errors.Join(scanErr, &bruteArtifactError{err: artifactErr}))
+		resultErr := redactPrivateError(cfg, errors.Join(scanErr, &bruteArtifactError{err: artifactErr}))
+		return redactPrivateError(cfg, resultRun.finish(resultErr))
 	}
-	return resultRun.finish(errors.Join(scanErr, artifactErr))
+	resultErr := redactPrivateError(cfg, errors.Join(scanErr, artifactErr))
+	return redactPrivateError(cfg, resultRun.finish(resultErr))
 }
 
 func bruteTargets(cfg *config.Config) ([]string, error) {

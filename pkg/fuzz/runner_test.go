@@ -46,6 +46,38 @@ func TestRunStopsImmediatelyOnRateLimit(t *testing.T) {
 	}
 }
 
+func TestRunRedactsReflectedPrivateMaterialBeforeReturningReport(t *testing.T) {
+	const sentinel = "private-reflection-42ca"
+	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return fuzzResponse(request, http.StatusOK, `{"echo":"`+sentinel+`"}`)
+	})}
+	report, err := run(t.Context(), client, []pentestreport.Operation{{
+		Method: "GET", URL: "https://api.example/items", Target: "/items",
+	}}, Options{
+		MaxRequests: 20, Delay: minimumRequestDelay, StoreResponses: true,
+		MaxResponseBytes: 1024, MaxStoredResponseBytes: 1024,
+		Redact: func(value string) string { return strings.ReplaceAll(value, sentinel, "[***]") },
+	}, noWait)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), sentinel) {
+		t.Fatalf("fuzz report disclosed reflected private material: %s", encoded)
+	}
+	if len(report.Probes) == 0 {
+		t.Fatal("fuzz run returned no probes")
+	}
+	for _, probe := range report.Probes {
+		if len(probe.analysisBody) != 0 {
+			t.Fatalf("private analysis response outlived report generation: %#v", report.Probes)
+		}
+	}
+}
+
 func TestRunStopsBeforeConsumingLastAdvertisedRateLimitRequest(t *testing.T) {
 	var calls atomic.Int32
 	client := &http.Client{Transport: fuzzRoundTripFunc(func(request *http.Request) (*http.Response, error) {

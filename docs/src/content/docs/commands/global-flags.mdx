@@ -29,6 +29,7 @@ These flags are available on every `sj` command. They are defined as persistent 
 |------|-------|---------|-------------|
 | `--agent` | `-A` | *(random)* | Set the User-Agent string. A random User-Agent is used by default. |
 | `--headers` | `-H` | | Add custom headers in `"Name: Value"` format. Multiple flags accepted. |
+| `--header-file` | | | Read private headers from an owner-only file for `brute`, `automate`, or `run`; values are scoped to explicit origins. |
 | `--format` | `-f` | `json` | Declare the format of the definition file (`json`, `yaml`, `yml`, `js`). |
 | `--custom-url` | `-c` | `https://example.com` | Custom URL value for testing discovered URL parameters. |
 | `--custom-date` | `-d` | `1990-01-01` | Custom date for testing discovered date parameters (format: `YYYY-MM-DD`). |
@@ -75,8 +76,22 @@ sj automate -u https://target.example.com/swagger.json \
   -H "Authorization: Bearer TOKEN" \
   -H "X-API-Key: my-key"
 
+# Keep private header values out of argv and generated artifacts
+sj automate -u https://target.example.com/swagger.json \
+  --header-file /run/casm-credential/credential.conf
+
 # Use a custom target host
 sj automate -u https://docs.example.com/swagger.json -T https://api.example.com
 ```
 
 `--proxy` and `--socks5-proxy` are mutually exclusive. Do not embed credentials in the SOCKS5 URL; use the credential flags. Because command-line passwords may be visible to local process inspection or shell history, use these flags only in an appropriately controlled environment.
+
+## Private header-file contract
+
+`--header-file` accepts 1–16 newline-delimited HTTP headers in strict `Name: Value` form. Values may contain additional colons and intentional spaces. The file contains secrets: keep it as a regular, non-symlink file owned by the effective sj user with no group or other permission bits (normally mode `0600`). sj opens and validates the file once before any target request; it does not accept the file contents through another flag or environment-variable alternative.
+
+For CASM's fixed mount, run the container as UID/GID `65532:65532` and make `/run/casm-credential/credential.conf` mode `0600`, owned by UID `65532`, and read-only in the sj container. No root privileges are required because sj validates ownership against its effective UID.
+
+Private headers remain separate from ordinary `--headers` configuration and are added only inside the final HTTP transport. Their names and values are omitted from generated commands, output, reports, retained exchanges, and SQLite. A duplicate name within the file, or a case-insensitive name collision with `-H/--headers`, fails before network activity. `--header-file` is refused with `--replay-proxy`.
+
+Authorization is exact-origin scoped: scheme, host, and effective port must match a `--url`, URL-list entry, or explicit `--target` from this invocation. A host learned only from an OpenAPI document, documentation UI, redirect, response, discovery result, or retained database run is not authorized. Redirects and other cross-origin requests omit the private headers.

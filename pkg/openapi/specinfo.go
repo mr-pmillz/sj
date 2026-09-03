@@ -17,6 +17,9 @@ func PrintSpecInfo(spec map[string]any, w *output.Writer, cfg *config.Config) {
 	}
 
 	title, _ := info["title"].(string)
+	if cfg.PrivateHeaders != nil {
+		title = cfg.PrivateHeaders.RedactString(title)
+	}
 	if title != "" {
 		w.SpecTitle = title
 		ofmt := strings.ToLower(cfg.OutputFormat)
@@ -28,6 +31,9 @@ func PrintSpecInfo(spec map[string]any, w *output.Writer, cfg *config.Config) {
 	}
 
 	description, _ := info["description"].(string)
+	if cfg.PrivateHeaders != nil {
+		description = cfg.PrivateHeaders.RedactString(description)
+	}
 	if description != "" {
 		w.SpecDescription = description
 		ofmt := strings.ToLower(cfg.OutputFormat)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	assessmentreport "github.com/mr-pmillz/sj/pkg/assessment/report"
+	"github.com/mr-pmillz/sj/pkg/privateheaders"
 )
 
 var (
@@ -104,6 +105,7 @@ type Config struct {
 	EvidenceKey    []byte
 	Now            func() time.Time
 	SOCKSTransport *SOCKSTransportConfig
+	PrivateHeaders *privateheaders.Policy
 	// DirectTransport declares that Client reaches target origins without a
 	// shared intermediary. It enables conservative direct DNS/connection-refused
 	// isolation; callers with custom or ambiguous transports should leave it false.
@@ -130,6 +132,7 @@ type Service struct {
 	evidenceKey     []byte
 	now             func() time.Time
 	socksTransport  *configuredSOCKSTransport
+	privateHeaders  *privateheaders.Policy
 	directTransport bool
 }
 
@@ -228,6 +231,7 @@ func New(config Config) (*Service, error) {
 	}
 	return &Service{
 		client: config.Client, evidenceKey: append([]byte(nil), config.EvidenceKey...),
-		now: config.Now, socksTransport: socksTransport, directTransport: config.DirectTransport,
+		now: config.Now, socksTransport: socksTransport, privateHeaders: config.PrivateHeaders,
+		directTransport: config.DirectTransport,
 	}, nil
 }

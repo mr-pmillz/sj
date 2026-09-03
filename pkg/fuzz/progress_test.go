@@ -78,3 +78,22 @@ func TestProgressSnapshotsNeverExposeBodiesOrHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestProgressPublicationRedactsCurrentLabels(t *testing.T) {
+	const sentinel = "progress-private-42ca"
+	tracker := NewProgressTracker()
+	current := &plannedProbe{
+		method: sentinel, caseName: "response_guided:" + sentinel,
+		identity: Identity{Name: sentinel},
+	}
+	publishRunProgress(tracker, Summary{}, 1, 1, current, false, func(value string) string {
+		return strings.ReplaceAll(value, sentinel, "")
+	})
+	snapshot, ok := tracker.Snapshot()
+	if !ok {
+		t.Fatal("progress snapshot missing")
+	}
+	if strings.Contains(snapshot.String(), sentinel) {
+		t.Fatalf("progress snapshot retained private material: %s", snapshot.String())
+	}
+}

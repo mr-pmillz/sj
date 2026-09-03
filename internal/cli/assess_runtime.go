@@ -61,6 +61,7 @@ func newAssessmentRuntimeWithEvidenceKey(commandConfig *config.Config, key []byt
 	return assessmentruntime.New(assessmentruntime.Config{
 		Client:          &http.Client{Transport: transport, Timeout: commandConfig.Timeout},
 		EvidenceKey:     append([]byte(nil), key...),
+		PrivateHeaders:  commandConfig.PrivateHeaders,
 		DirectTransport: true,
 	})
 }

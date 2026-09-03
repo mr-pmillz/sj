@@ -36,7 +36,10 @@ func TestExecuteMCPFullWorkflowMaterializesURLsAndReturnsDurableArtifacts(t *tes
 			}
 			return os.WriteFile(stageConfig.Outfile+".json", []byte(`{"results":[]}`), 0o600)
 		},
-		fuzz: func(_ context.Context, stageConfig *config.Config, _ fuzzCLIOptions) error {
+		fuzz: func(_ context.Context, stageConfig *config.Config, options fuzzCLIOptions) error {
+			if !options.EnableSpecialCharsFuzz {
+				t.Fatal("MCP full workflow did not enable special-character fuzzing")
+			}
 			return os.WriteFile(stageConfig.Outfile, []byte(`{"summary":{},"probes":[]}`), 0o600)
 		},
 		collection: func(_ context.Context, stageConfig *config.Config, _ collectionCLIOptions) error {
@@ -63,8 +66,9 @@ func TestExecuteMCPFullWorkflowMaterializesURLsAndReturnsDurableArtifacts(t *tes
 	result, err := executeMCPFullWorkflow(t.Context(), commandConfig, mcpserver.FullWorkflowRequest{
 		SkipBrute: true, SpecURLs: []string{"https://api.example/openapi.json"},
 		OutputDirectory: outputDirectory, Workers: 2, IDORRange: "1-2",
-		MaxFuzzRequests: 64, MaxCases: 16, Delay: 100 * time.Millisecond,
-		MaxEvidence: 10, AutoAssess: true,
+		MaxFuzzRequests: 128, MaxCases: 128, Delay: 100 * time.Millisecond,
+		EnableSpecialCharsFuzz: true,
+		MaxEvidence:            10, AutoAssess: true,
 	}, evidenceKey, stages)
 	if err != nil {
 		t.Fatal(err)

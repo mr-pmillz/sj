@@ -151,6 +151,7 @@ func (s *Scanner) RunTargetContext(ctx context.Context, targetURL string, dumpSp
 	output.PrintInfo("Sending up to %d requests. This could take a while...\n", len(candidates))
 	matches, interesting, summary, err := s.findAllDefinitionFiles(ctx, candidates)
 	report := makeReport(targetURL, matches, interesting, summary)
+	s.redactReport(&report)
 	if err != nil {
 		return report, err
 	}
@@ -282,6 +283,9 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 		if err != nil {
 			return fmt.Errorf("marshal discovered specification: %w", err)
 		}
+		if s.Cfg.PrivateHeaders != nil {
+			definition = s.Cfg.PrivateHeaders.RedactBytes(definition)
+		}
 		if s.Cfg.Outfile == "" {
 			fmt.Println(string(definition))
 		} else if err := writeBytesAtomically(s.Cfg.Outfile, definition); err != nil {
@@ -291,7 +295,13 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 	if len(matches) > 1 {
 		output.PrintInfo("\nFound %d definition files total:\n", len(matches))
 		for _, found := range matches {
-			output.PrintInfo("  - %s (OpenAPI %s, %s)\n", output.TerminalSafe(found.url), output.TerminalSafe(found.version), output.TerminalSafe(found.title))
+			foundURL, foundVersion, foundTitle := found.url, found.version, found.title
+			if s.Cfg.PrivateHeaders != nil {
+				foundURL = s.Cfg.PrivateHeaders.RedactString(foundURL)
+				foundVersion = s.Cfg.PrivateHeaders.RedactString(foundVersion)
+				foundTitle = s.Cfg.PrivateHeaders.RedactString(foundTitle)
+			}
+			output.PrintInfo("  - %s (OpenAPI %s, %s)\n", output.TerminalSafe(foundURL), output.TerminalSafe(foundVersion), output.TerminalSafe(foundTitle))
 		}
 	}
 	if len(report.Interesting) > 0 {
@@ -304,6 +314,25 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 		report.Summary.URLsTested, len(matches), len(report.Interesting), report.Summary.FalsePositivesFiltered, report.Summary.WAFChallengeResponses,
 		report.Summary.ReferencesRejected, report.Summary.ReferencesSkipped, report.Summary.Errors)
 	return nil
+}
+
+func (s *Scanner) redactReport(report *Report) {
+	if s == nil || s.Cfg == nil || s.Cfg.PrivateHeaders == nil || report == nil {
+		return
+	}
+	redact := s.Cfg.PrivateHeaders.RedactString
+	report.Target = redact(report.Target)
+	for index := range report.SpecsFound {
+		report.SpecsFound[index].URL = redact(report.SpecsFound[index].URL)
+		report.SpecsFound[index].ContentType = redact(report.SpecsFound[index].ContentType)
+		report.SpecsFound[index].OpenAPIVersion = redact(report.SpecsFound[index].OpenAPIVersion)
+		report.SpecsFound[index].Title = redact(report.SpecsFound[index].Title)
+		report.SpecsFound[index].Description = redact(report.SpecsFound[index].Description)
+	}
+	for index := range report.Interesting {
+		report.Interesting[index].URL = redact(report.Interesting[index].URL)
+		report.Interesting[index].ContentType = redact(report.Interesting[index].ContentType)
+	}
 }
 
 func writeBytesAtomically(path string, data []byte) error {
@@ -644,7 +673,13 @@ func (s *Scanner) addSpec(targetURL, contentType string, body []byte, referenceD
 		found.description = spec.Info.Description
 	}
 	state.matches = append(state.matches, found)
-	output.PrintInfo("\nDefinition file found: %s (OpenAPI %s, %s)\n", output.TerminalSafe(targetURL), output.TerminalSafe(version), output.TerminalSafe(found.title))
+	displayURL, displayVersion, displayTitle := targetURL, version, found.title
+	if s.Cfg.PrivateHeaders != nil {
+		displayURL = s.Cfg.PrivateHeaders.RedactString(displayURL)
+		displayVersion = s.Cfg.PrivateHeaders.RedactString(displayVersion)
+		displayTitle = s.Cfg.PrivateHeaders.RedactString(displayTitle)
+	}
+	output.PrintInfo("\nDefinition file found: %s (OpenAPI %s, %s)\n", output.TerminalSafe(displayURL), output.TerminalSafe(displayVersion), output.TerminalSafe(displayTitle))
 	for _, variation := range GeneratePathVariations(targetURL) {
 		s.queueVariation(variation, referenceDepth, state)
 	}

@@ -85,6 +85,8 @@ JSON summaries expose `waf_challenge_detected`, `waf_challenge_responses`, `waf_
 
 :::caution
 Custom request headers are applied to same-origin references only. If an authorized target requires a solved browser session, use the exact browser User-Agent and Cookie headers from the same network path. Treat session cookies and JSON result files containing authenticated specification URLs as sensitive assessment data.
+
+For credentials that must stay out of argv and persisted results, use the global `--header-file` option with an owner-only file. Private headers are delivered only to the exact origins supplied through `--url` or `--url-file`; discovered references cannot expand that scope.
 :::
 
 :::tip
