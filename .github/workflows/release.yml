@@ -45,7 +45,7 @@ jobs:
           private-key: ${{ secrets.SJ_APP_PRIVATE_KEY }}
 
       - name: Generate changelog
-        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # ratchet:orhun/git-cliff-action@v4
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # ratchet:orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: -r . --latest
@@ -55,7 +55,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # ratchet:docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # ratchet:docker/setup-buildx-action@v4.3.0
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # ratchet:docker/login-action@v4.6.0
@@ -78,12 +78,12 @@ jobs:
       # After GoReleaser runs, attest all the files in ./dist/checksums.txt:
       # See https://docs.docker.com/build/metadata/attestations/
       - name: Attest Build Provenance for Archives
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # ratchet:actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # ratchet:actions/attest@v4
         with:
           subject-checksums: ./dist/checksums.txt
       # After GoReleaser runs, attest all the images in ./dist/digests.txt:
       - name: Attest Build Provenance for Docker Images
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # ratchet:actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # ratchet:actions/attest@v4
         with:
           subject-checksums: ./dist/digests.txt
 
