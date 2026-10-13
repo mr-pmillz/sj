@@ -149,7 +149,7 @@ jobs:
           gocover-cobertura < coverage/coverage.txt > coverage/coverage.xml
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # ratchet:actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # ratchet:actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-report
@@ -162,7 +162,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish test results
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # ratchet:dorny/test-reporter@v3
+        uses: dorny/test-reporter@d1b5dff021aa968b288b02285a8bf47471c5928a # ratchet:dorny/test-reporter@v3
         if: always()
         with:
           name: Go Tests
@@ -188,7 +188,7 @@ jobs:
             (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) ||
             (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
           ) }}
-        uses: actions/upload-code-coverage@1c15be36fc3733ba839b1dd643bd9556e4426dc1 # ratchet:actions/upload-code-coverage@v1.4.1
+        uses: actions/upload-code-coverage@2b21a77928be8d5168c2b9581a67f2adbebacc52 # ratchet:actions/upload-code-coverage@v1.4.4
         with:
           file: coverage/coverage.xml
           language: Go
