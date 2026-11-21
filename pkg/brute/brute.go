@@ -22,7 +22,7 @@ import (
 	"github.com/mr-pmillz/sj/pkg/httpclient"
 	"github.com/mr-pmillz/sj/pkg/openapi"
 	"github.com/mr-pmillz/sj/pkg/output"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 type Scanner struct {

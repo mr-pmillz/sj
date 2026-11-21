@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/mr-pmillz/sj/pkg/assessment/model"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func Load(path string, options LoadOptions) (model.Manifest, error) {

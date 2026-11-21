@@ -20,7 +20,7 @@ import (
 	assessmentruntime "github.com/mr-pmillz/sj/pkg/assessment/runtime"
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/store"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 type assessmentRuntime interface {
