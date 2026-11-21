@@ -300,34 +300,16 @@ func (c *Client) makeRequestWithMetadata(
 		return nil, "", 0, ResponseMetadata{}
 	}
 
-	endpoint := strings.ToLower(u.EscapedPath() + "?" + u.RawQuery)
-	if enforceSafety && c.Cfg.Mode == config.ModeAutomate && !c.Cfg.Force {
-		if !c.Cfg.AcceptRisk && isUnsafeMethod(method) {
-			return nil, "skipped", 1, ResponseMetadata{}
-		}
-		safeWords := make(map[string]struct{}, len(c.Cfg.SafeWords))
-		for _, word := range c.Cfg.SafeWords {
-			safeWords[strings.ToLower(strings.TrimSpace(word))] = struct{}{}
-		}
-		if containsDangerousKeyword(endpoint, safeWords) && !c.Cfg.AcceptRisk {
-			return nil, "skipped", 1, ResponseMetadata{}
-		}
+	if enforceSafety && c.Cfg.Mode == config.ModeAutomate && c.BlocksOperation(method, u) {
+		return nil, "skipped", 1, ResponseMetadata{}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, c.Cfg.Timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, method, target, reqData)
+	req, err := c.NewRequest(ctx, method, target, reqData)
 	if err != nil {
 		return nil, "", 0, ResponseMetadata{}
-	}
-
-	accept, ct := c.applyHeaders(req)
-	if accept == "" {
-		req.Header.Set("Accept", "application/json, text/html, */*")
-	}
-	if (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) && ct == "" {
-		req.Header.Set("Content-Type", "application/json")
 	}
 
 	metadata := ResponseMetadata{Sent: true}
@@ -350,10 +332,10 @@ func (c *Client) makeRequestWithMetadata(
 		return nil, "", 0, metadata
 	}
 	metadata.Header = resp.Header.Clone()
-	bodyBytes, err := readBoundedBody(resp.Body, bodyLimit)
+	bodyBytes, err := ReadBoundedBody(resp.Body, bodyLimit)
 	closeErr := resp.Body.Close()
 	if err != nil {
-		if errors.Is(err, errResponseTooLarge) {
+		if errors.Is(err, ErrResponseTooLarge) {
 			metadata.Failure = "response_too_large"
 			return nil, "response_too_large", resp.StatusCode, metadata
 		}
@@ -453,6 +435,37 @@ func (c *Client) ReplaceHTTPTransport(
 	return nil
 }
 
+// BlocksOperation applies the configured method and path safeguards to a target.
+func (c *Client) BlocksOperation(method string, target *url.URL) bool {
+	if c.Cfg.Force || c.Cfg.AcceptRisk {
+		return false
+	}
+	if isUnsafeMethod(method) {
+		return true
+	}
+	safeWords := make(map[string]struct{}, len(c.Cfg.SafeWords))
+	for _, word := range c.Cfg.SafeWords {
+		safeWords[strings.ToLower(strings.TrimSpace(word))] = struct{}{}
+	}
+	return containsDangerousKeyword(strings.ToLower(target.EscapedPath()+"?"+target.RawQuery), safeWords)
+}
+
+// NewRequest prepares a request with the client's normal headers and user agent.
+func (c *Client) NewRequest(ctx context.Context, method, target string, data io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, data)
+	if err != nil {
+		return nil, err
+	}
+	accept, ct := c.applyHeaders(req)
+	if accept == "" {
+		req.Header.Set("Accept", "application/json, text/html, */*")
+	}
+	if (method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) && ct == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
 func containsDangerousKeyword(endpoint string, safeWords map[string]struct{}) bool {
 	words := strings.FieldsFunc(endpoint, func(char rune) bool {
 		return !unicode.IsLetter(char) && !unicode.IsDigit(char)
@@ -473,9 +486,11 @@ func containsDangerousKeyword(endpoint string, safeWords map[string]struct{}) bo
 	return false
 }
 
-var errResponseTooLarge = errors.New("response body exceeds configured limit")
+// ErrResponseTooLarge indicates that a body exceeded the configured byte limit.
+var ErrResponseTooLarge = errors.New("response body exceeds configured limit")
 
-func readBoundedBody(body io.Reader, limit int64) ([]byte, error) {
+// ReadBoundedBody reads a complete body or returns an error without partial data.
+func ReadBoundedBody(body io.Reader, limit int64) ([]byte, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("invalid response limit %d", limit)
 	}
@@ -484,7 +499,7 @@ func readBoundedBody(body io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 	if int64(len(data)) > limit {
-		return nil, errResponseTooLarge
+		return nil, ErrResponseTooLarge
 	}
 	return data, nil
 }
@@ -592,7 +607,7 @@ func (c *Client) BruteFetchWithMetadataContext(
 		return nil, "", 0, metadata
 	}
 	metadata.Header = resp.Header.Clone()
-	bodyBytes, err := readBoundedBody(resp.Body, c.responseLimit())
+	bodyBytes, err := ReadBoundedBody(resp.Body, c.responseLimit())
 	closeErr := resp.Body.Close()
 	if err != nil {
 		return nil, resp.Header.Get("Content-Type"), resp.StatusCode, metadata

@@ -64,6 +64,19 @@ sj audit -l ./openapi.yaml -f yaml --fail-on high
 sj audit -u https://example.com/openapi.json -F sarif -o sj.sarif
 ```
 
+### Contract tests
+
+`sj contract` runs ordered example cases against an explicit API base URL. It checks the request against the selected operation, validates the response, and returns a nonzero exit code when a case fails.
+
+```bash
+sj contract --suite tests/contract_petstore.yaml \
+  --url https://petstore.swagger.io/v2/swagger.json \
+  --target https://petstore.swagger.io/v2 \
+  --header-file /run/secrets/petstore.headers
+```
+
+For the Petstore example, put its published demo key in a mode-`0600` file as a single `api_key: <value>` line. The report gives the HTTP status, whether the exchange used credentials, and how many documented operations and responses the suite exercised. The command reference includes the suite format and an assertion for the signed-in caller. [Petstore specification](https://petstore.swagger.io/v2/swagger.json) · [Contract command reference](docs/src/content/docs/commands/contract.mdx)
+
 ### Automate
 
 Send requests to each discovered endpoint and analyze responses:
@@ -395,7 +408,7 @@ Authorization: Bearer <opaque-value>
 X-API-Key: <opaque-value>
 ```
 
-The file must be owned by sj's effective user and grant no group or other permissions (normally mode `0600`). It must not be a symlink. sj reads it once before target traffic and supports it only with `brute`, `automate`, and `run`:
+The file must be owned by sj's effective user and grant no group or other permissions (normally mode `0600`). It must not be a symlink. The `brute`, `automate`, `run`, and `contract` commands read it once before target traffic.
 
 ```bash
 sj automate -u https://target.example.com/openapi.json \
@@ -404,7 +417,7 @@ sj automate -u https://target.example.com/openapi.json \
 
 In the CASM container contract, run sj as UID/GID `65532:65532` and mount the mode-`0600` file with UID `65532`. The feature does not require root; ownership is checked against the process's effective UID.
 
-Private headers are injected only at the HTTP transport boundary. An origin is authorized only when its scheme, host, and effective port came from this invocation's `--url`, URL-list input, or explicit `--target`; origins learned from OpenAPI, HTML, redirects, responses, discovery, or retained database runs do not gain access. Cross-origin requests therefore omit the private headers. `--header-file` cannot be combined with `--replay-proxy`, and a private header name cannot also be supplied through `-H/--headers`.
+Private headers are scoped to the explicitly supplied scheme, host, and effective port. For `brute`, `automate`, and `run`, the origin comes from this invocation's `--url`, URL-list input, or explicit `--target`. For `contract`, it comes from `--target`, and only cases using a declared security requirement receive the file's headers. Specification fetches for `contract` are public. `--header-file` cannot be combined with `--replay-proxy`, and a private header name cannot also be supplied through `-H/--headers`.
 
 ## Project Structure
 

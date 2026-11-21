@@ -29,7 +29,7 @@ These flags are available on every `sj` command. They are defined as persistent 
 |------|-------|---------|-------------|
 | `--agent` | `-A` | *(random)* | Set the User-Agent string. A random User-Agent is used by default. |
 | `--headers` | `-H` | | Add custom headers in `"Name: Value"` format. Multiple flags accepted. |
-| `--header-file` | | | Read private headers from an owner-only file for `brute`, `automate`, or `run`; values are scoped to explicit origins. |
+| `--header-file` | | | Read origin-scoped private headers from an owner-only file for `brute`, `automate`, `contract`, or `run`. |
 | `--format` | `-f` | `json` | Declare the format of the definition file (`json`, `yaml`, `yml`, `js`). |
 | `--custom-url` | `-c` | `https://example.com` | Custom URL value for testing discovered URL parameters. |
 | `--custom-date` | `-d` | `1990-01-01` | Custom date for testing discovered date parameters (format: `YYYY-MM-DD`). |

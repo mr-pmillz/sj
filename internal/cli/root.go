@@ -80,6 +80,7 @@ var timeoutSeconds int64
 func init() {
 	rootCmd.AddCommand(automateCmd)
 	rootCmd.AddCommand(auditCmd)
+	rootCmd.AddCommand(contractCmd)
 	rootCmd.AddCommand(endpointsCmd)
 	rootCmd.AddCommand(prepareCmd)
 	rootCmd.AddCommand(bruteCmd)
@@ -136,11 +137,14 @@ func init() {
 	})
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if cmd == contractCmd && len(cfg.Headers) != 0 {
+			return fmt.Errorf("contract authentication uses --header-file")
+		}
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
-		if cfg.HeaderFile != "" && cmd != bruteCmd && cmd != automateCmd && cmd != fullWorkflowCmd {
-			return fmt.Errorf("--header-file is supported only by brute, automate, and run")
+		if cfg.HeaderFile != "" && cmd != bruteCmd && cmd != automateCmd && cmd != fullWorkflowCmd && cmd != contractCmd {
+			return fmt.Errorf("--header-file is supported only by brute, automate, run, and contract")
 		}
 		return nil
 	}

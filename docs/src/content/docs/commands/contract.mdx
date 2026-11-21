@@ -1,0 +1,50 @@
+---
+title: contract
+description: Run reproducible, authenticated API examples and check OpenAPI conformance.
+---
+
+Use `sj contract` for regression tests with known inputs and an expected outcome. Each case selects a method and the exact path template from a Swagger 2 or OpenAPI 3 document. The target URL includes the API base path. Use `--base-path` to override that path.
+
+```bash
+sj contract -l api.yaml --suite examples.yaml \
+  --target https://api.example.com/v1 --header-file /run/secrets/qa.headers \
+  -o contract-results.json
+```
+
+## Write a suite
+
+```yaml
+cases:
+  - name: the signed-in account
+    method: GET
+    path: /me
+    authenticated: true
+    expectStatus: 200
+    expectJSON:
+      /subject: integration-user
+  - name: read a known fixture
+    method: GET
+    path: /items/{id}
+    pathParams: {id: "42"}
+    query: "view=summary"
+    expectJSON:
+      /id: 42
+```
+
+Case names must be unique. Use `pathParams` for single path segments and `query` for the URL-encoded query string, including repeated keys. The default `accept` value is `application/json`. Supply a different media type to exercise another representation. Use `jsonBody` with a JSON string for operations that accept a request body.
+
+sj validates every example before sending the first operation. A missing required parameter, invalid request body, or unavailable credential fails this step. The usual method and dangerous-path safeguards apply. For a suite with deliberate writes to a disposable fixture, `--force` enables those operations. Each case executes once, in file order.
+
+## Supply credentials
+
+Use a mode-`0600` header file for one test identity. Supported schemes include header and cookie API keys, HTTP Basic and Bearer, and pre-issued OAuth2 and OpenID Connect bearer tokens. Supply the header as it should appear on the wire, including the authentication scheme for an `Authorization` header. Use a local specification when access to the specification itself requires credentials.
+
+sj resolves operation-level overrides, alternative security requirements and combinations of schemes. It sends the private file to the target when a case satisfies a nonempty requirement. An optional-auth operation runs anonymously by default. Set `authenticated: true` to require credentials and catch changes to the operation's security declaration. An assertion on a caller-specific response field can also verify which account answered.
+
+## Interpret results
+
+By default, a case expects a 2xx response. An explicit `expectStatus` selects one exact status. The response must also match a declaration in the API document. An exact status takes precedence over a range such as `2XX`, followed by `default`. sj checks the declared response headers, media type and body schema. `expectJSON` maps JSON Pointers to expected scalar values and can distinguish a missing field from a field containing `null`.
+
+The JSON report goes to stdout or the file specified with `-o`. It contains case names, path templates, status codes, problem categories and counts. A case marked `credentialed` received an HTTP response to a request made with the supplied profile. Each distinct operation with a response counts once. Each matched response declaration counts once per operation, including when a separate schema or business assertion fails. Run a broader suite to increase those counts. A failed case produces a nonzero exit code after reporting.
+
+Suites and specifications use `--max-spec-bytes`. Operation bodies use `--max-response-bytes` when reading responses. Supply a bundled specification with internal references. The command uses the explicit target as the base for every case and returns redirect responses to the assertions.
