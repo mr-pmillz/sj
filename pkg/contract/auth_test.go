@@ -52,7 +52,8 @@ func TestConfigureAuth(t *testing.T) {
 				origin = "https://other.example"
 			}
 			req := httptest.NewRequest(http.MethodGet, origin+"/me", nil)
-			got, err := configureAuth(req, doc, &openapi3.Operation{Security: tc.requirements}, policy, tc.requireAuth)
+			selected, err := configureAuth(req, doc, &openapi3.Operation{Security: tc.requirements}, policy, tc.requireAuth)
+			got := len(selected) != 0
 			if (err != nil) != tc.wantErr || got != tc.credentialed {
 				t.Fatalf("credentialed %t, error %v", got, err)
 			}

@@ -20,25 +20,44 @@ import (
 	"github.com/go-openapi/jsonpointer"
 )
 
-// Report contains case outcomes and distinct operation/response coverage.
+// Report contains case outcomes, grouped findings and distinct coverage.
 type Report struct {
-	Cases    []Result `json:"cases"`
-	Passed   int      `json:"passed"`
-	Failed   int      `json:"failed"`
-	Coverage Coverage `json:"coverage"`
-	observed map[string]bool
-	matched  map[string]bool
+	Cases        []Result  `json:"cases"`
+	Planned      int       `json:"planned,omitempty"`
+	Passed       int       `json:"passed"`
+	Failed       int       `json:"failed"`
+	Skipped      int       `json:"skipped,omitempty"`
+	Inconclusive int       `json:"inconclusive,omitempty"`
+	Coverage     Coverage  `json:"coverage"`
+	Findings     []Finding `json:"findings,omitempty"`
+	Run          *RunInfo  `json:"run,omitempty"`
+	observed     map[string]bool
+	matched      map[string]bool
 }
 
+// Result is the outcome of one case. It names what was asked and what the
+// API answered. It never holds a credential, a parameter value or a body,
+// except for the opt-in response excerpt.
 type Result struct {
 	Name            string   `json:"name"`
 	Method          string   `json:"method"`
 	Path            string   `json:"path"`
 	Credentialed    bool     `json:"credentialed"`
+	Identity        string   `json:"identity,omitempty"`
+	Negative        string   `json:"negative,omitempty"`
+	Probe           string   `json:"probe,omitempty"`
+	Cleanup         bool     `json:"cleanup,omitempty"`
 	ExpectedStatus  int      `json:"expectedStatus,omitempty"`
 	Status          int      `json:"status,omitempty"`
 	MatchedResponse string   `json:"matchedResponse,omitempty"`
 	Problems        []string `json:"problems,omitempty"`
+	Findings        []string `json:"findings,omitempty"`
+	// Skipped says why no request was sent.
+	Skipped string `json:"skipped,omitempty"`
+	// Inconclusive says why a probe that was sent could not answer its question.
+	Inconclusive string `json:"inconclusive,omitempty"`
+	// Excerpt is a bounded response sample, kept only with --store-responses.
+	Excerpt string `json:"responseExcerpt,omitempty"`
 }
 
 type Coverage struct {
@@ -46,6 +65,35 @@ type Coverage struct {
 	ExercisedOperations  int `json:"exercisedOperations"`
 	DocumentedResponses  int `json:"documentedResponses"`
 	MatchedResponses     int `json:"matchedResponses"`
+}
+
+// RunInfo describes how the cases were produced and executed.
+type RunInfo struct {
+	// Mode is "suite" for supplied cases and "fuzz" for generated ones.
+	Mode     string `json:"mode"`
+	Seed     uint64 `json:"seed"`
+	Requests int    `json:"requests"`
+	// Stopped names the rule that ended traffic early. Later cases were skipped.
+	Stopped string `json:"stopped,omitempty"`
+	// Operations summarizes generated coverage for each documented operation.
+	Operations []OperationSummary `json:"operations,omitempty"`
+	// LeftoverRecords counts created test records that could not be removed.
+	LeftoverRecords int `json:"leftoverRecords,omitempty"`
+	// Gaps lists generated cases that could not form a request.
+	Gaps []string `json:"gaps,omitempty"`
+}
+
+// OperationSummary says how far generated testing got on one operation.
+type OperationSummary struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	// Baseline is the status of the valid request variants are derived from.
+	// Zero means no valid request was accepted, so variants were not run.
+	Baseline int `json:"baseline,omitempty"`
+	// Inconclusive says why the operation could not be tested further.
+	Inconclusive string `json:"inconclusive,omitempty"`
+	Cases        int    `json:"cases"`
+	Statuses     []int  `json:"statuses,omitempty"`
 }
 
 func newReport(doc *openapi3.T) Report {
@@ -61,10 +109,24 @@ func newReport(doc *openapi3.T) Report {
 
 func (r *Report) add(result Result) {
 	r.Cases = append(r.Cases, result)
-	if len(result.Problems) == 0 {
-		r.Passed++
-	} else {
+	r.tally(result)
+}
+
+func (r *Report) tally(result Result) {
+	switch {
+	case result.Skipped != "":
+		r.Skipped++
+		return
+	case len(result.Problems) != 0 || len(result.Findings) != 0:
 		r.Failed++
+	case result.Inconclusive != "":
+		r.Inconclusive++
+	default:
+		r.Passed++
+	}
+	// A method the contract does not define is not a documented operation.
+	if result.Probe == ProbeUndeclared {
+		return
 	}
 	operation := result.Method + " " + result.Path
 	if result.Status != 0 {
@@ -77,6 +139,20 @@ func (r *Report) add(result Result) {
 	}
 }
 
+// finish groups the case signals into findings and records run totals.
+func (r *Report) finish(s *session) {
+	r.Findings = aggregate(s.doc, r.Cases)
+	mode := "suite"
+	if r.Run != nil {
+		mode = r.Run.Mode
+	}
+	info := RunInfo{Mode: mode, Seed: s.options.Seed, Requests: s.requests, Stopped: s.stopped}
+	if r.Run != nil {
+		info.Operations = r.Run.Operations
+	}
+	r.Run = &info
+}
+
 func matchStatus(responses *openapi3.Responses, status int) string {
 	for _, key := range []string{strconv.Itoa(status), strconv.Itoa(status/100) + "XX", "default"} {
 		if responses.Value(key) != nil {
@@ -86,10 +162,17 @@ func matchStatus(responses *openapi3.Responses, status int) string {
 	return ""
 }
 
-func (p preparedCase) checkResponse(ctx context.Context, result *Result, headers http.Header, body []byte) {
+func (p *preparedCase) checkResponse(ctx context.Context, result *Result, headers http.Header, body []byte) {
+	if p.specimen.Cleanup {
+		return
+	}
 	expected := result.ExpectedStatus
-	if (expected == 0 && result.Status/100 != 2) || (expected != 0 && expected != result.Status) {
+	if (expected == 0 && p.affirmative() && result.Status/100 != 2) || (expected != 0 && expected != result.Status) {
 		result.Problems = append(result.Problems, "unexpected_status")
+	}
+	if p.route == nil {
+		// The contract says nothing about a method it does not define.
+		return
 	}
 	if result.MatchedResponse == "" {
 		result.Problems = append(result.Problems, "undocumented_status")

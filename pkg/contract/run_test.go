@@ -74,7 +74,7 @@ func TestRunCredentialedSuite(t *testing.T) {
 	echo := Case{Name: "JSON body", Method: "POST", Path: "/echo", JSONBody: `{"subject":"fixture-caller"}`, ExpectStatus: 201, ExpectJSON: me.ExpectJSON}
 	repeated := me
 	repeated.Name = "caller again"
-	report, err := Run(t.Context(), cfg, Suite{[]Case{me, item, echo, repeated}})
+	report, err := Run(t.Context(), cfg, Suite{Cases: []Case{me, item, echo, repeated}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestRunCredentialedSuite(t *testing.T) {
 		t.Fatal("report exposed exchange data or failed to encode")
 	}
 	cfg.HeaderFile = privateFile(t, "Authorization: Bearer deliberately-rejected-fixture")
-	report, err = Run(t.Context(), cfg, Suite{[]Case{me}})
+	report, err = Run(t.Context(), cfg, Suite{Cases: []Case{me}})
 	if err != nil || report.Failed != 1 || report.Cases[0].Status != 401 || report.Cases[0].MatchedResponse != "default" {
 		t.Fatalf("rejected credential must fail an affirmative case: %+v, %v", report, err)
 	}
@@ -117,14 +117,14 @@ func TestRunPreflightsEveryCase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.last.Name = tc.name
-			_, err := Run(t.Context(), cfg, Suite{[]Case{first, tc.last}})
+			_, err := Run(t.Context(), cfg, Suite{Cases: []Case{first, tc.last}})
 			if err == nil || received.Load() != 0 {
 				t.Fatalf("preflight error %v, requests %d", err, received.Load())
 			}
 		})
 	}
 	cfg.Force = true
-	_, err := Run(t.Context(), cfg, Suite{[]Case{first, {Name: "invalid body", Method: "POST", Path: "/echo", JSONBody: `{"subject":1}`}}})
+	_, err := Run(t.Context(), cfg, Suite{Cases: []Case{first, {Name: "invalid body", Method: "POST", Path: "/echo", JSONBody: `{"subject":1}`}}})
 	if err == nil || received.Load() != 0 {
 		t.Fatalf("invalid request body: error %v, requests %d", err, received.Load())
 	}
@@ -159,7 +159,7 @@ paths:
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "renewed-fixture", HttpOnly: true})
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "renewed-fixture", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(server.Close)
@@ -171,12 +171,12 @@ paths:
 	}
 	cfg.HeaderFile = privateFile(t, "Cookie: sid=fixture-session")
 	c := Case{Name: "renew", Method: "get", Path: "/session/current", Authenticated: true, ExpectStatus: 204}
-	report, err := Run(t.Context(), cfg, Suite{[]Case{c}})
+	report, err := Run(t.Context(), cfg, Suite{Cases: []Case{c}})
 	if err != nil || report.Passed != 1 || hits.Load() != 1 {
 		t.Fatalf("cookie exchange %+v, error %v", report, err)
 	}
 	c.Path, c.PathParams, c.Authenticated = "/session/{name}", map[string]string{"name": "current"}, false
-	if _, err := Run(t.Context(), cfg, Suite{[]Case{c}}); err == nil || hits.Load() != 1 {
+	if _, err := Run(t.Context(), cfg, Suite{Cases: []Case{c}}); err == nil || hits.Load() != 1 {
 		t.Fatalf("ambiguous example reached a different operation, error %v", err)
 	}
 }

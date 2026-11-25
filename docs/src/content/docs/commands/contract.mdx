@@ -1,6 +1,6 @@
 ---
 title: contract
-description: Run reproducible, authenticated API examples and check OpenAPI conformance.
+description: Run authenticated API examples, generate and run fuzz cases for every operation, and check OpenAPI conformance.
 ---
 
 Use `sj contract` for regression tests with known inputs and an expected outcome. Each case selects a method and the exact path template from a Swagger 2 or OpenAPI 3 document. The target URL includes the API base path. Use `--base-path` to override that path.
@@ -10,6 +10,88 @@ sj contract -l api.yaml --suite examples.yaml \
   --target https://api.example.com/v1 --header-file /run/secrets/qa.headers \
   -o contract-results.json
 ```
+
+## Generate a suite
+
+```bash
+sj contract generate -l api.yaml -o cases.yaml
+sj contract generate -l api.yaml --fixtures known-inputs.yaml -o cases.yaml
+```
+
+Generation emits one case per documented method and path, in a stable order. It selects a supplied parameter or JSON body example, or uses a schema example, default, constant or enumeration value. Required inputs without usable examples appear on stderr. Both commands accept `-u` to fetch a public definition. Operation requests start when you run `sj contract --suite`.
+
+The optional fixtures file uses the suite format below. Match a case by method and exact path template to supply known IDs, body data or expected business values. A fixture can override individual parameters. Duplicate overrides and unknown operations produce errors.
+
+## Fuzz every operation
+
+`sj contract fuzz` generates system-level test cases from the API document, runs them and reports findings. It needs no suite and no fixtures.
+
+```bash
+sj contract fuzz -l api.yaml --target https://api.test.example.com/v1 \
+  --header-file /run/secrets/qa.headers --accept-risk \
+  --max-requests 1000 --delay 200ms \
+  -o fuzz-report.json --emit-suite regression.yaml
+sj report contract fuzz-report.json -F markdown -o fuzz-report.md
+```
+
+This command differs from `sj fuzz`, which replays operations captured by an earlier `automate` run. `contract fuzz` builds its requests from the document, creates the records its requests need, and removes them when it finishes.
+
+### How a run proceeds
+
+1. **Accepted requests.** sj builds one contract-valid request for each operation from documented examples, defaults, enumerations, formats and bounds. It creates a test record before any operation whose path addresses one, such as `/pets/{petId}`, and reuses values the API accepted, such as a username for a login call. Variants are derived only from a request the API accepted. An operation without one is reported as not tested, with the reason.
+2. **Credentials.** Each operation that declares security is called with no credential and with a made-up credential that is never derived from the header file.
+3. **Records and methods.** sj reads a record after deleting it, addresses a record that does not exist, sends wrong credentials to a login operation, and tries methods the document does not define for a path.
+4. **Optional inputs.** Requests are repeated with only the required inputs, and with each optional form field or multipart part left out.
+5. **Invalid input.** Each request is repeated with one contract violation: a wrong type, a missing required value, an undeclared enumeration value, a value outside its bounds, a malformed body or a wrong media type.
+6. **Hostile input.** Free-text inputs receive short quote, markup, template and path-traversal values. The values are inert and contain no delays or oversized content.
+7. **Re-runs and cleanup.** Each finding in the authentication, injection, disclosure and robustness categories is run again on new test records, and the report shows the result as `1/1`. sj then deletes the records it created.
+
+### Findings
+
+| Kind | Reported when |
+| --- | --- |
+| `auth_not_enforced` | An operation that declares security returns 2xx without a credential |
+| `invalid_credential_accepted` | It rejects a missing credential but accepts a made-up one |
+| `anonymous_modification` | A PUT, PATCH or DELETE without declared security succeeds for an anonymous caller |
+| `login_accepts_invalid_credentials` | A login operation succeeds with a wrong secret or an unknown account |
+| `credentials_in_url` | An accepted request carries a password, token or key as a query parameter |
+| `secret_in_response` | A response returns a secret that an earlier request stored |
+| `undeclared_method_accepted` | A method the document does not define for the path returns 2xx |
+| `undeclared_security` | An operation without declared security rejects anonymous callers and accepts the header file |
+| `template_expression_evaluated` | A response contains the product of an arithmetic template expression |
+| `markup_reflected_in_html` | An HTML or XML response reflects a markup value unescaped |
+| `error_disclosure` | A response names an exception class, a stack frame or database detail |
+| `version_disclosure` | A response header carries a product version |
+| `server_error` | A request returns 5xx |
+| `invalid_input_accepted` | A contract-violating request returns 2xx |
+| `delete_not_effective` | A record is still readable after its DELETE returned 2xx |
+| `http_401_without_challenge`, `http_405_without_allow`, `http_201_for_non_creating_method`, `http_501_for_declared_operation`, `http_401_without_declared_scheme` | A response breaks the HTTP rule the name describes |
+
+The contract checks described under "Interpret results" apply to every response and appear as findings such as `undocumented_status` and `response_schema_mismatch`. Each finding names the operation, the observed statuses, the cases that raised it and short labels such as `body.id:type`. It carries a severity, a CWE and an OWASP API Security Top 10 reference where one applies.
+
+A finding states what the responses showed. sj does not know the intended access policy of an operation that declares no security, so it reports anonymous changes and deletions there but not anonymous reads or creations. `sj audit` lists every operation without a security requirement.
+
+### Safety and limits
+
+- Without `--accept-risk`, sj sends only GET requests and reads records it finds in list responses. It also skips every path that contains a guarded word such as `order` or `delete`, unless `--safe-word` exempts the word. `--accept-risk` lifts both safeguards.
+- A request that changes or deletes a record by its path identifier addresses a record sj created. The exceptions are invalid-input and hostile-input cases, which carry a made-up marker value such as `sj-nan` or a quote string in place of the identifier. When the document allows only a small identifier range, sj first reads a candidate and creates the record only if the read returns 404.
+- sj cannot remove a record that the API accepted without a usable identifier. The report counts these under `leftoverRecords`.
+- Request bodies carry generated values and created records exist until cleanup, so use a test environment.
+- `--max-requests` is a hard budget that includes setup, re-runs and cleanup. sj stops creating records while it can still remove the ones it has.
+- sj sends one request at a time, `--delay` apart, with a 100 ms minimum for a target that is not loopback. It stops on HTTP 429, on an advertised remaining rate budget of one or less, and after three consecutive transport errors.
+- `--operation` limits testing to named operations. `--exclude-operation` prevents an operation from being sent in any role, including record cleanup.
+- `--seed` makes generated identifiers reproducible. The report records the seed.
+- `--store-responses` adds a response excerpt of at most 2048 bytes to each case that raised a finding. Excerpts can contain data from the target, so treat that report as sensitive. Without the option, the report holds no credential, no parameter value and no response body.
+
+`contract fuzz` uses one identity. It does not compare two users, so it cannot detect broken object-level authorization between accounts. Use `sj assess` with a manifest of identities and owned objects for that. It sends no time-based payloads and runs no callback listener, so blind SQL injection and server-side request forgery are outside its scope. When the API rejects every valid request sj can build for an operation, sj reports that operation as not tested and does not try to repair the request.
+
+### Output
+
+`-F` selects `json` (the default), `markdown`, `sarif` or `junit`. `sj report contract` converts a saved JSON report to the other formats. Every exporter first checks that the totals, the coverage and each finding follow from the case results, and refuses a report that fails this check. A one-line summary of each finding goes to stderr.
+
+The exit code is nonzero when a finding has at least the `--fail-on` severity, which defaults to `low`. Use `--fail-on none` to collect a report without failing the job.
+
+`--emit-suite` writes the executed cases as a suite. Replaying it with `sj contract --suite` on another build of the same API repeats every request with new identifiers and reports the same kinds of findings, which makes it a regression test. On a shared environment a replay can differ: when a generated identifier in a small range is already taken, the cases that depend on it are skipped and reported as skipped.
 
 ## Write a suite
 
@@ -31,20 +113,81 @@ cases:
       /id: 42
 ```
 
-Case names must be unique. Use `pathParams` for single path segments and `query` for the URL-encoded query string, including repeated keys. The default `accept` value is `application/json`. Supply a different media type to exercise another representation. Use `jsonBody` with a JSON string for operations that accept a request body.
+Case names must be unique. Use `pathParams` for single path segments, `query` for a URL-encoded query string, and `headers` for declared non-credential header parameters. The default `accept` value is `application/json`. For a request body, choose `jsonBody` for a JSON string, `form` for URL-encoded fields or `multipart` for inline parts. A multipart entry has a `value` and an optional `filename`. Its content comes directly from the suite.
 
-sj validates every example before sending the first operation. A missing required parameter, invalid request body, or unavailable credential fails this step. The usual method and dangerous-path safeguards apply. For a suite with deliberate writes to a disposable fixture, `--force` enables those operations. Each case executes once, in file order.
+A suite can also ask the questions that `contract fuzz` asks:
+
+```yaml
+securityChecks: true
+cases:
+  - name: create a note
+    method: POST
+    path: /notes
+    set: {noteId: $int, passcode: $secret}
+    jsonBody: '{"id": ${noteId}, "title": "first", "passcode": "${passcode}"}'
+    capture: {noteId: /id}
+  - name: read it without a credential
+    method: GET
+    path: /notes/{noteId}
+    pathParams: {noteId: "${noteId}"}
+    needs: [create a note]
+    identity: anonymous
+  - name: reject a text identifier
+    method: GET
+    path: /notes/{noteId}
+    pathParams: {noteId: abc}
+    negative: path.noteId:type
+  - name: remove the note
+    method: DELETE
+    path: /notes/{noteId}
+    pathParams: {noteId: "${noteId}"}
+    needs: [create a note]
+    cleanup: true
+```
+
+| Field | Meaning |
+| --- | --- |
+| `set` | Assigns variables before the request. A value is a literal that may contain `${name}`, or a generator: `$int`, `$int:LOW:HIGH`, `$id`, `$uuid` or `$secret`. A `$secret` value is watched for in later responses. |
+| `capture` | Assigns variables from JSON Pointers into the response. A pointer that selects nothing leaves the variable unchanged. |
+| `needs` | Names earlier cases that must have returned 2xx. Otherwise the case is skipped and reported as such. |
+| `identity` | `anonymous` sends no credential, `invalid` sends a made-up one, and `all` sends every header in the file to an operation without declared security. |
+| `negative` | Labels a request that deliberately breaks the contract. sj sends it and reports a 2xx response. `body` and `contentType` supply a raw payload. |
+| `probe` | One of `login_invalid_credentials`, `absent_after_delete`, `nonexistent_resource`, `undeclared_method`, `optional_inputs_omitted`, `hostile_input` or `free_identifier`. |
+| `cleanup` | Marks a case that removes test data. Its outcome is not a finding. |
+
+`securityChecks: true` at the top of a suite inspects every response for server errors, leaked implementation detail, returned secrets and anonymous changes. Generated suites set it.
+
+sj validates every example before sending the first operation. A case that reads a captured variable is validated when the value is known. A missing required parameter, invalid request body, or unavailable credential fails this step. The usual method and dangerous-path safeguards apply. For a suite with deliberate writes to a disposable fixture, `--force` enables those operations. Each case executes once, in file order.
 
 ## Supply credentials
 
 Use a mode-`0600` header file for one test identity. Supported schemes include header and cookie API keys, HTTP Basic and Bearer, and pre-issued OAuth2 and OpenID Connect bearer tokens. Supply the header as it should appear on the wire, including the authentication scheme for an `Authorization` header. Use a local specification when access to the specification itself requires credentials.
 
-sj resolves operation-level overrides, alternative security requirements and combinations of schemes. It sends the private file to the target when a case satisfies a nonempty requirement. An optional-auth operation runs anonymously by default. Set `authenticated: true` to require credentials and catch changes to the operation's security declaration. An assertion on a caller-specific response field can also verify which account answered.
+sj resolves operation-level overrides, alternative security requirements and combinations of schemes. For the first matching nonempty alternative, sj sends the corresponding headers and named cookies to the target. An optional-auth operation runs anonymously by default. Set `authenticated: true` to require credentials and catch changes to the operation's security declaration. An assertion on a caller-specific response field can also verify which account answered.
 
 ## Interpret results
 
 By default, a case expects a 2xx response. An explicit `expectStatus` selects one exact status. The response must also match a declaration in the API document. An exact status takes precedence over a range such as `2XX`, followed by `default`. sj checks the declared response headers, media type and body schema. `expectJSON` maps JSON Pointers to expected scalar values and can distinguish a missing field from a field containing `null`.
 
-The JSON report goes to stdout or the file specified with `-o`. It contains case names, path templates, status codes, problem categories and counts. A case marked `credentialed` received an HTTP response to a request made with the supplied profile. Each distinct operation with a response counts once. Each matched response declaration counts once per operation, including when a separate schema or business assertion fails. Run a broader suite to increase those counts. A failed case produces a nonzero exit code after reporting.
+The JSON report goes to stdout or the file specified with `-o`. It contains case names, path templates, status codes, problem categories, grouped findings and counts. A case marked `credentialed` received an HTTP response to a request made with the supplied profile. Each distinct operation with a response counts once. Each matched response declaration counts once per operation, including when a separate schema or business assertion fails. Run a broader suite to increase those counts. A failed case produces a nonzero exit code after reporting.
 
 Suites and specifications use `--max-spec-bytes`. Operation bodies use `--max-response-bytes` when reading responses. Supply a bundled specification with internal references. The command uses the explicit target as the base for every case and returns redirect responses to the assertions.
+
+## CI and the Petstore benchmarks
+
+```bash
+sj report contract contract-results.json -o junit.xml
+sj report contract fuzz-report.json -F sarif -o fuzz-report.sarif
+make test-petstore
+make test-petstore-live
+```
+
+The exporters check that the run completed its planned cases and that the totals agree with the case records. Each failed case carries the same problem and finding codes in every format. A skipped case and a probe that could not answer its question appear as skipped in JUnit.
+
+`make test-petstore` runs two benchmarks and writes their reports to `coverage/petstore/`.
+
+The contract benchmark generates and executes all 20 Petstore cases against a disposable HTTP fixture. It checks credentials and input values on the wire, then compares every reported case to a separate answer key for both baseline behavior and five seeded regressions. Its `loopbackOnly: true` suite requires a direct connection to a numeric loopback address.
+
+The fuzz benchmark runs `sj contract fuzz` against a local replica of the public Petstore service and compares the report with `tests/petstore/answer-key.yaml`. The key lists what the public service was observed to do, by hand, before the fuzz engine existed. Rows added later are marked in the file with the reason. The benchmark requires every key row, allows no other row in the authentication and disclosure categories, replays the emitted suite, and runs a hardened control in which the replica enforces its contract. The control must produce no authentication, disclosure or robustness finding except the password that the contract itself places in the login URL.
+
+`make test-petstore-live` runs the same comparison against `https://petstore.swagger.io/v2`. It sends about 400 paced requests to a public service, so it runs only on request. `SJ_PETSTORE_SEED` selects the generated identifiers, and the reports land in `coverage/petstore-live/`. The replica is tuned to the public service, so the live run is the independent evidence and the replica run is the repeatable regression test.

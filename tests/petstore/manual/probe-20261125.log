@@ -1,0 +1,112 @@
+pet id 7700481489 user sjkey631032464
+== declared security, no credential ==
+addPet anon                                    200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"available"}
+getPetById anon                                200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"available"}
+getPetById anon (2)                            200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"available"}
+getPetById anon (3)                            200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"available"}
+updatePet anon                                 200  {"id":7700481489,"name":"sj-probe2","photoUrls":[],"tags":[],"status":"available"}
+findByStatus anon                              200  [{"id":111,"category":{"id":2,"name":"dogs"},"name":"Sharik","photoUrls":["stepik.org"],"tags":[{"id":1,"name":"cute"}],"status":"pending"},{"id":1795622472,"category":{"
+findByTags anon                                200  []
+updatePetWithForm anon                         200  {"code":200,"type":"unknown","message":"7700481489"}
+uploadFile anon                                200  {"code":200,"type":"unknown","message":"additionalMetadata: sj\nFile uploaded to ./sj.txt, 4104 bytes"}
+getInventory anon                              200  {"sold":42,"teststa5":480,"string":248,"unavailable":1,"pending":7,"available":205,"Available":1,"peric":8}
+== declared security, invalid credential ==
+getPetById bad key                             200  {"id":7700481489,"name":"sj-form","photoUrls":[],"tags":[],"status":"pending"}
+getInventory bad key                           200  {"sold":42,"teststa5":480,"string":248,"unavailable":1,"pending":7,"available":205,"Available":1,"peric":8}
+updatePet bad bearer                           200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"available"}
+findByStatus bad bearer                        200  [{"id":111,"category":{"id":2,"name":"dogs"},"name":"Sharik","photoUrls":["stepik.org"],"tags":[{"id":1,"name":"cute"}],"status":"pending"},{"id":1795622472,"category":{"
+deletePet bad bearer                           200  {"code":200,"type":"unknown","message":"7700481489"}
+getPetById after delete                        404  {"code":1,"type":"error","message":"Pet not found"}
+getPetById after delete (2)                    404  {"code":1,"type":"error","message":"Pet not found"}
+deletePet again anon                           404  
+== user operations (no declared security; docs say logged-in user only) ==
+createUser anon                                200  {"code":200,"type":"unknown","message":"7700481489"}
+getUserByName anon                             200  {"id":7700481489,"username":"sjkey631032464","email":"sj@example.com","password":"canary-315678811","userStatus":0}
+   password canary occurrences in body: 1
+login correct                                  200  {"code":200,"type":"unknown","message":"logged in user session:1795624740850"}
+login wrong password                           200  {"code":200,"type":"unknown","message":"logged in user session:1795624741388"}
+login unknown user                             200  {"code":200,"type":"unknown","message":"logged in user session:1795624741933"}
+updateUser anon                                200  {"code":200,"type":"unknown","message":"7700481489"}
+getUserByName after put                        200  {"id":7700481489,"username":"sjkey631032464","firstName":"changed","userStatus":0}
+deleteUser anon                                200  {"code":200,"type":"unknown","message":"sjkey631032464"}
+getUserByName after del                        404  {"code":1,"type":"error","message":"User not found"}
+== store orders (no declared security) ==
+placeOrder anon                                200  {"id":7700481489,"petId":7700481489,"quantity":1,"status":"placed","complete":false}
+getOrderById anon                              200  {"id":7700481489,"petId":7700481489,"quantity":1,"status":"placed","complete":false}
+deleteOrder anon                               200  {"code":200,"type":"unknown","message":"7700481489"}
+getOrderById after del                         404  {"code":1,"type":"error","message":"Order not found"}
+== error handling ==
+getOrderById non-numeric                       404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"abc\""}
+deletePet non-numeric                          404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"abc\""}
+placeOrder bad type                            500  {"code":500,"type":"unknown","message":"something bad happened"}
+addPet malformed JSON                          400  {"code":400,"type":"unknown","message":"bad input"}
+createUser bad type                            500  {"code":500,"type":"unknown","message":"something bad happened"}
+addPet enum violation                          200  {"id":7700481489,"name":"sj-probe","photoUrls":[],"tags":[],"status":"sj-not-an-enum"}
+addPet missing required                        200  {"id":7700481489,"photoUrls":[],"tags":[]}
+cleanup pet                                    200  {"code":200,"type":"unknown","message":"7700481489"}
+== undeclared verbs ==
+GET /pet                                       405  <?xml version="1.0" encoding="UTF-8" standalone="yes"?><apiResponse><type>unknown</type></apiResponse>
+DELETE /store/inventory                        405  <?xml version="1.0" encoding="UTF-8" standalone="yes"?><apiResponse><type>unknown</type></apiResponse>
+PUT /user/login                                405  <?xml version="1.0" encoding="UTF-8" standalone="yes"?><apiResponse><type>unknown</type></apiResponse>
+HEAD-ish TRACE /pet                            405  <html> <head><title>405 Not Allowed</title></head> <body> <center><h1>405 Not Allowed</h1></center> </body> </html> 
+== non-numeric path id (disclosure) ==
+POST /pet/abc form                         404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"abc\""}
+POST /pet/abc/uploadImage                  404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"abc\""}
+DELETE /store/order/abc                    404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"abc\""}
+== type-invalid JSON body (server error) ==
+PUT /pet id string                         500  {"code":500,"type":"unknown","message":"something bad happened"}
+POST /user/createWithArray                 500  {"code":500,"type":"unknown","message":"something bad happened"}
+POST /user/createWithList                  500  {"code":500,"type":"unknown","message":"something bad happened"}
+PUT /user/sjnone id string                 500  {"code":500,"type":"unknown","message":"something bad happened"}
+createWithArray object body                500  {"code":500,"type":"unknown","message":"something bad happened"}
+== query edge cases ==
+findByStatus no param                      200  []
+findByStatus bad enum                      200  []
+login no params                            200  {"code":200,"type":"unknown","message":"logged in user session:1795624794361"}
+logout                                     200  {"code":200,"type":"unknown","message":"ok"}
+getOrderById 0 (below min)                 404  {"code":1,"type":"error","message":"Order not found"}
+getOrderById 11 (above max)                200  {"id":11,"petId":0,"quantity":6881,"shipDate":"2023-12-03T00:00:00.000+0000","status":"UtV5Qcja2pZMaGayeC4xC","complete":false}
+getPetById -1                              404  {"code":1,"type":"error","message":"Pet not found"}
+getPetById overflow                        404  {"code":404,"type":"unknown","message":"java.lang.NumberFormatException: For input string: \"99999999999999999999\""}
+== cleartext transport ==
+http scheme inventory                      302  <html> <head><title>302 Found</title></head> <body> <center><h1>302 Found</h1></center> </body> </html> 
+Location: https://petstore.swagger.io:443/v2/store/inventory
+PUT unknown user (valid body)            200  {"code":200,"type":"unknown","message":"7700545577"}
+GET that user                            200  {"id":7700545577,"username":"sjkey1820428432","firstName":"sj","userStatus":0}
+DELETE that user                         200  {"code":200,"type":"unknown","message":"sjkey1820428432"}
+DELETE unknown user                      404  
+DELETE unknown order                     404  {"code":404,"type":"unknown","message":"Order Not Found"}
+POST form unknown pet                    404  {"code":404,"type":"unknown","message":"not found"}
+upload unknown pet                       500  <html> <head> <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/> <title>Error 500 Internal Server Error</title> </head> <body><h2>HTTP ERROR 5
+login                                    200  {"code":200,"type":"unknown","message":"logged in user session:1795626468789"}
+x-expires-after: Wed Nov 25 18:07:48 UTC 2026
+x-rate-limit: 5000
+createWithArray valid                    200  {"code":200,"type":"unknown","message":"ok"}
+cleanup array user                       200  {"code":200,"type":"unknown","message":"sjkey1820428432"}
+findByTags no param                      200  []
+PUT pet unknown id                       200  {"id":7700545577,"name":"sj","photoUrls":[],"tags":[]}
+cleanup pet                              200  {"code":200,"type":"unknown","message":"7700545577"}
+POST pet text/plain                      415  <?xml version="1.0" encoding="UTF-8" standalone="yes"?><apiResponse><type>unknown</type></apiResponse>
+POST pet empty body                      405  {"code":405,"type":"unknown","message":"no data"}
+POST pet array body                      500  {"code":500,"type":"unknown","message":"something bad happened"}
+POST pet null name                       200  {"id":7700545577,"photoUrls":[],"tags":[]}
+cleanup pet                              200  {"code":200,"type":"unknown","message":"7700545577"}
+create pet                                     200  {"id":7700666780,"name":"sj-probe","photoUrls":[],"tags":[]}
+upload: existing pet, file + metadata          200  {"code":200,"type":"unknown","message":"additionalMetadata: sj\nFile uploaded to ./sj.txt, 2344 bytes"}
+upload: existing pet, metadata only            500  <html> <head> <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/> <title>Error 500 Internal Server Error</title> </head> <body><h2>HTTP ERROR 500</h2> <p>Problem accessing /v2/pet/7700666780/uploadImage. Reason: <pre>    Internal Server Error<
+content-type: text/html; charset=ISO-8859-1
+Jetty://
+upload: existing pet, file only                200  {"code":200,"type":"unknown","message":"additionalMetadata: null\nFile uploaded to ./sj.txt, 2344 bytes"}
+upload: existing pet, no body                  415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class com.sun.jersey.multipart.FormDataMultiPart, and Java type class com.sun.jersey.multipart.FormDataMultiPart, and MIME media type application/octet-
+upload: unknown pet, file + metadata           200  {"code":200,"type":"unknown","message":"additionalMetadata: sj\nFile uploaded to ./sj.txt, 2344 bytes"}
+form update: existing pet, no fields           200  {"code":200,"type":"unknown","message":"7700666780"}
+form update: existing pet, name only           200  {"code":200,"type":"unknown","message":"7700666780"}
+cleanup pet                                    200  {"code":200,"type":"unknown","message":"7700666780"}
+== body identity differs from the path ==
+create user                                    200  {"code":200,"type":"unknown","message":"7700666780"}
+PUT /user/U with username U-renamed            200  {"code":200,"type":"unknown","message":"7700666780"}
+GET /user/U                                    404  {"code":1,"type":"error","message":"User not found"}
+GET /user/U-renamed                            200  {"id":7700666780,"username":"sjkey26586623-renamed","firstName":"b","userStatus":0}
+cleanup U                                      404  
+cleanup U-renamed                              200  {"code":200,"type":"unknown","message":"sjkey26586623-renamed"}
+POST /user username null                       200  {"code":200,"type":"unknown","message":"7700666780"}

@@ -26,3 +26,29 @@ I reviewed EvoMaster at `dd063b4f9fa6bf8ee68f69d41c936dcc1b0ee22a` and sj's Open
 7. Exercise the Petstore contract's JSON, URL-encoded form and multipart examples. Keep the all-operation benchmark on a disposable loopback service with known test data. Compare the complete set of reported outcomes to an independent answer key, including missed and spurious failures and distinct coverage.
 
 On November 21, 2026, the live credentialed inventory case received HTTP 200 and passed JSON schema validation. It exercised 1 of 20 operations and matched 1 of 36 response declarations. The inventory response does not identify a caller. The local authentication fixture checks the signed-in subject and rejects an incorrect credential.
+
+## Generated system-level tests
+
+8. Add `sj contract fuzz`. Generate test cases from the document, run them, and report findings without a hand-written suite. Obtain one accepted request per operation before deriving any variant, so a rejected request is reported as untested and never as a pass.
+9. Create the records that paths address, reuse accepted values in later calls, and delete the records afterwards. A request that changes or deletes by path identifier must address a record sj created.
+10. Re-run each security finding on new records. Emit the executed cases as a suite that `sj contract --suite` replays.
+11. Compare the report for the public Petstore service with an answer key written from the contract and manual observation before the engine existed.
+
+| EvoMaster implementation | sj |
+| --- | --- |
+| Smart sampling orders calls by resource dependency, and a data pool reuses response values. `ResourceSampler.kt`, `DataPool.kt` | Record types come from path templates. Creation runs first and deletion last. Accepted body values feed parameters of the same name. |
+| `RestSecurityOracle.kt`: access without authentication (307), anonymous modification (308), leaked stack traces (309), hidden accessible endpoints (310) | `auth_not_enforced` and `invalid_credential_accepted` test the declared scheme directly. `anonymous_modification`, `error_disclosure` and `undeclared_method_accepted` cover the rest. |
+| `HttpStatusOracle.kt` and `HttpSemanticsOracle.kt`: status rules and a DELETE that leaves the resource readable (113) | 401 without a challenge, 405 without `Allow`, 201 from GET, PATCH or DELETE, 501 on a documented operation, and `delete_not_effective`. |
+| `RestSchemaOracle.kt` (200) and HTTP 500 (100) | The existing response validation and `server_error`. |
+| Robustness inputs and XSS payloads | One contract violation per request, omitted optional inputs, and inert quote, markup, template and traversal values. |
+
+Not adopted: evolutionary search and white-box coverage; generated JUnit, Python or JavaScript source (sj emits a replayable YAML suite); oracles that need two users, namely existence leakage (304), 401 instead of 403 (305) and inconsistent write authorization (306), which `sj assess` covers with declared identities; time-based SQL injection (300) and SSRF with a callback listener (302), which sj's payload policy excludes; stored XSS (301); PUT replacement, idempotency, merge-patch and `Location` oracles (114 to 120); repair of a rejected valid request; XML request bodies.
+
+### Petstore result
+
+The answer key holds 45 rows: 15 authentication, 11 disclosure, 12 robustness and 7 contract. Of these, 38 were written on November 25, 2026 from the contract and manual curl observation before the engine existed. Seven were added the same day and are marked in the file: five disclosure rows that sj reported first and curl then confirmed, and two robustness rows that the manual log already showed but the first key omitted.
+
+On November 25, 2026, `make test-petstore-live` reported all 45 rows against `https://petstore.swagger.io/v2` with seeds 20261125, 7 and 3. Each run sent about 390 requests in 100 seconds, obtained an accepted request for all 20 operations, reproduced every authentication, disclosure and robustness finding on new records, and removed its records. The three runs reported the same 72 findings. The authentication and disclosure categories contained no row outside the key apart from the server version banner. The 25 other rows outside the key are 18 contract deviations and 7 accepted invalid inputs, in categories the key does not list exhaustively. A sample was checked by hand. The curl scripts and logs are in `tests/petstore/manual/`.
+
+The local replica and its hardened control were written from the same observations, so they are a repeatable regression test and not independent evidence. The result shows that sj finds the weaknesses in this key on this service. It does not show that the key is complete.
+

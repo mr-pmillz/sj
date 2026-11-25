@@ -18,21 +18,88 @@ import (
 
 // Suite lists the cases to run, in execution order.
 type Suite struct {
-	Cases []Case `yaml:"cases"`
+	LoopbackOnly bool `yaml:"loopbackOnly,omitempty"`
+	// SecurityChecks inspects every response for server errors, leaked
+	// implementation detail, returned secrets and anonymous modification.
+	// Generated suites enable it. A case's own identity, negative and probe
+	// questions are always answered.
+	SecurityChecks bool   `yaml:"securityChecks,omitempty"`
+	Cases          []Case `yaml:"cases"`
 }
+
+// Identity values select the credential a case sends.
+const (
+	// IdentityDeclared sends what the operation's security requirement asks for.
+	IdentityDeclared = ""
+	// IdentityAnonymous sends no credential.
+	IdentityAnonymous = "anonymous"
+	// IdentityInvalid sends a credential that sj makes up for the declared scheme.
+	IdentityInvalid = "invalid"
+	// IdentityAll sends every header in --header-file, even without a declared requirement.
+	IdentityAll = "all"
+)
+
+// Probe values name the question a case asks beyond contract conformance.
+const (
+	// ProbeLogin sends credentials known to be wrong to a login operation.
+	ProbeLogin = "login_invalid_credentials"
+	// ProbeAbsent reads a resource that an earlier case deleted. The
+	// identifier may lie outside the read's own parameter bounds.
+	ProbeAbsent = "absent_after_delete"
+	// ProbeUndeclared uses a method the contract does not define for the path.
+	ProbeUndeclared = "undeclared_method"
+	// ProbeNonexistent addresses a resource that was never created.
+	ProbeNonexistent = "nonexistent_resource"
+	// ProbeHostile sends contract-valid input that contains metacharacters.
+	ProbeHostile = "hostile_input"
+	// ProbeOptional sends a contract-valid request that leaves optional inputs out.
+	ProbeOptional = "optional_inputs_omitted"
+	// ProbeFree reads an identifier before a record is created under it. A
+	// case that needs this one runs only when the read answered 404.
+	ProbeFree = "free_identifier"
+)
 
 // Case selects an exact OpenAPI path template and supplies one example.
 type Case struct {
 	Name          string            `yaml:"name"`
 	Method        string            `yaml:"method"`
 	Path          string            `yaml:"path"`
-	PathParams    map[string]string `yaml:"pathParams"`
-	Query         string            `yaml:"query"`
-	JSONBody      string            `yaml:"jsonBody"`
-	Accept        string            `yaml:"accept"`
-	Authenticated bool              `yaml:"authenticated"`
-	ExpectStatus  int               `yaml:"expectStatus"`
-	ExpectJSON    map[string]any    `yaml:"expectJSON"`
+	PathParams    map[string]string `yaml:"pathParams,omitempty"`
+	Query         string            `yaml:"query,omitempty"`
+	Headers       map[string]string `yaml:"headers,omitempty"`
+	JSONBody      string            `yaml:"jsonBody,omitempty"`
+	Form          string            `yaml:"form,omitempty"`
+	Multipart     map[string]Part   `yaml:"multipart,omitempty"`
+	Accept        string            `yaml:"accept,omitempty"`
+	Authenticated bool              `yaml:"authenticated,omitempty"`
+	ExpectStatus  int               `yaml:"expectStatus,omitempty"`
+	ExpectJSON    map[string]any    `yaml:"expectJSON,omitempty"`
+
+	// Identity overrides the credential the declared security would select.
+	Identity string `yaml:"identity,omitempty"`
+	// Negative labels a request that deliberately violates the contract. The
+	// runner sends it and expects the API to reject it.
+	Negative string `yaml:"negative,omitempty"`
+	// Probe names a security or HTTP question the case asks.
+	Probe string `yaml:"probe,omitempty"`
+	// Body and ContentType carry a raw payload for a negative case.
+	Body        string `yaml:"body,omitempty"`
+	ContentType string `yaml:"contentType,omitempty"`
+	// Set assigns variables before the request is built. A value is a literal
+	// with ${name} references, or one of $int, $int:LOW:HIGH, $id, $uuid and $secret.
+	Set map[string]string `yaml:"set,omitempty"`
+	// Capture assigns variables from JSON Pointers into the response body.
+	Capture map[string]string `yaml:"capture,omitempty"`
+	// Needs lists earlier cases that must have returned 2xx.
+	Needs []string `yaml:"needs,omitempty"`
+	// Cleanup marks a case that removes test data. Its outcome is not a finding.
+	Cleanup bool `yaml:"cleanup,omitempty"`
+}
+
+// Part holds an inline multipart fixture. A filename selects a file part.
+type Part struct {
+	Filename string `yaml:"filename,omitempty"`
+	Value    string `yaml:"value"`
 }
 
 // ParseSuite accepts one YAML or JSON document and rejects misspelled options.

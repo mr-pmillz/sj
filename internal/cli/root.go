@@ -137,13 +137,13 @@ func init() {
 	})
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if cmd == contractCmd && len(cfg.Headers) != 0 {
+		if (cmd == contractCmd || cmd == contractGenerateCmd || cmd == contractFuzzCmd) && len(cfg.Headers) != 0 {
 			return fmt.Errorf("contract authentication uses --header-file")
 		}
 		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("invalid configuration: %w", err)
 		}
-		if cfg.HeaderFile != "" && cmd != bruteCmd && cmd != automateCmd && cmd != fullWorkflowCmd && cmd != contractCmd {
+		if cfg.HeaderFile != "" && cmd != bruteCmd && cmd != automateCmd && cmd != fullWorkflowCmd && cmd != contractCmd && cmd != contractFuzzCmd {
 			return fmt.Errorf("--header-file is supported only by brute, automate, run, and contract")
 		}
 		return nil
