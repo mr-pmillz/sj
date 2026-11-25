@@ -16,6 +16,7 @@ It parses Swagger 2.0 and OpenAPI 3.0–3.2 definitions, including modern JSON S
 |-----------------------|--------------------------------------------------------------------------------------------------|
 | `audit`               | Passively finds authentication, transport, and contract risks; supports JSON and SARIF           |
 | `automate`            | Crafts requests to each endpoint and analyzes the response status code                           |
+| `contract`            | Runs example suites against the API contract; `contract fuzz` generates and runs test cases for every operation |
 | `prepare`             | Generates curl/sqlmap commands for manual testing                                                |
 | `endpoints`           | Lists raw API routes (no parameter substitution)                                                 |
 | `brute`               | Discovers hidden definition files via common file paths                                          |
@@ -63,6 +64,38 @@ Run a passive contract and security review without calling documented API operat
 sj audit -l ./openapi.yaml -f yaml --fail-on high
 sj audit -u https://example.com/openapi.json -F sarif -o sj.sarif
 ```
+
+### Contract tests
+
+`sj contract` runs ordered example cases against an explicit API base URL. It checks the request against the selected operation, validates the response, and returns a nonzero exit code when a case fails.
+
+```bash
+sj contract generate -l api.yaml --fixtures known-inputs.yaml -o cases.yaml
+sj contract -l api.yaml --suite cases.yaml -T https://api.example.com/v1 -o results.json
+sj report contract results.json -o junit.xml
+```
+
+Generation creates a case for every documented method and path. It fills inputs from the document's examples and supplied fixtures, and lists required values that still need test data. Run `make test-petstore` to exercise all 20 Petstore operations on a disposable local server and compare the JSON and JUnit reports with known outcomes.
+
+`sj contract fuzz` needs no suite. It generates system-level test cases from the document, runs them, and reports findings:
+
+```bash
+sj contract fuzz -l api.yaml -T https://api.test.example.com/v1 \
+  --header-file /run/secrets/qa.headers --accept-risk \
+  -o fuzz-report.json --emit-suite regression.yaml
+sj report contract fuzz-report.json -F markdown -o fuzz-report.md
+```
+
+It first obtains one accepted request per operation, creating the test records the paths need. From each accepted request it derives variants: no credential and a made-up credential, omitted optional inputs, contract-violating and hostile input, absent records, wrong login credentials and undeclared methods. It re-runs each security finding on new records, removes the records it created, and can emit the executed cases as a replayable suite. Reports are available as JSON, Markdown, SARIF and JUnit. It tests with one identity, so use `sj assess` for authorization between accounts. Point it at a test environment.
+
+```bash
+sj contract --suite tests/contract_petstore.yaml \
+  --url https://petstore.swagger.io/v2/swagger.json \
+  --target https://petstore.swagger.io/v2 \
+  --header-file /run/secrets/petstore.headers
+```
+
+For the Petstore example, put its published demo key in a mode-`0600` file as a single `api_key: <value>` line. The report gives the HTTP status, whether the exchange used credentials, and how many documented operations and responses the suite exercised. The command reference includes the suite format and an assertion for the signed-in caller. [Petstore specification](https://petstore.swagger.io/v2/swagger.json) · [Contract command reference](docs/src/content/docs/commands/contract.mdx)
 
 ### Automate
 
@@ -335,6 +368,7 @@ The server provides passive audit, request-planning, and conversion tools plus o
 
 - **OpenAPI 3.2 Support** — Handles `QUERY`, `additionalOperations`, `querystring` parameters, webhooks, callbacks, modern JSON Schema keywords, and layered server/parameter overrides.
 - **Passive Security Audit** — Reports risky authentication, plaintext servers, anonymous operations, path-contract errors, and callback/webhook surfaces as console, JSON, or SARIF.
+- **Contract Fuzzing** — Generates and runs test cases for every documented operation, with record setup and cleanup, missing-credential checks, re-run findings, and JSON, Markdown, SARIF, and JUnit reports.
 - **Safe Active Defaults** — Skips state-changing methods unless risk is explicitly accepted and bounds specifications, responses, wordlists, and retries.
 - **Random User-Agent** — Uses a random browser User-Agent by default for stealth. Override with `--agent`.
 - **Replay Proxy** — Route matched requests through a separate proxy while scanning through another (or direct).
@@ -395,7 +429,7 @@ Authorization: Bearer <opaque-value>
 X-API-Key: <opaque-value>
 ```
 
-The file must be owned by sj's effective user and grant no group or other permissions (normally mode `0600`). It must not be a symlink. sj reads it once before target traffic and supports it only with `brute`, `automate`, and `run`:
+The file must be owned by sj's effective user and grant no group or other permissions (normally mode `0600`). It must not be a symlink. The `brute`, `automate`, `run`, and `contract` commands read it once before target traffic.
 
 ```bash
 sj automate -u https://target.example.com/openapi.json \
@@ -404,7 +438,7 @@ sj automate -u https://target.example.com/openapi.json \
 
 In the CASM container contract, run sj as UID/GID `65532:65532` and mount the mode-`0600` file with UID `65532`. The feature does not require root; ownership is checked against the process's effective UID.
 
-Private headers are injected only at the HTTP transport boundary. An origin is authorized only when its scheme, host, and effective port came from this invocation's `--url`, URL-list input, or explicit `--target`; origins learned from OpenAPI, HTML, redirects, responses, discovery, or retained database runs do not gain access. Cross-origin requests therefore omit the private headers. `--header-file` cannot be combined with `--replay-proxy`, and a private header name cannot also be supplied through `-H/--headers`.
+Private headers are scoped to the explicitly supplied scheme, host, and effective port. For `brute`, `automate`, and `run`, the origin comes from this invocation's `--url`, URL-list input, or explicit `--target`. For `contract`, it comes from `--target`. Each credentialed case sends the headers or named cookies for its matching security alternative. Specification fetches for `contract` are public. `--header-file` cannot be combined with `--replay-proxy`, and a private header name cannot also be supplied through `-H/--headers`.
 
 ## Project Structure
 
@@ -417,6 +451,8 @@ sj/
 │   ├── apitest/              # Shared operation selection and bounded payload generation
 │   ├── audit/                # Passive security and contract checks
 │   ├── bruno/                # Native Bruno penetration-test collection generation
+│   ├── contract/             # Contract suites, generated fuzz cases, response oracles, and findings
+│   ├── evidence/             # Encrypted exchanges, PII, and disclosure classification
 │   ├── fuzz/                 # Bounded active API testing and workflow verification
 │   ├── httpclient/           # HTTP client with random UA
 │   ├── openapi/              # Spec parsing, schema resolution

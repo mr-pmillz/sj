@@ -46,6 +46,7 @@ export default defineConfig({
                 'commands/assess',
                 'commands/automate',
                 'commands/brute',
+                'commands/contract',
                 'commands/convert',
                 'commands/endpoints',
                 'commands/fuzz',

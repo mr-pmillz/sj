@@ -5,6 +5,8 @@ description: Run bounded, paced active API tests from automate results.
 
 The `fuzz` command replays captured operations with bounded IDOR, username-enumeration, verbose-error, PII, identity-comparison, bad-character, and workflow probes. It runs sequentially, stops on HTTP 429 or a near-empty advertised rate budget, and does not generate denial-of-service payloads.
 
+`fuzz` starts from operations that an `automate` run captured. To generate and run test cases directly from an OpenAPI document, including record setup, missing-credential checks and cleanup, use [`sj contract fuzz`](/commands/contract/#fuzz-every-operation).
+
 Response-guided repair is enabled by default. sj parses structured Pydantic/FastAPI and ASP.NET validation errors plus conservative integer, UUID, base64, required-field, and Go-unmarshal hints. It combines deterministic requirements into one retry and can follow a short validation chain. Every possible retry is reserved in the offline preflight before traffic is sent.
 
 ```bash

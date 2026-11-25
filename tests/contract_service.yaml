@@ -1,0 +1,49 @@
+openapi: 3.0.3
+info: {title: Contract test fixture, version: "1"}
+security:
+  - session: []
+components:
+  securitySchemes:
+    session: {type: http, scheme: bearer}
+  schemas:
+    Caller:
+      type: object
+      required: [subject]
+      properties:
+        subject: {type: string}
+paths:
+  /me:
+    get:
+      responses:
+        '200':
+          description: Signed-in caller
+          headers:
+            X-Revision: {required: true, schema: {type: integer}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Caller'}
+        default: {description: Request rejected}
+  /items/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      security: []
+      parameters:
+        - {name: count, in: query, required: true, schema: {type: integer}}
+      responses:
+        '2XX':
+          description: Item count
+          content:
+            application/json: {schema: {type: integer}}
+  /echo:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/Caller'}}
+      responses:
+        '201':
+          description: Echoed caller
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Caller'}}

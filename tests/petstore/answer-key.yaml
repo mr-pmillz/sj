@@ -1,0 +1,106 @@
+# Independent answer key for the Swagger Petstore v2 fuzz benchmark.
+#
+# Every row was derived from the published contract
+# (https://petstore.swagger.io/v2/swagger.json) and from manual curl
+# observations of https://petstore.swagger.io/v2 on 2026-11-25. The rows were
+# written before sj's contract fuzz engine existed, so they describe the
+# service and not sj's output. Later additions are marked where they appear,
+# with the reason and how each was verified. The curl scripts and their
+# output are in the manual directory next to this file.
+#
+# exact: true   -> sj must report every row and no other row of that category.
+# exact: false  -> sj must report at least these rows. Additional rows need
+#                  individual review because they depend on the probe corpus.
+observed: "2026-11-25"
+target: https://petstore.swagger.io/v2
+categories:
+  authentication:
+    exact: true
+    rows:
+      # The contract declares petstore_auth or api_key. The service answered 2xx
+      # with no credential and with a made-up credential.
+      - {finding: auth_not_enforced, operation: POST /pet}
+      - {finding: auth_not_enforced, operation: PUT /pet}
+      - {finding: auth_not_enforced, operation: GET /pet/findByStatus}
+      - {finding: auth_not_enforced, operation: GET /pet/findByTags}
+      - {finding: auth_not_enforced, operation: "GET /pet/{petId}"}
+      - {finding: auth_not_enforced, operation: "POST /pet/{petId}"}
+      - {finding: auth_not_enforced, operation: "DELETE /pet/{petId}"}
+      - {finding: auth_not_enforced, operation: "POST /pet/{petId}/uploadImage"}
+      - {finding: auth_not_enforced, operation: GET /store/inventory}
+      # No declared security. An anonymous caller replaced and deleted records,
+      # and the following read confirmed the change.
+      - {finding: anonymous_modification, operation: "PUT /user/{username}"}
+      - {finding: anonymous_modification, operation: "DELETE /user/{username}"}
+      - {finding: anonymous_modification, operation: "DELETE /store/order/{orderId}"}
+      # A wrong password for an existing user, and an unknown user, both
+      # received a session.
+      - {finding: login_accepts_invalid_credentials, operation: GET /user/login}
+      # The password is a query parameter of the login operation.
+      - {finding: credentials_in_url, operation: GET /user/login}
+      # The stored password came back in clear text to an anonymous reader.
+      - {finding: secret_in_response, operation: "GET /user/{username}"}
+  disclosure:
+    exact: true
+    rows:
+      # A non-numeric identifier returned java.lang.NumberFormatException text.
+      - {finding: error_disclosure, operation: "GET /pet/{petId}"}
+      - {finding: error_disclosure, operation: "POST /pet/{petId}"}
+      - {finding: error_disclosure, operation: "DELETE /pet/{petId}"}
+      - {finding: error_disclosure, operation: "POST /pet/{petId}/uploadImage"}
+      - {finding: error_disclosure, operation: "GET /store/order/{orderId}"}
+      - {finding: error_disclosure, operation: "DELETE /store/order/{orderId}"}
+      # The five rows below were not in the first version of this key. sj
+      # reported them on its first live run on 2026-11-25, and each was then
+      # confirmed by hand with curl: a text/plain body returns HTTP 415 naming
+      # com.sun.jersey.api.MessageException and the Java model class. The
+      # same request to POST /pet and PUT /pet returns no message, and sj
+      # reports nothing there.
+      - {finding: error_disclosure, operation: POST /store/order}
+      - {finding: error_disclosure, operation: POST /user}
+      - {finding: error_disclosure, operation: POST /user/createWithArray}
+      - {finding: error_disclosure, operation: POST /user/createWithList}
+      - {finding: error_disclosure, operation: "PUT /user/{username}"}
+  robustness:
+    exact: false
+    rows:
+      # A JSON body with a wrongly typed property returned HTTP 500.
+      - {finding: server_error, operation: POST /pet}
+      - {finding: server_error, operation: PUT /pet}
+      - {finding: server_error, operation: POST /store/order}
+      - {finding: server_error, operation: POST /user}
+      - {finding: server_error, operation: POST /user/createWithArray}
+      - {finding: server_error, operation: POST /user/createWithList}
+      - {finding: server_error, operation: "PUT /user/{username}"}
+      # An upload without the optional file part returns HTTP 500 with the
+      # container's HTML error page. The manual log of 2026-11-25 shows this
+      # response, but the first version of this key left the row out and sj
+      # could not send the request. A review caught the omission. The row and
+      # the variant that omits optional inputs were added together, after a
+      # curl check that the missing part, not the pet, causes the error.
+      - {finding: server_error, operation: "POST /pet/{petId}/uploadImage"}
+      # Contract-violating input was accepted with 2xx: an undeclared enum
+      # value, a body without required properties, missing required query
+      # parameters.
+      - {finding: invalid_input_accepted, operation: POST /pet}
+      - {finding: invalid_input_accepted, operation: GET /pet/findByStatus}
+      # Added with the upload row. The manual log shows a tag search without
+      # its required parameter answering 200.
+      - {finding: invalid_input_accepted, operation: GET /pet/findByTags}
+      - {finding: invalid_input_accepted, operation: GET /user/login}
+  contract:
+    exact: false
+    rows:
+      # These operations document no success response but answer 200.
+      - {finding: undocumented_status, operation: POST /pet}
+      - {finding: undocumented_status, operation: PUT /pet}
+      - {finding: undocumented_status, operation: "POST /pet/{petId}"}
+      - {finding: undocumented_status, operation: "DELETE /pet/{petId}"}
+      - {finding: undocumented_status, operation: "DELETE /store/order/{orderId}"}
+      - {finding: undocumented_status, operation: "PUT /user/{username}"}
+      - {finding: undocumented_status, operation: "DELETE /user/{username}"}
+
+# A service that enforces its declared security, validates input, hides error
+# detail and omits stored secrets must produce no row in these categories.
+hardened:
+  empty: [authentication, disclosure, robustness]

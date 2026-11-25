@@ -13,6 +13,8 @@ make build              # Build binary to bin/sj (ldflags inject version from gi
 make test               # Run tests and write atomic coverage data
 go test ./... -count=1  # Run all tests without cached results
 go test ./pkg/brute/ -v -run TestWriteCSV  # Run a single test
+make test-petstore      # Petstore contract and fuzz benchmarks on a local replica (reports in coverage/petstore)
+make test-petstore-live # Same comparison against the public Petstore sandbox (~400 paced requests)
 make test-race          # Run tests with race detector
 make test-coverage      # Generate HTML coverage report in coverage/
 make lint               # Run golangci-lint (config: .golangci-lint.yml)
@@ -55,6 +57,8 @@ Dependencies are strictly acyclic. `pkg/` packages never import `internal/cli`.
 
 - **`pkg/openapi/`** — Swagger 2.0 and OpenAPI 3.0–3.2 parsing, confined `$ref` resolution, modern JSON Schema example generation, JS bundle extraction, v2→v3 conversion, and non-secret security-scheme diagnostics.
 
+- **`pkg/contract/`** — Example suites and generated fuzz cases run through one `session` (`run.go`): static planning of every case, variables and captures (`vars.go`), credential selection (`auth.go`), pacing, request budget and stop rules. `Fuzz` (`fuzz.go`) discovers record types from paths (`fuzz_model.go`), obtains an accepted request per operation, then derives variants (`fuzz_mutate.go`) and re-runs findings (`fuzz_confirm.go`). `oracle.go` turns one response into finding signals, `findings.go` groups them per operation, and `Report.Verify` (`junit.go`) checks that totals and findings follow from the case results before any export (`render.go`). Imports `pkg/evidence`, `pkg/httpclient`, `pkg/privateheaders`, `pkg/specsource` and `pkg/openapi`; it does not import `pkg/fuzz`.
+
 - **`pkg/audit/`** — Deterministic passive checks for security requirements, insecure schemes/servers, path contracts, callbacks, webhooks, and OpenAPI 3.2 surfaces. Outputs console, JSON, or SARIF.
 
 - **`pkg/scanner/`** — `GenerateRequests` orchestrates spec parsing, server/basePath resolution, and dispatches to `BuildRequestsFromPaths` which iterates paths/operations and switches on `cfg.Mode` (automate sends requests, endpoints prints paths, prepare generates curl commands).
@@ -79,6 +83,15 @@ Dependencies are strictly acyclic. `pkg/` packages never import `internal/cli`.
 4. Request plans merge path/operation parameters, serialize OpenAPI styles, expand schemas, and generate payloads
 5. Safe methods are sent by default; state-changing methods require `--accept-risk` or `--force`
 6. Results output in requested format via `Writer.FinalizeOutput()`
+
+### How Contract Fuzzing Works
+
+1. `discover` lists operations and the record types their path parameters address, with the operations that create, read and delete each type
+2. Baselines: one contract-valid request per operation, creating records first and deleting last. Variants are derived only from an accepted baseline
+3. Variants: missing and made-up credentials, absent records, wrong logins, undeclared methods, omitted optional inputs, one contract violation each, hostile values
+4. Security findings are re-run on new records, then created records are removed
+5. A request that changes or deletes by path identifier only addresses a record sj created; narrow identifier ranges are read first
+6. `tests/petstore/answer-key.yaml` is the independent expected result for the Petstore benchmarks. Do not edit it to match sj's output; add a row only with a manual observation and a note
 
 ## Conventions
 

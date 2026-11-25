@@ -6,7 +6,7 @@
 
 ## Build, Test, and Development Commands
 
-- `go mod download` installs dependencies (Go 1.26.5 is specified in `go.mod`).
+- `go mod download` installs dependencies (Go 1.27.4 is specified in `go.mod`).
 - `make build` creates `bin/sj` with version metadata; smoke-test it with `./bin/sj --version`.
 - `make test` runs all Go tests with atomic coverage output. It expects `tparse` to be installed.
 - `make test-race` reruns the suite with the race detector.

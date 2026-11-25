@@ -12,7 +12,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE).commit=$(COMMIT) \
 	-X $(MODULE).date=$(BUILD_DATE)
 
-.PHONY: all build test test-race test-coverage lint fmt vet install clean tidy
+.PHONY: all build test test-petstore test-petstore-live test-race test-coverage lint fmt vet install clean tidy
 
 all: lint test build
 
@@ -31,6 +31,12 @@ test: ## Run all tests
 
 test-race:
 	go test ./... -count=1 -race
+
+test-petstore: ## Run the Petstore contract and fuzz benchmarks on a local replica and write reports to coverage/petstore
+	SJ_SAVE_PETSTORE_REPORTS=1 go test ./cmd/sj -count=1 -v -run '^TestPetstore(Contract|Fuzz)Benchmark$$'
+
+test-petstore-live: ## Fuzz the public Petstore sandbox (several hundred paced requests) and compare with tests/petstore/answer-key.yaml
+	SJ_PETSTORE_LIVE=1 go test ./cmd/sj -count=1 -v -timeout=20m -run '^TestPetstoreLiveBenchmark$$'
 
 test-coverage:
 	@mkdir -p $(COVER_DIR)

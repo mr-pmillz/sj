@@ -1,0 +1,6 @@
+cases:
+  - name: inventory with the documented demo key
+    method: GET
+    path: /store/inventory
+    authenticated: true
+    expectStatus: 200
