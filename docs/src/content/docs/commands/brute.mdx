@@ -81,6 +81,46 @@ sj brute -u https://target.example.com -p http://127.0.0.1:8080
 5. Browser/WAF challenge pages are classified separately from transport errors and ordinary HTTP responses. Discovery preserves the complete prioritized candidate tier before stopping on a sustained sequence of classified challenges. It stops immediately on HTTP 429 or after three consecutive equivalent 502, 503, or 504 response shapes so blocked or uniformly unavailable services are not probed thousands of times.
 6. Discovered definition files and coverage limits are reported. In batch mode (`-U`), a combined summary is printed after all targets are processed.
 
+## Output
+
+Each discovered definition file is listed with its URL, content type, OpenAPI version, title, description and API base. The API base (`api_base`) is the base URL that `automate` and `run --full-workflow` send the document's requests to when no `--target` or `--base-path` is given, worked out by the same code those commands use:
+
+- OpenAPI 3: the first `servers` entry, with each server variable at its default and a relative URL resolved against the document's own URL.
+- Swagger 2: `host` with the first of `schemes` (the document's own scheme when it lists none), followed by `basePath`.
+- Either version, when it names no server or host: the origin of the document's own URL.
+
+The API base can be on another host than the document, so check it against your authorized scope before you test a discovered document without `--target`. It holds the scheme, the host, the port when it is not the scheme's default (`:443` for `https`, `:80` for `http`), and the base path, with no trailing slash, user information, query or fragment:
+
+```json
+{
+  "url": "https://docs.example.com/openapi.json",
+  "content_type": "application/json",
+  "openapi_version": "3.1.0",
+  "title": "Example API",
+  "api_base": "https://api.example.net/v2"
+}
+```
+
+The API base is resolved from the response as `automate` reads a fetched document, not from what discovery recognized in it. A JavaScript bundle is unwrapped only when its URL ends in `.js` or its body starts like a script, and a document with a `$ref` to another file or URL is refused. When discovery finds a document embedded in a page or in another document, the API base therefore belongs to the document `automate` would read at that URL, or is left out when `automate` would refuse it.
+
+The member is left out when the base cannot be resolved, for example when a server variable has no default, the first server's URL has a query, a document that names no server was found at a URL with a query, or `automate` would refuse the document. `automate` refuses each of these documents too, the first three only when no `--target` is given. A missing API base never changes which definition files are reported.
+
+The API base is always the document's own: a `--target` or `--base-path` given to the discovery run does not change it, because it is what a later test run without those options would use. It covers the document-level base only. An OpenAPI 3 operation or path item with its own `servers` entry sends that operation's requests to that server instead. The host is written as the document writes it, without changing its case, and `automate` fetches the document again, so a server that answers differently later can change the base.
+
+Where each output format carries it:
+
+| Output | API base |
+|--------|----------|
+| `json` | `api_base` in each `specs_found` entry. |
+| `jsonl` | `api_base` in each row. |
+| `csv` | The last column, `api_base`, empty when it cannot be resolved. The earlier columns keep their positions. |
+| `txt` | Not included: the file stays one specification URL per line so `automate -U` can read it. |
+| `console` | An `API base:` line under each `Definition file found:` line, and under each entry of the closing list when several documents were found. |
+
+The result database stores it as `api_base` in the metadata of each `brute_spec` observation, and the MCP `discover_openapi` and `brute_openapi` tools return it in each `specs_found` entry.
+
+With `--header-file`, private header names and values are removed from discovery results. Removing text from a URL can leave one that names another host, so an API base that contains private header material is left out everywhere instead of being written altered.
+
 JSON summaries expose `waf_challenge_detected`, `waf_challenge_responses`, `waf_challenge_limit_reached`, `references_rejected`, `references_skipped`, `rate_limit_reached`, and `unavailable_limit_reached`. These fields are also stored in SQLite runs and included in generated assessment reports so a challenge, availability response, or traversal limit is not mistaken for complete negative coverage.
 
 :::caution
