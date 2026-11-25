@@ -192,6 +192,14 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 	automateCfg.FullURLs = true
 	configureCompleteResponseStorage(automateCfg)
 	automateErr := stages.automate(ctx, automateCfg)
+	// The workflow's own brute stage completed and its result names no
+	// specification: finding none is the usual outcome for an origin, not a
+	// failure. Input the user supplied (--skip-brute) that names none still
+	// fails below. The raw error is tested because redaction may flatten it.
+	if !options.SkipBrute && errors.Is(automateErr, errNoSpecificationURLs) && !regularFileExists(paths.automateJSON) {
+		output.PrintInfo("%s\n", fullWorkflowNoSpecificationMessage(assessmentEnabled))
+		return nil
+	}
 	automateErr = redactPrivateError(base, automateErr)
 	if automateErr != nil && !regularFileExists(paths.automateJSON) {
 		return fmt.Errorf("full workflow automate stage: %w", automateErr)
@@ -261,6 +269,16 @@ func executeFullWorkflow(ctx context.Context, base *config.Config, options fullW
 		wrapWorkflowStageError("report", reportErr),
 		wrapWorkflowStageError("assessment", assessmentErr),
 	))
+}
+
+// fullWorkflowNoSpecificationMessage is the one line a run prints when its
+// brute stage found no specification and every later stage was skipped.
+func fullWorkflowNoSpecificationMessage(assessmentEnabled bool) string {
+	skipped := "automate, fuzz, collection, and report stages"
+	if assessmentEnabled {
+		skipped = "automate, fuzz, collection, report, and assessment stages"
+	}
+	return "No specification URLs found by the brute stage; skipped the " + skipped + "."
 }
 
 func suppressBrutePartialFailure(err error, artifactPath string) error {
