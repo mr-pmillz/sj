@@ -18,3 +18,15 @@ HTML findings include native toggleable request/response proof blocks when respo
 Baseline API operations and active fuzz probes are reported separately. Per-payload probes remain available as evidence but do not inflate endpoint inventory, passive candidate findings, host statistics, or OWASP candidate counts.
 
 Heuristic IDOR, business-logic, SSRF, and resource-consumption signals are testing candidates, not confirmed vulnerabilities. Imported fuzz findings describe actively observed differences, but broken authorization still requires identity and ownership validation.
+
+## Contract and contract fuzz reports
+
+`sj report contract RESULTS.json` converts a JSON report from `sj contract` or `sj contract fuzz` to JUnit XML, Markdown or SARIF.
+
+```bash
+sj report contract fuzz-report.json -F markdown -o fuzz-report.md
+sj report contract fuzz-report.json -F sarif -o fuzz-report.sarif
+sj report contract fuzz-report.json -F junit -o fuzz-report.xml
+```
+
+The command first checks that the totals, the coverage and every finding follow from the case results. It writes nothing for a report that fails this check. See the [contract command](/commands/contract/) for the report contents.

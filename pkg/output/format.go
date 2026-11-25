@@ -107,7 +107,7 @@ func (w *Writer) WriteAllFormats(title, description string) error {
 	}
 	var result error
 	for _, format := range formats {
-		if err := writeFileAtomically(format.path, format.write); err != nil {
+		if err := WriteFileAtomically(format.path, format.write); err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
@@ -139,14 +139,15 @@ func (w *Writer) FinalizeOutput() error {
 	if w.Cfg.Outfile == "" {
 		return write(os.Stdout)
 	}
-	if err := writeFileAtomically(w.Cfg.Outfile, write); err != nil {
+	if err := WriteFileAtomically(w.Cfg.Outfile, write); err != nil {
 		return err
 	}
 	PrintInfo("Wrote %s\n", w.Cfg.Outfile)
 	return nil
 }
 
-func writeFileAtomically(path string, write func(io.Writer) error) error {
+// WriteFileAtomically publishes an owner-only output file after rendering succeeds.
+func WriteFileAtomically(path string, write func(io.Writer) error) error {
 	var buffer bytes.Buffer
 	if err := write(&buffer); err != nil {
 		return fmt.Errorf("render %s: %w", path, err)

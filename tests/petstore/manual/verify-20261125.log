@@ -1,0 +1,22 @@
+== 415 disclosure (text/plain body, Accept JSON) ==
+POST /store/order text/plain                 415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class io.swagger.sample.model.Order, and Java type class io.swagger.sample.model.Order, and MIME media
+POST /user text/plain                        415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class io.swagger.sample.model.User, and Java type class io.swagger.sample.model.User, and MIME media t
+POST /user/createWithArray t/p               415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class [Lio.swagger.sample.model.User;, and Java type class [Lio.swagger.sample.model.User;, and MIME m
+POST /user/createWithList t/p                415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class java.util.List, and Java type java.util.List<io.swagger.sample.model.User>, and MIME media type 
+PUT /user/x text/plain                       415  {"code":415,"type":"unknown","message":"com.sun.jersey.api.MessageException: A message body reader for Java class io.swagger.sample.model.User, and Java type class io.swagger.sample.model.User, and MIME media t
+POST /pet text/plain                         415  {"code":415,"type":"unknown"}
+PUT /pet text/plain                          415  {"code":415,"type":"unknown"}
+== contract-violating input accepted ==
+POST /store/order status enum                200  {"id":7700211000,"petId":1,"quantity":1,"status":"sj-not-an-enum","complete":false}
+cleanup order                                200  {"code":200,"type":"unknown","message":"7700211000"}
+POST /user email as number                   200  {"code":200,"type":"unknown","message":"7700211000"}
+GET that user                                200  {"id":7700211000,"username":"sjkey257441903","email":"9173","userStatus":0}
+PUT /user firstName as number                200  {"code":200,"type":"unknown","message":"7700211000"}
+cleanup user                                 200  {"code":200,"type":"unknown","message":"sjkey257441903"}
+createWithArray email number                 200  {"code":200,"type":"unknown","message":"ok"}
+cleanup user                                 200  {"code":200,"type":"unknown","message":"sjkey257441903"}
+PUT /pet without name                        200  {"id":7700211000,"photoUrls":[],"tags":[]}
+cleanup pet                                  200  {"code":200,"type":"unknown","message":"7700211000"}
+== record left by a coerced identifier ==
+GET /user/9173                               404  {"code":1,"type":"error","message":"User not found"}
+DELETE /user/9173                            404  

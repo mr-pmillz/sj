@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/mr-pmillz/sj/pkg/assessment/model"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const (

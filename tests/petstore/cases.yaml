@@ -1,0 +1,112 @@
+# Example inputs belong to the disposable benchmark service.
+loopbackOnly: true
+cases:
+  - name: addPet
+    method: POST
+    path: /pet
+    authenticated: true
+    jsonBody: '{"id":101,"name":"Pip","photoUrls":[]}'
+    expectStatus: 200
+  - name: updatePet
+    method: PUT
+    path: /pet
+    authenticated: true
+    jsonBody: '{"id":102,"name":"Milo","photoUrls":[]}'
+    expectStatus: 200
+  - name: findPetsByStatus
+    method: GET
+    path: /pet/findByStatus
+    authenticated: true
+    query: status=available
+    expectJSON: {"/0/name": Pip}
+  - name: findPetsByTags
+    method: GET
+    path: /pet/findByTags
+    authenticated: true
+    query: tags=fixture
+    expectJSON: {"/0/name": Pip}
+  - name: getPetById
+    method: GET
+    path: /pet/{petId}
+    authenticated: true
+    pathParams: {petId: "101"}
+    expectJSON: {"/id": 101}
+  - name: updatePetWithForm
+    method: POST
+    path: /pet/{petId}
+    authenticated: true
+    pathParams: {petId: "102"}
+    form: name=Milo&status=pending
+    expectStatus: 200
+  - name: deletePet
+    method: DELETE
+    path: /pet/{petId}
+    authenticated: true
+    pathParams: {petId: "103"}
+    expectStatus: 200
+  - name: uploadFile
+    method: POST
+    path: /pet/{petId}/uploadImage
+    authenticated: true
+    pathParams: {petId: "101"}
+    multipart:
+      additionalMetadata: {value: test attachment}
+      file: {filename: fixture.txt, value: "local test content"}
+    expectJSON: {"/code": 200}
+  - name: getInventory
+    method: GET
+    path: /store/inventory
+    authenticated: true
+    expectJSON: {"/available": 3}
+  - name: placeOrder
+    method: POST
+    path: /store/order
+    jsonBody: '{"id":4,"petId":101,"quantity":1}'
+    expectJSON: {"/id": 4}
+  - name: getOrderById
+    method: GET
+    path: /store/order/{orderId}
+    pathParams: {orderId: "4"}
+    expectJSON: {"/petId": 101}
+  - name: deleteOrder
+    method: DELETE
+    path: /store/order/{orderId}
+    pathParams: {orderId: "5"}
+    expectStatus: 200
+  - name: createUser
+    method: POST
+    path: /user
+    jsonBody: '{"username":"fixture-user"}'
+  - name: createUsersWithArrayInput
+    method: POST
+    path: /user/createWithArray
+    jsonBody: '[{"username":"fixture-array"}]'
+  - name: createUsersWithListInput
+    method: POST
+    path: /user/createWithList
+    jsonBody: '[{"username":"fixture-list"}]'
+  - name: loginUser
+    method: GET
+    path: /user/login
+    # The benchmark adds its runtime-generated password to this query.
+    query: username=fixture-user
+  - name: logoutUser
+    method: GET
+    path: /user/logout
+    expectStatus: 200
+  - name: getUserByName
+    method: GET
+    path: /user/{username}
+    pathParams: {username: fixture-user}
+    expectJSON: {"/username": fixture-user}
+  - name: updateUser
+    method: PUT
+    path: /user/{username}
+    pathParams: {username: fixture-update}
+    jsonBody: '{"username":"fixture-update","firstName":"Pat"}'
+    expectStatus: 200
+  - name: deleteUser
+    method: DELETE
+    path: /user/{username}
+    pathParams: {username: fixture-delete}
+    expectStatus: 200

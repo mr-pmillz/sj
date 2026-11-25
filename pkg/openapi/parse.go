@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/getkin/kin-openapi/openapi2"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func SafelyUnmarshalSpec(data []byte) (map[string]any, error) {

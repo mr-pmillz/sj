@@ -243,7 +243,7 @@ func TestFinalizeOutputDelegatesAllFormatsAndPropagatesFileErrors(t *testing.T) 
 func TestAtomicWriterRejectsRenderAndDestinationFailuresWithoutPublishing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "result.json")
 	renderErr := errors.New("render failed")
-	err := writeFileAtomically(path, func(io.Writer) error { return renderErr })
+	err := WriteFileAtomically(path, func(io.Writer) error { return renderErr })
 	if !errors.Is(err, renderErr) {
 		t.Fatalf("render error = %v", err)
 	}
@@ -251,7 +251,7 @@ func TestAtomicWriterRejectsRenderAndDestinationFailuresWithoutPublishing(t *tes
 		t.Fatalf("failed render published output: %v", statErr)
 	}
 
-	err = writeFileAtomically(filepath.Join(t.TempDir(), "missing", "result.json"), func(out io.Writer) error {
+	err = WriteFileAtomically(filepath.Join(t.TempDir(), "missing", "result.json"), func(out io.Writer) error {
 		_, writeErr := io.WriteString(out, "{}")
 		return writeErr
 	})

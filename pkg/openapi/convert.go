@@ -10,7 +10,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi2conv"
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/output"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 func ConvertSpec(body []byte, cfg *config.Config) error {

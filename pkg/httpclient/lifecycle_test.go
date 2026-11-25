@@ -230,16 +230,16 @@ func TestMakeRequestRejectsInvalidTargetsAndHonorsSafeWordException(t *testing.T
 func TestBoundedBodyCoversBoundaryAndReaderErrors(t *testing.T) {
 	t.Parallel()
 
-	if _, err := readBoundedBody(strings.NewReader("x"), 0); err == nil {
+	if _, err := ReadBoundedBody(strings.NewReader("x"), 0); err == nil {
 		t.Fatal("zero body limit was accepted")
 	}
-	if _, err := readBoundedBody(failingReader{err: errors.New("boom")}, 4); err == nil || !strings.Contains(err.Error(), "boom") {
+	if _, err := ReadBoundedBody(failingReader{err: errors.New("boom")}, 4); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("reader error = %v", err)
 	}
-	if body, err := readBoundedBody(strings.NewReader("1234"), 4); err != nil || string(body) != "1234" {
+	if body, err := ReadBoundedBody(strings.NewReader("1234"), 4); err != nil || string(body) != "1234" {
 		t.Fatalf("at-limit body = %q, %v", body, err)
 	}
-	if _, err := readBoundedBody(strings.NewReader("12345"), 4); !errors.Is(err, errResponseTooLarge) {
+	if _, err := ReadBoundedBody(strings.NewReader("12345"), 4); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("above-limit error = %v", err)
 	}
 

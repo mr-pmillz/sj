@@ -18,7 +18,7 @@ import (
 	assessmentreport "github.com/mr-pmillz/sj/pkg/assessment/report"
 	assessmentruntime "github.com/mr-pmillz/sj/pkg/assessment/runtime"
 	"github.com/mr-pmillz/sj/pkg/config"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 const fullWorkflowAutomateInputPlaceholder = "$workflow.automate"
