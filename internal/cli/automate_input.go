@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -15,6 +16,11 @@ import (
 	"github.com/mr-pmillz/sj/pkg/config"
 	"github.com/mr-pmillz/sj/pkg/store"
 )
+
+// errNoSpecificationURLs reports an automate input that was read and parsed
+// without error but names no specification URL: for a brute result, a brute
+// stage that ran and found nothing.
+var errNoSpecificationURLs = errors.New("no specification URLs found")
 
 type automateSource struct {
 	url       string
@@ -138,7 +144,7 @@ func loadAutomateURLs(path string, maxBytes int64, maxTargets int) ([]string, er
 		return nil, err
 	}
 	if len(collector.urls) == 0 {
-		return nil, fmt.Errorf("no specification URLs found in %q", path)
+		return nil, fmt.Errorf("%w in %q", errNoSpecificationURLs, path)
 	}
 	return collector.urls, nil
 }

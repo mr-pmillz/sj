@@ -47,6 +47,22 @@ Numeric IDOR enumeration is additionally gated by a live per-identity baseline. 
 
 Automate and fuzz response capture is enabled automatically using the configured response read ceiling, and SQLite storage remains enabled by default. An isolated target rate or transport stop is recorded in the retained corpus without aborting healthy targets. Automate JSON and SQLite retain the affected origin, circuit reason, and skipped count, and the legacy report imports those records as explicit coverage gaps. Already captured evidence is still used to generate the Bruno collection and reports. A workflow-wide request-budget stop or persistence failure still returns an error after safe report generation.
 
+## When discovery finds no specification
+
+Finding no OpenAPI or Swagger definition is the usual outcome for most origins, so it is not a failure. When the workflow's own brute stage completes and its result names no specification URL, `run --full-workflow` prints one line, `No specification URLs found by the brute stage; skipped the automate, fuzz, collection, and report stages.` (it ends `report, and assessment stages.` when `--auto-assess` or `--assessment-manifest` is set), and exits 0. Isolated brute target failures keep their warning and do not change that outcome, as they never failed a run on their own.
+
+The output directory then holds only what the brute stage wrote, which records that nothing was found:
+
+- `brute.json`: one report object for one target, or an array of reports for several, each with an empty `specs_found` list and its `summary`.
+- `brute.jsonl`: empty.
+- `brute.csv`: the header row only.
+- `brute.txt`: empty for one target; one `# Target:` line per target for several.
+- `assessment-manifest.yaml`, when the assessment continuation is enabled, because it is pinned before any traffic.
+
+No `automate.json`, `fuzz.json`, Bruno collection, legacy report, or assessment result is written. The brute run is still stored in the result database. The MCP `run_full_workflow` tool reports such a run as completed.
+
+Every other failure still exits nonzero: a brute result that is missing or cannot be parsed, an automate stage that fails for another reason, and input you supplied with `--skip-brute` (a URL file or `--brute-run` IDs) that names no specification.
+
 ## Append assessment-v2 verification
 
 The broad workflow and manifest-driven `assess` lifecycle answer different questions. Legacy `report` analyzes discovery, endpoint, fuzz, disclosure, PII, and response evidence from result files or run IDs. `assess report` renders a signed persisted assessment ID and can make higher-confidence BOLA decisions because the manifest declares identities, owned objects, and expected access. Keep both outputs.
