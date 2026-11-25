@@ -22,6 +22,7 @@ import (
 	"github.com/mr-pmillz/sj/pkg/httpclient"
 	"github.com/mr-pmillz/sj/pkg/openapi"
 	"github.com/mr-pmillz/sj/pkg/output"
+	"github.com/mr-pmillz/sj/pkg/scanner"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -256,7 +257,7 @@ func makeReport(target string, matches []match, interesting []Interesting, summa
 	for _, found := range matches {
 		report.SpecsFound = append(report.SpecsFound, SpecResult{
 			URL: found.url, ContentType: found.contentType, OpenAPIVersion: found.version,
-			Title: found.title, Description: found.description,
+			Title: found.title, Description: found.description, APIBase: found.apiBase,
 		})
 	}
 	report.Summary.SpecsFoundCount = len(matches)
@@ -295,13 +296,16 @@ func (s *Scanner) printConsoleReport(report Report, matches []match, dumpSpec bo
 	if len(matches) > 1 {
 		output.PrintInfo("\nFound %d definition files total:\n", len(matches))
 		for _, found := range matches {
-			foundURL, foundVersion, foundTitle := found.url, found.version, found.title
+			foundURL, foundVersion, foundTitle, foundAPIBase := found.url, found.version, found.title, s.publishedAPIBase(found.apiBase)
 			if s.Cfg.PrivateHeaders != nil {
 				foundURL = s.Cfg.PrivateHeaders.RedactString(foundURL)
 				foundVersion = s.Cfg.PrivateHeaders.RedactString(foundVersion)
 				foundTitle = s.Cfg.PrivateHeaders.RedactString(foundTitle)
 			}
 			output.PrintInfo("  - %s (OpenAPI %s, %s)\n", output.TerminalSafe(foundURL), output.TerminalSafe(foundVersion), output.TerminalSafe(foundTitle))
+			if foundAPIBase != "" {
+				output.PrintInfo("    API base: %s\n", output.TerminalSafe(foundAPIBase))
+			}
 		}
 	}
 	if len(report.Interesting) > 0 {
@@ -328,11 +332,26 @@ func (s *Scanner) redactReport(report *Report) {
 		report.SpecsFound[index].OpenAPIVersion = redact(report.SpecsFound[index].OpenAPIVersion)
 		report.SpecsFound[index].Title = redact(report.SpecsFound[index].Title)
 		report.SpecsFound[index].Description = redact(report.SpecsFound[index].Description)
+		report.SpecsFound[index].APIBase = s.publishedAPIBase(report.SpecsFound[index].APIBase)
 	}
 	for index := range report.Interesting {
 		report.Interesting[index].URL = redact(report.Interesting[index].URL)
 		report.Interesting[index].ContentType = redact(report.Interesting[index].ContentType)
 	}
+}
+
+// publishedAPIBase is the API base discovery may write. Redaction removes
+// private header names and values from text, so a base that redaction would
+// change could name another host or path than the test stage sends to: such
+// a base is left out, as if it could not be resolved, never written altered.
+func (s *Scanner) publishedAPIBase(apiBase string) string {
+	if s == nil || s.Cfg == nil || s.Cfg.PrivateHeaders == nil {
+		return apiBase
+	}
+	if s.Cfg.PrivateHeaders.RedactString(apiBase) != apiBase {
+		return ""
+	}
+	return apiBase
 }
 
 func writeBytesAtomically(path string, data []byte) error {
@@ -487,10 +506,10 @@ func (s *Scanner) processCandidate(ctx context.Context, candidate scanCandidate,
 
 	matchCount := len(state.matches)
 	if extracted, ok := openapi.ExtractJSONFromJSSpec(body); ok {
-		s.addSpec(targetURL, contentType, extracted, candidate.referenceDepth, state)
+		s.addSpec(targetURL, contentType, extracted, body, candidate.referenceDepth, state)
 	}
 	if len(state.matches) == matchCount {
-		s.addSpec(targetURL, contentType, body, candidate.referenceDepth, state)
+		s.addSpec(targetURL, contentType, body, body, candidate.referenceDepth, state)
 	}
 	if len(state.matches) > matchCount {
 		state.recordWAFChallengeLimit(false)
@@ -661,28 +680,47 @@ func countStatus(summary *Summary, status int) {
 	}
 }
 
-func (s *Scanner) addSpec(targetURL, contentType string, body []byte, referenceDepth int, state *scanState) {
+// addSpec records body as a found document when it parses as one. response
+// is the whole response body, which the test stage reads again on its own
+// terms, so the API base is resolved from it rather than from body.
+func (s *Scanner) addSpec(targetURL, contentType string, body, response []byte, referenceDepth int, state *scanState) {
 	spec, version := TryParseAsSpec(body)
 	if spec == nil || state.found[targetURL] {
 		return
 	}
 	state.found[targetURL] = true
-	found := match{url: targetURL, contentType: contentType, spec: spec, version: version}
+	found := match{url: targetURL, contentType: contentType, spec: spec, version: version, apiBase: documentAPIBase(response, targetURL)}
 	if spec.Info != nil {
 		found.title = spec.Info.Title
 		found.description = spec.Info.Description
 	}
 	state.matches = append(state.matches, found)
-	displayURL, displayVersion, displayTitle := targetURL, version, found.title
+	displayURL, displayVersion, displayTitle, displayAPIBase := targetURL, version, found.title, s.publishedAPIBase(found.apiBase)
 	if s.Cfg.PrivateHeaders != nil {
 		displayURL = s.Cfg.PrivateHeaders.RedactString(displayURL)
 		displayVersion = s.Cfg.PrivateHeaders.RedactString(displayVersion)
 		displayTitle = s.Cfg.PrivateHeaders.RedactString(displayTitle)
 	}
 	output.PrintInfo("\nDefinition file found: %s (OpenAPI %s, %s)\n", output.TerminalSafe(displayURL), output.TerminalSafe(displayVersion), output.TerminalSafe(displayTitle))
+	if displayAPIBase != "" {
+		output.PrintInfo("API base: %s\n", output.TerminalSafe(displayAPIBase))
+	}
 	for _, variation := range GeneratePathVariations(targetURL) {
 		s.queueVariation(variation, referenceDepth, state)
 	}
+}
+
+// documentAPIBase is the API base the test stage would send a found
+// document's requests to when no --target or --base-path is set, resolved
+// from the response by the test stage's own code (scanner.DocumentAPIBase).
+// It is "" when the test stage would refuse the response or cannot resolve a
+// base for it; that never changes whether the document counts as found.
+func documentAPIBase(response []byte, documentURL string) string {
+	base, err := scanner.DocumentAPIBase(response, documentURL)
+	if err != nil {
+		return ""
+	}
+	return base
 }
 
 func (s *Scanner) queueReference(candidate string, referenceDepth int, state *scanState) {

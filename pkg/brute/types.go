@@ -9,6 +9,11 @@ type SpecResult struct {
 	OpenAPIVersion string `json:"openapi_version"`
 	Title          string `json:"title,omitempty"`
 	Description    string `json:"description,omitempty"`
+	// APIBase is the base URL the test stage sends this document's requests
+	// to when no --target or --base-path is set: scheme, host, port when it
+	// is not the scheme's default, and base path (scanner.DocumentAPIBase).
+	// It is empty when the test stage cannot resolve one.
+	APIBase string `json:"api_base,omitempty"`
 }
 
 // Interesting holds metadata about a URL that returned a notable response.
@@ -55,4 +60,5 @@ type match struct {
 	version     string
 	title       string
 	description string
+	apiBase     string
 }
