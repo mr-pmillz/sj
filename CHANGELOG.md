@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.8.2](https://github.com/mr-pmillz/sj/compare/v2.8.1...v2.8.2) - 2026-11-25
+
+### ✨: New features
+
+- Feat: name the API base each discovered specification is tested against - ([249ea47](https://github.com/mr-pmillz/sj/commit/249ea47264689e5c7b9ee4ca4fe21de52ea71fc7))
+- Feat: name the API base each discovered specification is tested against - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+- Discovery reports gain an optional api_base for each found specification: the base URL automate and run send that document's requests to when no --target or --base-path is given (scheme, host, a port that is not the scheme's default, base path). A caller that runs sj for someone else can now check that address against an allowed scope before it tests the document, and pass it back as --target. - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+- Brute.json, brute.jsonl, a new last brute.csv column, the console, stored brute_spec observations and the MCP discover_openapi and brute_openapi tools carry it; brute.txt is unchanged. - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+- An API base that private-header redaction would change is left out instead of being written altered, because the altered URL could name another host. - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+
+### 🐛 Bug fixes
+
+- The base is resolved by the test stage's own code (scanner.DocumentAPIBase, sharing readSpecification and resolveDocumentBase with ConfigureTarget) from the response as automate reads it, and is left out wherever automate would refuse the document or cannot resolve a base. - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+- Fix: server variable defaults are now substituted in one pass, so a default that names a variable no longer hangs automate or discovery. - ([3098898](https://github.com/mr-pmillz/sj/commit/3098898f10f00146f02fdb766494e2516992abac))
+
 ## [2.8.1](https://github.com/mr-pmillz/sj/compare/v2.8.0...v2.8.1) - 2026-11-25
 
 ### 🐛 Bug fixes
@@ -11,6 +26,10 @@ All notable changes to this project will be documented [here](https://github.com
 - `sj run --full-workflow` exited 1 with "full workflow automate stage: no specification URLs found" whenever its own brute stage completed and found no specification. Finding none is the usual outcome for an origin, so callers that run sj in batches, such as CASM, settled every such job failed. The workflow now prints one line, skips automate, fuzz, collection, report and assessment, and exits 0, leaving the brute artifacts it already wrote: brute.json, .jsonl, .csv, .txt, the stored brute run and, under --auto-assess, assessment-manifest.yaml. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
 - The case is recognized by a typed sentinel that the automate input reader wraps, never by message text, and only when the workflow's own brute stage ran and automate wrote no automate.json. Unchanged: a brute result that is missing, unreadable or cut short, an automate stage that fails for another reason, --skip-brute input that names no specification, and stored brute run IDs without one. Isolated brute target failures keep their warning. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
 - Tests run the real automate stage over a brute result written by the brute output writer, the default stages against a local test server, and the failures that must stay. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([2508720](https://github.com/mr-pmillz/sj/commit/2508720d2417ba40756ae50c2ddecd6d3899ff9c))
 
 ## [2.8.0](https://github.com/mr-pmillz/sj/compare/v2.7.9...v2.8.0) - 2026-11-25
 
