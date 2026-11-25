@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.8.1](https://github.com/mr-pmillz/sj/compare/v2.8.0...v2.8.1) - 2026-11-25
+
+### 🐛 Bug fixes
+
+- Fix: run ends successfully when its brute stage finds no specification - ([9ad8fa3](https://github.com/mr-pmillz/sj/commit/9ad8fa39d382d1d71d0ca8938ab8c5a9755d90cf))
+- Fix: run ends successfully when its brute stage finds no specification - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
+- `sj run --full-workflow` exited 1 with "full workflow automate stage: no specification URLs found" whenever its own brute stage completed and found no specification. Finding none is the usual outcome for an origin, so callers that run sj in batches, such as CASM, settled every such job failed. The workflow now prints one line, skips automate, fuzz, collection, report and assessment, and exits 0, leaving the brute artifacts it already wrote: brute.json, .jsonl, .csv, .txt, the stored brute run and, under --auto-assess, assessment-manifest.yaml. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
+- The case is recognized by a typed sentinel that the automate input reader wraps, never by message text, and only when the workflow's own brute stage ran and automate wrote no automate.json. Unchanged: a brute result that is missing, unreadable or cut short, an automate stage that fails for another reason, --skip-brute input that names no specification, and stored brute run IDs without one. Isolated brute target failures keep their warning. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
+- Tests run the real automate stage over a brute result written by the brute output writer, the default stages against a local test server, and the failures that must stay. - ([be77825](https://github.com/mr-pmillz/sj/commit/be778254a3505561e3cc9f166020ef74754127ef))
+
 ## [2.8.0](https://github.com/mr-pmillz/sj/compare/v2.7.9...v2.8.0) - 2026-11-25
 
 ### ✨: New features
@@ -13,6 +23,10 @@ All notable changes to this project will be documented [here](https://github.com
 - Suites gain variables, captures, prerequisites, credential overrides, negative cases and probes. Reports gain grouped findings with severity, CWE and OWASP references, and export as JSON, Markdown, SARIF and JUnit after a check that totals and findings follow from the case results. `sj contract generate` writes one case per operation, and `sj report contract` converts a saved report. - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
 - The Petstore benchmarks compare a run against tests/petstore/answer-key.yaml on a local replica, with a hardened control, and on the public sandbox with `make test-petstore-live`. The manual curl observations behind the key are in tests/petstore/manual. - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
 - Feat: run authenticated API contract suites and report coverage - ([181830e](https://github.com/mr-pmillz/sj/commit/181830ebcdce207cb5da231a39c64f1ae97e0a55))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([72e95d7](https://github.com/mr-pmillz/sj/commit/72e95d72aa0bfc2d85d467c84b3602c5f13e6842))
 
 ### 🚜 Refactor
 
