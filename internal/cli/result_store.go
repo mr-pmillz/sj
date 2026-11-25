@@ -146,10 +146,13 @@ func (run *resultRun) addBruteReports(ctx context.Context, reports []brute.Repor
 			Kind: "brute_summary", Source: report.Target, Metadata: report.Summary,
 		})
 		for _, spec := range report.SpecsFound {
+			metadata := map[string]any{"openapi_version": spec.OpenAPIVersion, "title": spec.Title, "description": spec.Description}
+			if spec.APIBase != "" {
+				metadata["api_base"] = spec.APIBase
+			}
 			observations = append(observations, store.Observation{
 				Kind: "brute_spec", Source: report.Target, Method: "GET", URL: spec.URL,
-				Status: 200, ContentType: spec.ContentType,
-				Metadata: map[string]any{"openapi_version": spec.OpenAPIVersion, "title": spec.Title, "description": spec.Description},
+				Status: 200, ContentType: spec.ContentType, Metadata: metadata,
 			})
 		}
 		for _, item := range report.Interesting {

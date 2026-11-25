@@ -39,6 +39,7 @@ func WriteJSONL(reports []Report, w io.Writer) error {
 				OpenAPIVersion string `json:"openapi_version"`
 				Title          string `json:"title,omitempty"`
 				Description    string `json:"description,omitempty"`
+				APIBase        string `json:"api_base,omitempty"`
 			}{
 				Target:         r.Target,
 				URL:            spec.URL,
@@ -46,6 +47,7 @@ func WriteJSONL(reports []Report, w io.Writer) error {
 				OpenAPIVersion: spec.OpenAPIVersion,
 				Title:          spec.Title,
 				Description:    spec.Description,
+				APIBase:        spec.APIBase,
 			}
 			data, err := json.Marshal(row)
 			if err != nil {
@@ -63,7 +65,8 @@ func WriteCSV(reports []Report, w io.Writer) error {
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
-	if err := cw.Write([]string{"target", "url", "content_type", "openapi_version", "title", "description"}); err != nil {
+	// api_base is the last column so every earlier column keeps its position.
+	if err := cw.Write([]string{"target", "url", "content_type", "openapi_version", "title", "description", "api_base"}); err != nil {
 		return fmt.Errorf("writing CSV header: %w", err)
 	}
 	for _, r := range reports {
@@ -75,6 +78,7 @@ func WriteCSV(reports []Report, w io.Writer) error {
 				safeCSVField(spec.OpenAPIVersion),
 				safeCSVField(spec.Title),
 				safeCSVField(spec.Description),
+				safeCSVField(spec.APIBase),
 			}); err != nil {
 				return fmt.Errorf("writing CSV result: %w", err)
 			}
