@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented [here](https://github.com/mr-pmillz/sj/blob/main/CHANGELOG.md?ref_type=heads)
 
+## [2.8.0](https://github.com/mr-pmillz/sj/compare/v2.7.9...v2.8.0) - 2026-11-25
+
+### ✨: New features
+
+- Feat(contract): exclude HTTP methods from contract fuzz - ([b77a010](https://github.com/mr-pmillz/sj/commit/b77a010c7cc1f09572891c5caecc71366254dc61))
+- `sj contract fuzz --exclude METHOD` keeps a method from being sent in any role: tested operation, record setup, undeclared-method check and cleanup. A controller that never authorizes DELETE can then run the state-changing mode. Records that sj cannot remove stay on the target and are counted under leftoverRecords, and an operation with an excluded method is reported as not tested. - ([b77a010](https://github.com/mr-pmillz/sj/commit/b77a010c7cc1f09572891c5caecc71366254dc61))
+- Feat(contract): generate and run fuzz cases for every operation - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
+- Add `sj contract fuzz`. It builds one contract-valid request per documented operation, creating the test records that path parameters address, and derives variants only from a request the API accepted: no credential and a made-up credential, omitted optional inputs, one contract violation per request, inert hostile values, absent records, wrong login credentials and undeclared methods. Security findings are re-run on new records, created records are removed, and the executed cases can be emitted as a suite that `sj contract --suite` replays. Requests are sequential, paced and budgeted, and stop on HTTP 429. - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
+- Suites gain variables, captures, prerequisites, credential overrides, negative cases and probes. Reports gain grouped findings with severity, CWE and OWASP references, and export as JSON, Markdown, SARIF and JUnit after a check that totals and findings follow from the case results. `sj contract generate` writes one case per operation, and `sj report contract` converts a saved report. - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
+- The Petstore benchmarks compare a run against tests/petstore/answer-key.yaml on a local replica, with a hardened control, and on the public sandbox with `make test-petstore-live`. The manual curl observations behind the key are in tests/petstore/manual. - ([8b52e1d](https://github.com/mr-pmillz/sj/commit/8b52e1df666cbf99d713aba5853c8e29d4195367))
+- Feat: run authenticated API contract suites and report coverage - ([181830e](https://github.com/mr-pmillz/sj/commit/181830ebcdce207cb5da231a39c64f1ae97e0a55))
+
+### 🚜 Refactor
+
+- Refactor(evidence): move disclosure classification out of fuzz - ([aef7133](https://github.com/mr-pmillz/sj/commit/aef7133aaa969951ccc70b54720b36ffc2b3325f))
+- The patterns that recognize stack traces, database detail and runtime diagnostics in a response body now live in pkg/evidence as DisclosureTypes and DisclosureTiers. pkg/fuzz delegates to them and behaves as before. Other packages can classify a response without importing the replay fuzzer and its store and report dependencies. - ([aef7133](https://github.com/mr-pmillz/sj/commit/aef7133aaa969951ccc70b54720b36ffc2b3325f))
+
 ## [2.7.9](https://github.com/mr-pmillz/sj/compare/v2.7.8...v2.7.9) - 2026-09-03
 
 ### 🐛 Bug fixes
@@ -10,6 +27,10 @@ All notable changes to this project will be documented [here](https://github.com
 - Fix(mcp): enable special-character fuzz workflow - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
 - Expose enable_special_chars_fuzz on run_full_workflow and carry the validated option through the native MCP runner into the fuzz stage. - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
 - Add MCP and CLI regression coverage so the schema input is verified at both propagation boundaries. The post-fix bounded CPT run through the configured SOCKS5 proxy executed all 180 special-character probes without transport, rate-limit, budget, or truncation failures. - ([01aa1fa](https://github.com/mr-pmillz/sj/commit/01aa1fabd2219b5efb3f89cf2c23d78331e19891))
+
+### ⚙️ Miscellaneous Tasks
+
+- Chore: update changelog - ([ae24d89](https://github.com/mr-pmillz/sj/commit/ae24d897ea7d8e111263860b797c124cdaba7a4e))
 
 ## [2.7.8](https://github.com/mr-pmillz/sj/compare/v2.7.7...v2.7.8) - 2026-08-03
 
