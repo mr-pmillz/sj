@@ -552,6 +552,37 @@ func TestFuzzHonoursSafeguardsBudgetAndRateLimits(t *testing.T) {
 	})
 }
 
+// TestFuzzNeverSendsAnExcludedMethod covers --exclude: the method is not sent
+// in any role, and records that then cannot be removed are counted.
+func TestFuzzNeverSendsAnExcludedMethod(t *testing.T) {
+	service, cfg := startNotes(t, false)
+	cfg.ExcludeMethods = []string{"delete"}
+	report, _, err := Fuzz(t.Context(), cfg, FuzzOptions{Confirmations: 1, RunOptions: RunOptions{Seed: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	for _, request := range service.requests {
+		if request.Method == http.MethodDelete {
+			t.Fatal("sent an excluded DELETE")
+		}
+	}
+	// Other methods are still tested, and every record sj could not
+	// remove is counted.
+	if !slices.Contains(findingKeys(report), "auth_not_enforced POST /notes") {
+		t.Errorf("POST was not tested: %v", findingKeys(report))
+	}
+	if len(service.notes) == 0 || report.Run.LeftoverRecords != len(service.notes) {
+		t.Errorf("%d records left, %d reported", len(service.notes), report.Run.LeftoverRecords)
+	}
+	for _, summary := range report.Run.Operations {
+		if (summary.Method == http.MethodDelete) != (summary.Inconclusive == inconclusiveMethod) || (summary.Method == http.MethodDelete && summary.Cases != 0) {
+			t.Errorf("%s %s: %d cases, %q", summary.Method, summary.Path, summary.Cases, summary.Inconclusive)
+		}
+	}
+}
+
 func TestSuiteVariablesIdentitiesAndProbes(t *testing.T) {
 	service, cfg := startNotes(t, true)
 	suite, err := ParseSuite([]byte(`

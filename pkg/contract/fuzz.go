@@ -42,6 +42,7 @@ const (
 	inconclusiveRejected   = "no valid request was accepted"
 	inconclusiveCredential = "no credential for the declared security scheme" // #nosec G101 -- a report label
 	inconclusiveExcluded   = "operation was excluded"
+	inconclusiveMethod     = "HTTP method was excluded"
 )
 
 var loginOperation = regexp.MustCompile(`(?i)(?:log[-_ ]?in|sign[-_ ]?in|authenticat|session|token)`)
@@ -160,7 +161,16 @@ func (f *fuzzer) selected(op *operation) bool {
 
 // blocked applies the method and path safeguards to an operation.
 func (f *fuzzer) blocked(method, path string) bool {
-	return f.s.client.BlocksOperation(method, &url.URL{Path: strings.TrimRight(f.s.base.Path, "/") + path})
+	return f.methodExcluded(method) ||
+		f.s.client.BlocksOperation(method, &url.URL{Path: strings.TrimRight(f.s.base.Path, "/") + path})
+}
+
+// methodExcluded reports that the configuration forbids the HTTP method in
+// every role: tested operation, record setup, undeclared-method probe and cleanup.
+func (f *fuzzer) methodExcluded(method string) bool {
+	return slices.ContainsFunc(f.s.cfg.ExcludeMethods, func(excluded string) bool {
+		return strings.EqualFold(strings.TrimSpace(excluded), method)
+	})
 }
 
 func (f *fuzzer) usable(op *operation) bool {
@@ -908,6 +918,9 @@ func (f *fuzzer) baselines(ctx context.Context) {
 			continue
 		case f.excluded(op) || !f.selected(op):
 			op.summary.Inconclusive = inconclusiveExcluded
+			continue
+		case f.methodExcluded(op.method):
+			op.summary.Inconclusive = inconclusiveMethod
 			continue
 		case f.blocked(op.method, op.path):
 			op.summary.Inconclusive = inconclusiveBlocked

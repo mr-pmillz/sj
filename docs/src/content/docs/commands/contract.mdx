@@ -79,6 +79,7 @@ A finding states what the responses showed. sj does not know the intended access
 - Request bodies carry generated values and created records exist until cleanup, so use a test environment.
 - `--max-requests` is a hard budget that includes setup, re-runs and cleanup. sj stops creating records while it can still remove the ones it has.
 - sj sends one request at a time, `--delay` apart, with a 100 ms minimum for a target that is not loopback. It stops on HTTP 429, on an advertised remaining rate budget of one or less, and after three consecutive transport errors.
+- `--exclude METHOD` prevents an HTTP method from being sent in any role: tested operation, record setup, undeclared-method check and cleanup. With `--exclude DELETE`, sj cannot remove the records it creates through other methods. They stay on the target and the report counts them under `leftoverRecords`.
 - `--operation` limits testing to named operations. `--exclude-operation` prevents an operation from being sent in any role, including record cleanup.
 - `--seed` makes generated identifiers reproducible. The report records the seed.
 - `--store-responses` adds a response excerpt of at most 2048 bytes to each case that raised a finding. Excerpts can contain data from the target, so treat that report as sensitive. Without the option, the report holds no credential, no parameter value and no response body.

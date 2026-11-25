@@ -70,6 +70,7 @@ func init() {
 	flags.Uint64Var(&contractFuzz.Seed, "seed", 0, "Seed for generated identifiers. A random seed is used and reported when zero.")
 	flags.StringArrayVar(&contractFuzz.Only, "operation", nil, "Test only this operation, as 'METHOD /path' or an operationId; repeatable.")
 	flags.StringArrayVar(&contractFuzz.Exclude, "exclude-operation", nil, "Never send this operation, as 'METHOD /path' or an operationId; repeatable.")
+	flags.StringSliceVar(&cfg.ExcludeMethods, "exclude", nil, "Never send this HTTP method, such as DELETE (repeat or use a comma-separated list). Records that sj then cannot remove stay on the target and are counted in the report.")
 	flags.BoolVar(&contractFuzz.KeepRecords, "keep-records", false, "Leave the created test records on the target.")
 	flags.StringVar(&contractFuzz.EmitSuite, "emit-suite", "", "Write the executed cases to this file as a suite that 'sj contract --suite' replays.")
 	flags.StringVarP(&contractFuzz.Format, "output-format", "F", "json", "Report format: json, markdown, sarif, or junit.")
